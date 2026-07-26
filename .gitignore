@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.pyc
+.coverage
+htmlcov/
+node_modules/
+.tmp/
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Codex CLI
+.codex/*
+!.codex/hooks.json
+!.codex/skills/
+!.codex/skills/**
+
+# Personal data (all private data lives under /private/)
+/private/
+/_workspace/
+
+# Keep example data
+!/example/
+/example/build/
+
+# Claude Code
+.claude/*
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/skills/
+
+# Local settings (personal)
+.claude/settings.local.json
+
+# Local dashboard (sync_dashboard.py)
+dashboard_local.md
+*.bak
+scripts/sync_config.yaml
+
+# Serena
+.serena/
+
+# EntireContext (contains PII from conversation history)
+.entire/
+.entirecontext/
+.worktrees/
+
+# Release loop working set (contains job-search activity and screening output)
+.release-loop/
+
+# Observability / browser-trace captures
+.o11y/
+
+# Browser extension native host — generated wrapper/manifest (contains local paths)
+ext/native-host/.generated/

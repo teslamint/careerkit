@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && UV_CACHE_DIR=.uv-cache uv run career-jobs screening lint --hook",
+            "timeout": 30,
+            "statusMessage": "스크리닝 규칙 검사 중..."
+          }
+        ]
+      }
+    ]
+  }
+}

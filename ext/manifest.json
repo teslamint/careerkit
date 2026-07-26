@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "CareerKit JD Collector",
+  "version": "0.1.0",
+  "description": "Collect job postings and view screening results",
+  "permissions": ["nativeMessaging", "sidePanel", "notifications", "alarms", "storage"],
+  "host_permissions": [
+    "https://www.wanted.co.kr/*",
+    "https://*.rememberapp.co.kr/*",
+    "https://groupby.kr/*",
+    "https://www.saramin.co.kr/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.wanted.co.kr/*",
+        "https://*.rememberapp.co.kr/*",
+        "https://*.groupby.kr/*",
+        "https://www.saramin.co.kr/*"
+      ],
+      "js": ["content/detector.js", "content/badge.js"]
+    }
+  ],
+  "action": {
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_title": "CareerKit"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

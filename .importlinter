@@ -1,0 +1,49 @@
+[importlinter]
+root_package = careerkit
+include_external_packages = True
+
+[importlinter:contract:product_independence]
+name = Resume package does not depend on jobs
+type = forbidden
+source_modules =
+    careerkit.resume
+forbidden_modules =
+    careerkit.jobs
+
+[importlinter:contract:jobs_product_independence]
+name = Jobs package does not depend on resume
+type = forbidden
+source_modules =
+    careerkit.jobs
+forbidden_modules =
+    careerkit.resume
+
+[importlinter:contract:jobs_domain_isolation]
+name = Jobs domain avoids higher layers and legacy imports
+type = forbidden
+source_modules =
+    careerkit.jobs.domain
+forbidden_modules =
+    careerkit.jobs.application
+    careerkit.jobs.adapters
+    careerkit.jobs.cli
+    templates
+
+[importlinter:contract:resume_domain_isolation]
+name = Resume domain avoids higher layers and legacy imports
+type = forbidden
+source_modules =
+    careerkit.resume.domain
+forbidden_modules =
+    careerkit.resume.application
+    careerkit.resume.adapters
+    careerkit.resume.cli
+    templates
+
+[importlinter:contract:no_legacy_template_imports]
+name = Installable package does not import legacy templates modules
+type = forbidden
+source_modules =
+    careerkit
+forbidden_modules =
+    templates

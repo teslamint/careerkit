@@ -1,0 +1,110 @@
+# JD Search Configuration — example
+# 채용공고 자동 검색 설정 예시.
+# 사용법: cp search_config.example.yaml private/jd/config/search_config.yaml
+# 실제 설정 파일은 gitignore된 private/ 아래에 두고, 이 예시 파일에는 개인 값을 넣지 않는다.
+
+# 검색 플랫폼 설정.
+# 직무(role)는 아래 search.role 한 곳에서만 지정한다.
+# 플랫폼별 네이티브 카테고리/코드 매핑은 각 플랫폼 어댑터 내부에 있으므로 여기서 다루지 않는다.
+platforms:
+  wanted:
+    enabled: true
+    base_url: "https://www.wanted.co.kr"
+  remember:
+    enabled: true
+    base_url: "https://career.rememberapp.co.kr"
+  groupby:
+    enabled: true
+    base_url: "https://groupby.kr"
+  saramin:
+    enabled: false
+    base_url: "https://www.saramin.co.kr"
+
+# 플랫폼별 요청 간 대기 시간 (초)
+rate_limits:
+  wanted: 1.5
+  remember: 1.5
+  thevc: 1.5
+  saramin: 3.0
+
+# 검색 키워드 (우선순위 순)
+search_queries:
+  # 핵심: 역할 + 직무명 조합
+  - "백엔드 엔지니어"
+  - "백엔드 개발자"
+  - "Backend Engineer"
+  # 시니어/리드급
+  - "시니어 백엔드"
+  - "Senior Backend"
+
+# 필터 설정
+filters:
+  # 플랫폼 검색 API에 전달할 경력 범위
+  # Wanted API는 years=10까지만 허용한다
+  api_min_experience: 5
+  api_max_experience: 10
+  # 최대 경력 (년, null = 무제한)
+  max_experience: 10
+  # 경력 상한 최소값 - 공고의 경력 상한이 이 값 미만이면 스킵
+  # 예: 9이면 "경력 3-8년"은 스킵, "경력 3-10년" 또는 "경력 3년↑"는 통과
+  min_experience_upper: 9
+  # 지역 (한국 기본)
+  location: "한국"
+
+# 1차 필터링 키워드 (제목 기반 빠른 필터)
+quick_filters:
+  # 제목에 이 키워드 중 하나라도 있어야 통과 (허용 필터)
+  title_include:
+    - "백엔드"
+    - "Backend"
+    - "서버"
+    - "Server"
+
+  # 제목에 이 키워드가 있으면 즉시 스킵 (직급/직군/도메인별로 분류해 관리)
+  title_exclude:
+    # 직급/레벨
+    - "인턴"
+    - "신입"
+    - "Junior"
+    # 비-대상 SW 직군
+    - "프론트엔드"
+    - "Frontend"
+    - "DevOps"
+    - "QA"
+    # HW/임베디드 등 비-SW
+    - "임베디드"
+    - "Embedded"
+    # 데이터/ML/AI 전용 직군
+    - "Data Engineer"
+    - "ML Engineer"
+
+  # 수동 회사 제외 (자동 감지 실패 시 보완)
+  company_exclude: []
+
+  # 제목에 이 키워드가 있으면 우선 검토
+  title_prefer:
+    - "시니어"
+    - "Senior"
+    - "리드"
+    - "Lead"
+
+# 시맨틱 필터 (키워드 필터로 판단 불가 시 임베딩 기반 2차 판단)
+# optional 의존성(sentence-transformers)이 없으면 명령이 비활성 상태를 보고한다
+semantic_filter:
+  enabled: true
+  # 수동 다운로드한 로컬 모델 경로 (huggingface_hub 자동 다운로드가 멈추는 환경 대응)
+  model: "~/.cache/huggingface/hub/models--jhgan--ko-sroberta-multitask/snapshots/main"
+  threshold: -0.04
+
+# 실행 설정
+execution:
+  # 한 번에 처리할 최대 URL 수
+  max_urls_per_run: 50
+  # 검색 결과 스크롤 횟수 (더 많은 결과 로드)
+  scroll_count: 5
+  # 요청 간 대기 시간 (초)
+  request_delay: 2
+
+# 정규화된 검색 직무 — full/quick 검색이 공유하는 유일한 role 지정 지점
+search:
+  role: backend

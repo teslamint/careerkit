@@ -1,0 +1,6 @@
+{
+  "target": "targetco",
+  "description": "TargetCo 지원용 맞춤 설정 예시",
+  "emphasis": ["payment", "fintech", "stability"],
+  "notes": "이 파일은 타겟 회사별 설정 오버라이드 예시입니다."
+}

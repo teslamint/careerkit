@@ -1,0 +1,11 @@
+{
+  "name": "careerkit-console-assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint:js": "eslint src/careerkit/jobs/console/static/app.js"
+  },
+  "devDependencies": {
+    "eslint": "^10.8.0"
+  }
+}

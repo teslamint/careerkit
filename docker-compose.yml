@@ -1,0 +1,7 @@
+services:
+  resume:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - ./private/build:/workspace/private/build

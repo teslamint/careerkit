@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "careerkit"
+version = "0.1.0"
+description = "Resume builder and job-search automation toolkit"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-docx>=1.1.0",
+    "pyyaml>=6.0.3",
+]
+
+[project.optional-dependencies]
+browser = [
+    "patchright>=1.58.0",
+    "playwright>=1.58.0",
+]
+semantic = [
+    "sentence-transformers>=5.0.0",
+]
+
+[project.scripts]
+career-resume = "careerkit.resume.cli:main"
+career-jobs = "careerkit.jobs.cli:main"
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.4",
+    "pygments>=2.20.0",
+    "pyright>=1.1.409",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.12,<1",
+    "vulture>=2.14,<3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+include = ["src/careerkit", "tests"]
+
+[tool.ruff.lint]
+select = ["F401", "F841", "RUF059"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/careerkit"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/README.md",
+    "/pyproject.toml",
+    "/src/careerkit",
+]
