@@ -1,0 +1,11 @@
+{
+  "company_aliases": {
+    "ExampleCorp": ["ExampleCorp", "Example Corp", "예시회사"],
+    "ExampleProduct": ["ExampleProduct", "Example Product", "예시서비스"]
+  },
+  "parent_company_map": {
+    "ExampleProduct": "ExampleCorp"
+  },
+  "technology_keywords": ["ExampleDB", "ExampleQueue"],
+  "pattern_keywords": ["Example Pattern", "example optimization"]
+}

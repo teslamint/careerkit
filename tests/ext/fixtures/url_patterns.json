@@ -1,0 +1,27 @@
+[
+  {"url": "https://www.wanted.co.kr/wd/123456", "platform": "wanted", "job_id": "123456"},
+  {"url": "https://wanted.co.kr/wd/789012", "platform": "wanted", "job_id": "789012"},
+  {"url": "https://www.wanted.co.kr/wd/100", "platform": "wanted", "job_id": "100"},
+
+  {"url": "https://career.rememberapp.co.kr/job/posting/55555", "platform": "remember", "job_id": "55555"},
+  {"url": "https://rememberapp.co.kr/job/55555", "platform": "remember", "job_id": "55555"},
+  {"url": "https://rememberapp.co.kr/job/posting/77777", "platform": "remember", "job_id": "77777"},
+
+  {"url": "https://groupby.kr/positions/44444", "platform": "groupby", "job_id": "44444"},
+  {"url": "https://www.groupby.kr/positions/88888", "platform": "groupby", "job_id": "88888"},
+
+  {"url": "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=33333", "platform": "saramin", "job_id": "33333"},
+  {"url": "https://www.saramin.co.kr/zf_user/jobs/view?rec_idx=66666&other=1", "platform": "saramin", "job_id": "66666"},
+
+  {"url": "https://jumpit.saramin.co.kr/position/100014", "platform": null, "job_id": null},
+  {"url": "https://www.google.com", "platform": null, "job_id": null},
+  {"url": "https://www.wanted.co.kr/company/12345", "platform": null, "job_id": null},
+  {"url": "https://groupby.kr/about", "platform": null, "job_id": null},
+  {"url": "https://www.saramin.co.kr/zf_user/jobs/relay/view", "platform": null, "job_id": null},
+
+  {"url": "https://evil.example/?x=wanted.co.kr/wd/123", "platform": null, "job_id": null, "note": "SSRF: wanted pattern in query"},
+  {"url": "https://evil.example/#rememberapp.co.kr/job/555", "platform": null, "job_id": null, "note": "SSRF: remember pattern in fragment"},
+  {"url": "https://www.wanted.co.kr/wd/123?x=groupby.kr/positions/999", "platform": "wanted", "job_id": "123", "note": "cross-platform in query: wanted wins"},
+  {"url": "http://www.wanted.co.kr/wd/123", "platform": null, "job_id": null, "note": "http rejected"},
+  {"url": "https://www.saramin.co.kr/zf_user/jobs/relay/view?prev_rec_idx=999&rec_idx=123", "platform": "saramin", "job_id": "123", "note": "saramin: rec_idx not prev_rec_idx"}
+]

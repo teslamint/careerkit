@@ -1,0 +1,12 @@
+{
+  "public": {
+    "companies": ["techcorp"],
+    "include_certificates": true,
+    "company_detail": {}
+  },
+  "job": {
+    "companies": ["techcorp"],
+    "include_certificates": false,
+    "company_detail": {}
+  }
+}

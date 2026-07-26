@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && UV_CACHE_DIR=.uv-cache uv run career-jobs screening lint --hook",
+            "timeout": 30,
+            "statusMessage": "스크리닝 규칙 검사 중..."
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(uv run career-resume:*)",
+      "Bash(uv run career-jobs:*)",
+      "Bash(python3:*)",
+      "Bash(uv run python3:*)",
+      "Bash(uv run python:*)",
+      "Bash(.venv/bin/python3:*)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(wc:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(find:*)",
+      "Bash(stat:*)",
+      "Bash(grep:*)",
+      "Bash(ps:*)",
+      "Bash(lsof:*)",
+      "WebFetch(domain:career.rememberapp.co.kr)",
+      "WebFetch(domain:www.wanted.co.kr)",
+      "WebFetch(domain:www.saramin.co.kr)",
+      "WebFetch(domain:www.jobkorea.co.kr)",
+      "Skill(extract-company-info)",
+      "Skill(extract-company-info:*)",
+      "Skill(extract-job-posting)",
+      "Skill(extract-job-posting:*)",
+      "Skill(extract-recruitment-info)",
+      "Skill(extract-recruitment-info:*)",
+      "Skill(jd-screening)",
+      "Skill(jd-screening:*)"
+    ],
+    "deny": [
+      "Read(./.entire/metadata/**)"
+    ]
+  }
+}

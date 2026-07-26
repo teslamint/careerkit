@@ -1,0 +1,90 @@
+@page {
+  size: A4;
+  margin: 2cm;
+}
+
+body {
+  font-family: "Apple SD Gothic Neo", "Noto Sans KR", Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.45;
+  color: #111;
+  max-width: 210mm;
+  margin: 0 auto;
+  padding: 0;
+}
+
+h1 {
+  font-size: 1.45em;
+  border-bottom: 1px solid #333;
+  padding-bottom: 0.15em;
+  margin: 0.9em 0 0.35em;
+}
+
+/* Top header: Name/Title should look clean (no underline) */
+body > h1:first-of-type {
+  font-size: 1.9em;
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0.15em;
+}
+
+h2 {
+  font-size: 1.3em;
+  color: #444;
+  margin: 0.75em 0 0.25em;
+}
+
+h3 {
+  font-size: 1.1em;
+  color: #555;
+}
+
+p {
+  margin: 0.35em 0;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 1.5em 0;
+}
+
+ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.35em 0;
+}
+
+li {
+  margin-bottom: 0.3em;
+  padding-left: 1.2em;
+  text-indent: -1.2em;
+}
+
+li::before {
+  content: "• ";
+}
+
+/* Prevent pandoc loose-list <p> from breaking bullet alignment */
+li > p {
+  display: inline;
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+code {
+  background: #f4f4f4;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+/* Page-break hygiene for PDF */
+h1, h2, h3 { break-after: avoid; }
+ul, ol, table { break-inside: avoid; }
+h2 { break-inside: avoid; }

@@ -1,0 +1,13 @@
+search:
+  role: backend
+platforms:
+  wanted:
+    enabled: true
+  remember:
+    enabled: true
+  groupby:
+    enabled: true
+search_queries:
+  - backend engineer
+execution:
+  max_urls_per_run: 5

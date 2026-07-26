@@ -1,0 +1,9 @@
+{
+  "name": "com.careerkit.host",
+  "description": "careerkit Native Messaging host (template — install.sh generates the real manifest)",
+  "path": "REPLACED_BY_INSTALL_SH",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID_HERE/"
+  ]
+}

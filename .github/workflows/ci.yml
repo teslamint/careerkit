@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Sync development environment
+        run: UV_CACHE_DIR=.uv-cache uv sync --locked --all-groups --all-extras
+      - name: Python lint
+        run: UV_CACHE_DIR=.uv-cache uv run ruff check src tests
+      - name: Type check migrated package and tests
+        run: UV_CACHE_DIR=.uv-cache uv run pyright src/careerkit tests
+      - name: Import architecture
+        run: UV_CACHE_DIR=.uv-cache uv run lint-imports
+      - name: Reviewed unused-code gate
+        run: UV_CACHE_DIR=.uv-cache uv run vulture src tests/static/vulture_whitelist.py --min-confidence 60
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Console JavaScript lint
+        run: npm ci && npm run lint:js
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install renderer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc weasyprint poppler-utils
+      - name: Sync development environment
+        run: UV_CACHE_DIR=.uv-cache uv sync --locked --all-groups --all-extras
+      - name: Install Playwright browsers
+        run: UV_CACHE_DIR=.uv-cache uv run playwright install --with-deps chromium
+      - name: Run complete suite
+        run: |
+          UV_CACHE_DIR=.uv-cache uv build
+          UV_CACHE_DIR=.uv-cache uv run pytest -q
+
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install uv and build archives
+        run: |
+          python -m pip install uv
+          UV_CACHE_DIR=.uv-cache uv build
+      - name: Install wheel outside the checkout
+        run: |
+          python -m venv /tmp/careerkit-installed
+          /tmp/careerkit-installed/bin/pip install dist/careerkit-*.whl
+          cd /tmp
+          /tmp/careerkit-installed/bin/career-resume --help
+          /tmp/careerkit-installed/bin/career-jobs --help
+
+  example-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc weasyprint poppler-utils
+      - name: Install uv and sync
+        run: |
+          python -m pip install uv
+          UV_CACHE_DIR=.uv-cache uv sync --locked --all-groups
+      - name: Build and verify synthetic example
+        run: |
+          UV_CACHE_DIR=.uv-cache uv run career-resume validate --example
+          UV_CACHE_DIR=.uv-cache uv run career-resume build example all
+          test -f example/build/resume-example.md
+          test -f example/build/resume-example.html
+          test -f example/build/resume-example.pdf
+          test -f example/build/resume-example-short.pdf
+          test -f example/build/resume-example-wanted.txt
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build installed-package image
+        run: docker compose build
+      - name: Build synthetic example in Docker
+        run: docker compose run --rm resume example all
+      - name: Verify output
+        run: test -f example/build/resume-example.pdf

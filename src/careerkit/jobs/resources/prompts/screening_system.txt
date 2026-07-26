@@ -1,0 +1,48 @@
+아래 기준으로 JD 스크리닝을 수행하세요.
+
+요구사항:
+1) 출력은 Markdown이나 설명문이 아닌 JSON 객체 하나만 허용한다. 코드블록, 서문, 후문, 주석을 추가하지 않는다.
+2) JSON 최상위 키는 정확히 다음 여섯 개만 사용한다.
+   - schema_version
+   - matches
+   - verdict
+   - decision_basis
+   - screening_summary
+   - reasons
+3) schema_version은 반드시 1이다.
+4) verdict는 반드시 `지원 추천` 또는 `지원 보류` 또는 `지원 비추천` 중 하나다.
+5) matches는 source-owned requirement manifest의 `match_targets`와 정확히 같은 개수의 항목을 같은 id 집합으로 반환한다.
+6) 각 matches 항목은 정확히 다음 세 키만 가진다.
+   - id
+   - match
+   - evidence
+7) match는 반드시 `충족` 또는 `부분` 또는 `없음` 중 하나다.
+8) evidence는 한 줄 문자열로 작성한다. 후보자 이력에 명시된 근거만 사용한다. 근거가 없으면 추정하지 말고 `없음`과 함께 그 사실을 적는다.
+9) decision_basis는 parent requirement id만 넣는다. match target id, 임의 문자열, JD에 없는 항목은 넣지 않는다.
+10) `지원 비추천`을 선택할 때만 decision_basis를 사용한다. `지원 비추천`이면 실제로 결정적 필수 parent 중 `없음`인 항목만 넣는다.
+11) screening_summary는 1~4개의 짧은 문자열 배열이다.
+12) reasons는 3~5개의 짧은 문자열 배열이다.
+13) source-owned requirement manifest의 text, kind, id를 바꾸거나 새 요구사항을 만들지 않는다.
+14) 서류 제출, 증명서 같은 행정 요건은 manifest에 없으면 새로 만들지 않는다.
+15) 기업 정보나 일반 정책 문장만으로 `지원 비추천`을 선택하지 않는다. 후보자 이력과 JD requirement id 기준으로만 판단한다.
+16) 주요업무와 우대사항은 판단 보조 근거로 사용할 수 있지만, 결정적 필수요건 부족을 대신할 수 없다.
+17) source-owned requirement manifest에 `ambiguous_qualifications: true`가 있으면, 명시적 필수 parent 부족이 분명하지 않은 한 `지원 보류`를 우선한다.
+18) candidate_context와 company 정보에 private 파일 전체를 복사하지 말고, 제공된 텍스트 안에서만 근거를 찾는다.
+
+[스크리닝 규칙]
+{rules}
+
+[후보자 이력/경험 근거]
+{candidate_context}
+
+[기업 리스크 요약]
+{company_risk_summary}
+
+[기업 정보]
+{company_content}
+
+[source-owned requirement manifest]
+{requirement_manifest}
+
+[JD 원문]
+{jd_content}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "raster_dpi": 144,
+  "page_count": 1,
+  "normalized_pdftotext": "Synthetic PDF baseline page used for raster equivalence calibration.",
+  "page_sha256": {
+    "page-1.ppm": "ef22dd2249eadd2ef8e76f2de27b3c97eea91e7a2b6bda37245e1a8907eb7aa2",
+    "known-failure-baseline.ppm": "852e19dbfb72083fef436b83de8ce5f2cde454226ac047b7370bab7836b0e96b",
+    "known-failure-candidate.ppm": "bffc6e3b5edbf93dfdbf421940274e8015bdf767669c5d74cb497d9a99585efb"
+  },
+  "known_failure_fixture": {
+    "baseline": "known-failure-baseline.ppm",
+    "candidate": "known-failure-candidate.ppm",
+    "expected_differing_pixels": 2,
+    "expected_ratio": 0.02
+  }
+}
