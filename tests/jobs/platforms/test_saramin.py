@@ -219,6 +219,15 @@ class TestDetailPageParsing:
         """)
         assert extract_detail_fields(html) == {}
 
+    def test_extract_fields_ignores_empty_detail_block(self) -> None:
+        html = textwrap.dedent("""\
+            <dl>
+                <dt class="tit">우대사항</dt>
+                <dd class="desc"></dd>
+            </dl>
+        """)
+        assert extract_detail_fields(html) == {}
+
     def test_extract_fields_preserves_semantic_boundaries(self) -> None:
         html = textwrap.dedent("""\
             <dl>

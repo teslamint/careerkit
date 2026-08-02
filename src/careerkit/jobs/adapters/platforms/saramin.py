@@ -197,6 +197,8 @@ def extract_detail_fields(html: str) -> dict[str, str]:
     )
     for label, value in pairs:
         clean = _html_fragment_to_text(value)
+        if not clean:
+            continue
         fields[label.strip()] = clean
     if "경력" not in fields:
         meta = re.search(
