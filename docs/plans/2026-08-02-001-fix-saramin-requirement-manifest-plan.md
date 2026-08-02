@@ -2,10 +2,11 @@
 schema: plan/v1
 title: Saramin Requirement Manifest Extraction
 type: fix
-status: draft
+status: approved
 date: 2026-08-02
 execution: code
 origin: docs/specs/2026-08-02-saramin-requirement-manifest-design.md
+body_seal: bd690bd0f8037a68284c89d7a05ce8a98fa156a51d9b61a4b3a0c47c8caa0d99
 ---
 
 # Saramin Requirement Manifest Extraction Plan
