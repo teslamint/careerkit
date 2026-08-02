@@ -195,6 +195,61 @@ class TestDetailPageParsing:
         assert fields["지역"] == "서울 강남구"
         assert fields["경력"] == "경력 1~4년"
 
+    def test_extract_fields_keeps_scalar_values(self) -> None:
+        html = textwrap.dedent("""\
+            <dl>
+                <dt class="tit">근무형태</dt>
+                <dd class="desc">정규직</dd>
+                <dt class="tit">급여</dt>
+                <dd class="desc">면접 후 결정</dd>
+            </dl>
+        """)
+        fields = extract_detail_fields(html)
+        assert fields == {
+            "근무형태": "정규직",
+            "급여": "면접 후 결정",
+        }
+
+    def test_extract_fields_ignores_malformed_detail_block(self) -> None:
+        html = textwrap.dedent("""\
+            <dl>
+                <dt class="tit">근무형태</dt>
+                <dd class="desc">정규직
+            </dl>
+        """)
+        assert extract_detail_fields(html) == {}
+
+    def test_extract_fields_preserves_semantic_boundaries(self) -> None:
+        html = textwrap.dedent("""\
+            <dl>
+                <dt class="tit">자격요건</dt>
+                <dd class="desc">
+                    <ul>
+                        <li>Python 백엔드 개발 경험</li>
+                        <li>SQL 활용 능력</li>
+                    </ul>
+                </dd>
+                <dt class="tit">우대사항</dt>
+                <dd class="desc">
+                    <p>테스트 코드 작성 경험</p>
+                    <p>Docker 운영 경험</p>
+                </dd>
+            </dl>
+        """)
+        fields = extract_detail_fields(html)
+        assert fields["자격요건"] == "- Python 백엔드 개발 경험\n- SQL 활용 능력"
+        assert fields["우대사항"] == "테스트 코드 작성 경험\nDocker 운영 경험"
+
+    def test_extract_fields_does_not_invent_break_bullets(self) -> None:
+        html = textwrap.dedent("""\
+            <dl>
+                <dt class="tit">근무환경</dt>
+                <dd class="desc">원격 근무 가능<br>주 1회 오피스 출근</dd>
+            </dl>
+        """)
+        fields = extract_detail_fields(html)
+        assert fields["근무환경"] == "원격 근무 가능\n주 1회 오피스 출근"
+
     def test_extract_experience_from_meta_fallback(self) -> None:
         html_no_dt = textwrap.dedent("""\
             <html>

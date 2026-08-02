@@ -172,6 +172,22 @@ def extract_csn_from_html(html: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _html_fragment_to_text(value: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+    text = re.sub(r"<li\b[^>]*>", "\n- ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</li>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<p\b[^>]*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?(?:ul|ol)\b[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    lines = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def extract_detail_fields(html: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     pairs = re.findall(
@@ -180,8 +196,7 @@ def extract_detail_fields(html: str) -> dict[str, str]:
         re.DOTALL,
     )
     for label, value in pairs:
-        clean = re.sub(r"<[^>]+>", " ", value)
-        clean = re.sub(r"\s+", " ", clean).strip()
+        clean = _html_fragment_to_text(value)
         fields[label.strip()] = clean
     if "경력" not in fields:
         meta = re.search(
