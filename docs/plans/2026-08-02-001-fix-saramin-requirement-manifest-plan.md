@@ -22,6 +22,7 @@ Preserve Saramin requirement structure from detail HTML and decoded body section
 - Add `extract_jd_body_sections(jd_body: str) -> dict[str, str]` beside the existing Saramin extractors.
 - Return only canonical `자격요건` and `우대사항` keys from the new helper.
 - Keep `extract_requirement_manifest()` unchanged. The writer must satisfy its line-leading bullet contract.
+- Keep `_normalize_canonical_bullets()` unchanged. The fix supplies canonical line-leading bullets upstream instead of splitting inline hyphens.
 - Keep dedicated detail fields authoritative per section. Use a body section only when the matching field is empty.
 - Use synthetic fixtures. Do not commit platform record identifiers, company names, or screening outcomes.
 
@@ -67,7 +68,7 @@ No contradictions or unavailable evidence block this plan.
 |---|---|---|
 | S1: Structured detail fields retain requirement items. | U1 -> U3 | `test_saramin_extraction_renders_detail_field_manifest_rows` in U3. Covers S1. |
 | S2: Body-only requirements remain screenable. | U2 -> U3 | `test_saramin_extraction_uses_body_sections_per_missing_field` in U3. Covers S2. |
-| S3: Existing structured fields remain authoritative. | U2 -> U3 | `test_saramin_extraction_prefers_each_detail_field_independently` in U3. Covers S3. |
+| S3: Existing structured fields remain authoritative. | U2 -> U3 | `test_saramin_extraction_applies_field_precedence_per_section` in U3. Covers S3. |
 
 ## U1: Preserve detail-field HTML structure
 
@@ -105,20 +106,22 @@ Interfaces:
   Produces: `extract_jd_body_sections(jd_body: str) -> dict[str, str]`
 Test scenarios:
   happy: `■ 자격요건` and `(1) 우대 사항` create canonical section values.
-  edge: Supported non-target headings stop capture. Existing bullet markers do not duplicate.
+  edge: Every approved target alias parses. Each non-target boundary group stops capture. Existing bullet markers do not duplicate.
   error: An empty body, a malformed body, or a body without target headings returns `{}`.
   integration: n/a — U3 connects the parsed sections to canonical Markdown.
 Steps:
-  1. Write failing tests `test_extract_jd_body_preserves_semantic_boundaries`, `test_extract_jd_body_sections_parses_supported_targets`, `test_extract_jd_body_sections_stops_at_supported_boundaries`, and `test_extract_jd_body_sections_returns_empty_without_target`.
-  2. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py::TestDetailPageParsing::test_extract_jd_body_preserves_semantic_boundaries tests/jobs/platforms/test_saramin.py::TestDetailPageParsing::test_extract_jd_body_sections_parses_supported_targets tests/jobs/platforms/test_saramin.py::TestDetailPageParsing::test_extract_jd_body_sections_stops_at_supported_boundaries tests/jobs/platforms/test_saramin.py::TestDetailPageParsing::test_extract_jd_body_sections_returns_empty_without_target -q`; confirm missing structure or the missing helper causes failure.
-  3. Route decoded body HTML through `_html_fragment_to_text()` so list and heading lines remain distinct.
-  4. Add `extract_jd_body_sections()`. Accept optional `■` or `(number)` heading prefixes.
-  5. Recognize qualification labels `자격요건`, `자격 요건`, `지원자격`, `지원 자격`, `필수요건`, and `필수 요건`.
-  6. Recognize preference labels `우대사항` and `우대 사항`.
-  7. Stop capture at the approved major-duty, work-condition, benefit, hiring-process, and company-introduction labels.
-  8. Convert each nonempty captured line into one `- ` item without duplicating a supported marker.
-  9. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py -q` and confirm all adapter tests pass.
-  10. Commit: `fix(jobs): Parse Saramin body requirement sections`
+  1. Write failing tests `test_extract_jd_body_preserves_semantic_boundaries`, `test_extract_jd_body_sections_supports_all_target_aliases`, `test_extract_jd_body_sections_stops_at_each_boundary_group`, and `test_extract_jd_body_sections_returns_empty_without_target`.
+  2. Parameterize the target-alias test across all six qualification labels and both preference labels from the approved spec.
+  3. Parameterize the boundary test across one approved label from each major-duty, work-condition, benefit, hiring-process, and company-introduction group.
+  4. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py -k "extract_jd_body" -q`; confirm missing structure or the missing helper causes failure.
+  5. Route decoded body HTML through `_html_fragment_to_text()` so list and heading lines remain distinct.
+  6. Add `extract_jd_body_sections()`. Accept optional `■` or `(number)` heading prefixes.
+  7. Recognize qualification labels `자격요건`, `자격 요건`, `지원자격`, `지원 자격`, `필수요건`, and `필수 요건`.
+  8. Recognize preference labels `우대사항` and `우대 사항`.
+  9. Stop capture at the approved major-duty, work-condition, benefit, hiring-process, and company-introduction labels.
+  10. Convert each nonempty captured line into one `- ` item without duplicating a supported marker.
+  11. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py -q` and confirm all adapter tests pass.
+  12. Commit: `fix(jobs): Parse Saramin body requirement sections`
 Acceptance: `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py -q` passes and covers all approved label groups.
 
 ## U3: Select fallbacks and prove manifest output
@@ -132,19 +135,20 @@ Interfaces:
   Produces: unchanged `JobsExtractionStage._extract_saramin(url: str, job_id: str) -> tuple[str, str, str]`
 Test scenarios:
   happy: Dedicated qualification and preference fields render required and preferred manifest parents. Covers S1.
-  edge: A missing preference field uses only the body preference. The dedicated qualification remains authoritative. Covers S3.
+  edge: Parameterized cases prove both mixed-source directions. Each nonempty dedicated field remains authoritative. Covers S3.
   error: Empty fields plus an empty or malformed body render `정보 없음` without an exception.
-  integration: A synthetic Saramin detail page flows through `JobsExtractionStage.extract()`, canonical Markdown, and `extract_requirement_manifest()`. Covers S1, S2, and S3.
+  integration: A synthetic page flows through `JobsExtractionStage.extract()`, canonical Markdown, and `extract_requirement_manifest()`. Introduction keeps the same text while semantic line and list boundaries become visible. Covers S1, S2, and S3.
 Steps:
   1. Add a synthetic Saramin detail-page builder and mobile-detail URL mapping to `FakeHttpClient` tests.
-  2. Write failing tests `test_saramin_extraction_renders_detail_field_manifest_rows`, `test_saramin_extraction_uses_body_sections_per_missing_field`, and `test_saramin_extraction_prefers_each_detail_field_independently`.
-  3. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/application/test_automation.py::test_saramin_extraction_renders_detail_field_manifest_rows tests/jobs/application/test_automation.py::test_saramin_extraction_uses_body_sections_per_missing_field tests/jobs/application/test_automation.py::test_saramin_extraction_prefers_each_detail_field_independently -q`; confirm detail-field structure or missing fallback causes empty manifest parents.
-  4. Import and call `extract_jd_body_sections()` inside `_extract_saramin()`.
-  5. Select `fields["자격요건"]` before `sections["자격요건"]`. Apply the same independent precedence to `우대사항`.
-  6. Keep introduction, benefits, main duties, storage, and public interfaces unchanged.
-  7. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py tests/jobs/application/test_automation.py tests/jobs/application/test_requirement_manifest.py -q`.
-  8. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs -q`.
-  9. Commit: `fix(jobs): Restore Saramin requirements to manifests`
+  2. Write failing tests `test_saramin_extraction_renders_detail_field_manifest_rows`, `test_saramin_extraction_uses_body_sections_per_missing_field`, `test_saramin_extraction_applies_field_precedence_per_section`, `test_saramin_extraction_preserves_intro_content_with_semantic_boundaries`, and `test_saramin_extraction_handles_missing_requirement_sources`.
+  3. Parameterize the precedence test for detail qualification plus body preference and body qualification plus detail preference.
+  4. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/application/test_automation.py -k "saramin_extraction" -q`; confirm detail-field structure or missing fallback causes empty manifest parents.
+  5. Import and call `extract_jd_body_sections()` inside `_extract_saramin()`.
+  6. Select `fields["자격요건"]` before `sections["자격요건"]`. Apply the same independent precedence to `우대사항`.
+  7. Keep introduction text, benefits, main duties, storage, and public interfaces unchanged. Allow only the approved semantic line and list boundaries in introduction formatting.
+  8. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py tests/jobs/application/test_automation.py tests/jobs/application/test_requirement_manifest.py -q`.
+  9. Run `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs -q`.
+  10. Commit: `fix(jobs): Restore Saramin requirements to manifests`
 Acceptance: `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs/platforms/test_saramin.py tests/jobs/application/test_automation.py tests/jobs/application/test_requirement_manifest.py -q` and `UV_CACHE_DIR=/private/tmp/uv-cache uv run pytest tests/jobs -q` pass. Each S-ID has a manifest-level test.
 
 ## Mutation/failure-state matrix
@@ -155,7 +159,7 @@ No stateful ceremony in the deliverable; no mutation/failure-state matrix requir
 
 | Tracker row | Trigger class | What fired it | Disposition |
 |---|---|---|---|
-| GitHub issue #1 | drift-based | Current Saramin extraction still collapses detail markup and omits decoded-body requirement fallbacks. | Fold into U1, U2, and U3 because this issue is the plan origin. |
+| GitHub issue #1 | drift-based | Current Saramin extraction still collapses detail markup and omits decoded-body requirement fallbacks. | Fold into U1, U2, and U3. Leave `_normalize_canonical_bullets()` unchanged because upstream extraction will emit canonical line-leading bullets. |
 
 Audited GitHub open issues at `2026-08-02T01:39:39Z` on commit `1f72860223f75bc83838e5d9aec6030671f9bdb5`: 1 open rows, 1 fired, 0 unobservable.
 
