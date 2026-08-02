@@ -263,7 +263,10 @@ def _normalize_jd_body_heading(line: str) -> str:
 
 
 def _to_canonical_bullet(line: str) -> str:
-    return f"- {_JD_BODY_BULLET_RE.sub('', line).strip()}"
+    content = _JD_BODY_BULLET_RE.sub("", line).strip()
+    if not content:
+        return ""
+    return f"- {content}"
 
 
 def extract_jd_body_sections(jd_body: str) -> dict[str, str]:
@@ -286,7 +289,7 @@ def extract_jd_body_sections(jd_body: str) -> dict[str, str]:
         if current_key is None:
             continue
         bullet = _to_canonical_bullet(line)
-        if bullet != "-":
+        if bullet:
             sections[current_key].append(bullet)
     return {
         key: "\n".join(lines)

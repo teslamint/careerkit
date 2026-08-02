@@ -349,6 +349,20 @@ class TestDetailPageParsing:
             "우대사항": "- 테스트 코드 작성 경험\n- Docker 운영 경험",
         }
 
+    def test_extract_jd_body_sections_skips_marker_only_lines(self) -> None:
+        body = textwrap.dedent("""\
+            자격요건
+            •
+            Python 백엔드 개발 경험
+            우대사항
+            -
+            테스트 코드 작성 경험
+        """)
+        assert extract_jd_body_sections(body) == {
+            "자격요건": "- Python 백엔드 개발 경험",
+            "우대사항": "- 테스트 코드 작성 경험",
+        }
+
     @pytest.mark.parametrize(
         "body",
         (
