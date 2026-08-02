@@ -1057,9 +1057,13 @@ def _canonicalize_saramin_requirements(text: str) -> str:
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
     if not lines:
         return ""
-    if any(re.match(r"^[-*+•◦]\s*", line) for line in lines):
-        return "\n".join(lines)
-    return "\n".join(f"- {line}" for line in lines)
+    canonical_lines = []
+    for line in lines:
+        if re.match(r"^[-*+•◦]\s*", line):
+            canonical_lines.append(line)
+        else:
+            canonical_lines.append(f"- {line}")
+    return "\n".join(canonical_lines)
 
 
 def _format_jd_markdown(

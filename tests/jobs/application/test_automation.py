@@ -1062,8 +1062,48 @@ def test_saramin_extraction_renders_detail_field_manifest_rows(tmp_path: Path) -
     ]
 
 
+def test_saramin_extraction_canonicalizes_mixed_detail_requirement_lines(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616307"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616307",
+                    detail_requirements="<ul><li>Python 백엔드 개발 경험</li></ul><p>SQL 활용 능력</p><br>문제 해결 능력",
+                    jd_body="회사 소개\n안정적인 SaaS 운영",
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "자격 요건") == (
+        "- Python 백엔드 개발 경험\n- SQL 활용 능력\n- 문제 해결 능력"
+    )
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+        ("SQL 활용 능력", RequirementKind.REQUIRED),
+        ("문제 해결 능력", RequirementKind.REQUIRED),
+    ]
+
+
 @pytest.mark.parametrize(
-    ("detail_requirements", "detail_preferred", "jd_body", "expected_requirements", "expected_preferred"),
+    (
+        "detail_requirements",
+        "detail_preferred",
+        "jd_body",
+        "expected_requirements",
+        "expected_preferred",
+        "expected_manifest",
+    ),
     [
         (
             "",
@@ -1071,6 +1111,11 @@ def test_saramin_extraction_renders_detail_field_manifest_rows(tmp_path: Path) -
             "자격요건\nPython 백엔드 개발 경험\nSQL 활용 능력",
             "- Python 백엔드 개발 경험\n- SQL 활용 능력",
             "- Docker 운영 경험",
+            [
+                ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+                ("SQL 활용 능력", RequirementKind.REQUIRED),
+                ("Docker 운영 경험", RequirementKind.PREFERRED),
+            ],
         ),
         (
             "<ul><li>Python 백엔드 개발 경험</li></ul>",
@@ -1078,6 +1123,11 @@ def test_saramin_extraction_renders_detail_field_manifest_rows(tmp_path: Path) -
             "우대사항\n테스트 코드 작성 경험\nDocker 운영 경험",
             "- Python 백엔드 개발 경험",
             "- 테스트 코드 작성 경험\n- Docker 운영 경험",
+            [
+                ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+                ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
+                ("Docker 운영 경험", RequirementKind.PREFERRED),
+            ],
         ),
     ],
 )
@@ -1088,6 +1138,7 @@ def test_saramin_extraction_uses_body_sections_per_missing_field(
     jd_body: str,
     expected_requirements: str,
     expected_preferred: str,
+    expected_manifest: list[tuple[str, RequirementKind]],
 ) -> None:
     repository = JDRecordRepository(tmp_path / "records")
     url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616302"
@@ -1111,6 +1162,10 @@ def test_saramin_extraction_uses_body_sections_per_missing_field(
     markdown = batch.records[0].jd_markdown
     assert _section_body(markdown, "자격 요건") == expected_requirements
     assert _section_body(markdown, "우대사항") == expected_preferred
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == expected_manifest
 
 
 @pytest.mark.parametrize(
