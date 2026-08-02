@@ -143,7 +143,7 @@ COMPANY_JSONLD_HTML = textwrap.dedent("""\
     }
     </script>
     </body>
-</html>
+    </html>
 """)
 
 JD_BODY_TARGET_ALIASES = (
