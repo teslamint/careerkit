@@ -25,6 +25,28 @@ _EXPERIENCE_RE = re.compile(
     r"|신입"
     r"|^경력$"
 )
+_JD_BODY_TARGET_LABELS = {
+    "자격요건": "자격요건",
+    "지원자격": "자격요건",
+    "필수요건": "자격요건",
+    "우대사항": "우대사항",
+}
+_JD_BODY_BOUNDARY_LABELS = frozenset({
+    "주요업무",
+    "담당업무",
+    "업무내용",
+    "근무조건",
+    "근무환경",
+    "복리후생",
+    "혜택",
+    "혜택및복지",
+    "전형절차",
+    "채용절차",
+    "회사소개",
+    "기업소개",
+})
+_JD_BODY_HEADING_PREFIX_RE = re.compile(r"^(?:■\s*|\(\d+\)\s*|\d+[.)]\s*)")
+_JD_BODY_BULLET_RE = re.compile(r"^(?:[-*+•◦]\s*)+")
 
 
 @dataclass(frozen=True)
@@ -221,12 +243,56 @@ def extract_jd_body(html: str, job_id: str) -> str:
         decoded = base64.b64decode(match.group(1)).decode("utf-8", errors="ignore")
     except Exception:
         return ""
-    text = re.sub(r"<br\s*/?>", "\n", decoded)
-    text = re.sub(r"</p>", "\n", text)
-    text = re.sub(r"<img[^>]*>", "", text)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return _html_fragment_to_text(decoded)
+
+
+def _normalize_jd_body_heading(line: str) -> str:
+    normalized = line.strip()
+    previous = None
+    while normalized != previous:
+        previous = normalized
+        normalized = _JD_BODY_HEADING_PREFIX_RE.sub("", normalized).strip()
+        if (
+            len(normalized) >= 2
+            and normalized[0] in "[("
+            and normalized[-1] in "])"
+            and ((normalized[0] == "[" and normalized[-1] == "]") or (normalized[0] == "(" and normalized[-1] == ")"))
+        ):
+            normalized = normalized[1:-1].strip()
+    return re.sub(r"\s+", "", normalized)
+
+
+def _to_canonical_bullet(line: str) -> str:
+    return f"- {_JD_BODY_BULLET_RE.sub('', line).strip()}"
+
+
+def extract_jd_body_sections(jd_body: str) -> dict[str, str]:
+    if not jd_body.strip():
+        return {}
+    sections: dict[str, list[str]] = {}
+    current_key: str | None = None
+    for raw_line in jd_body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        normalized_heading = _normalize_jd_body_heading(line)
+        if normalized_heading in _JD_BODY_TARGET_LABELS:
+            current_key = _JD_BODY_TARGET_LABELS[normalized_heading]
+            sections.setdefault(current_key, [])
+            continue
+        if normalized_heading in _JD_BODY_BOUNDARY_LABELS:
+            current_key = None
+            continue
+        if current_key is None:
+            continue
+        bullet = _to_canonical_bullet(line)
+        if bullet != "-":
+            sections[current_key].append(bullet)
+    return {
+        key: "\n".join(lines)
+        for key, lines in sections.items()
+        if lines
+    }
 
 
 def extract_company_from_detail(html: str) -> str:

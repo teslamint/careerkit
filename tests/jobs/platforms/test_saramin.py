@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from careerkit.jobs.adapters.platforms.saramin import (
     SaraminAdapter,
     SaraminCompanyInfo,
@@ -12,6 +14,7 @@ from careerkit.jobs.adapters.platforms.saramin import (
     extract_csn_from_html,
     extract_detail_fields,
     extract_jd_body,
+    extract_jd_body_sections,
     extract_position_from_detail,
     format_company_markdown,
     parse_search_html,
@@ -140,8 +143,27 @@ COMPANY_JSONLD_HTML = textwrap.dedent("""\
     }
     </script>
     </body>
-    </html>
+</html>
 """)
+
+JD_BODY_TARGET_ALIASES = (
+    "자격요건",
+    "자격 요건",
+    "지원자격",
+    "지원 자격",
+    "필수요건",
+    "필수 요건",
+    "우대사항",
+    "우대 사항",
+)
+
+JD_BODY_BOUNDARY_LABELS = (
+    "주요업무",
+    "근무조건",
+    "복리후생",
+    "전형절차",
+    "회사소개",
+)
 
 
 class TestParseSearchHtml:
@@ -286,6 +308,57 @@ class TestDetailPageParsing:
 
     def test_extract_jd_body_missing_returns_empty(self) -> None:
         assert extract_jd_body("<html></html>", "99999") == ""
+
+    def test_extract_jd_body_preserves_semantic_boundaries(self) -> None:
+        html = textwrap.dedent("""\
+            <script>
+                var detailContents_100 = {
+                    contents: 'PHA+4pagIOyekOqyqeyalOqxtDwvcD48dWw+PGxpPlB5dGhvbiDrsLHsl5Trk5wg6rCc67CcIOqyve2XmDwvbGk+PGxpPlNRTCDtmZzsmqkg64ql66ClPC9saT48L3VsPjxwPigxKSDsmrDrjIAg7IKs7ZWtPC9wPjxwPu2FjOyKpO2KuCDsvZTrk5wg7J6R7ISx6rK97ZeYPC9wPg==',
+                    mobile_contents_yn: ''
+                };
+            </script>
+        """)
+        body = extract_jd_body(html, "100")
+        assert body == "■ 자격요건\n- Python 백엔드 개발 경험\n- SQL 활용 능력\n(1) 우대 사항\n테스트 코드 작성경험"
+
+    @pytest.mark.parametrize("heading", JD_BODY_TARGET_ALIASES)
+    def test_extract_jd_body_sections_supports_all_target_aliases(self, heading: str) -> None:
+        body = textwrap.dedent(f"""\
+            {heading}
+            Python 백엔드 개발 경험
+            * 테스트 코드 작성 경험
+        """)
+        key = "우대사항" if "우대" in heading else "자격요건"
+        assert extract_jd_body_sections(body) == {
+            key: "- Python 백엔드 개발 경험\n- 테스트 코드 작성 경험",
+        }
+
+    @pytest.mark.parametrize("boundary_label", JD_BODY_BOUNDARY_LABELS)
+    def test_extract_jd_body_sections_stops_at_each_boundary_group(self, boundary_label: str) -> None:
+        body = textwrap.dedent(f"""\
+            ■ 자격요건
+            Python 백엔드 개발 경험
+            {boundary_label}
+            원격 근무 가능
+            (1) 우대 사항
+            • 테스트 코드 작성 경험
+            + Docker 운영 경험
+        """)
+        assert extract_jd_body_sections(body) == {
+            "자격요건": "- Python 백엔드 개발 경험",
+            "우대사항": "- 테스트 코드 작성 경험\n- Docker 운영 경험",
+        }
+
+    @pytest.mark.parametrize(
+        "body",
+        (
+            "",
+            "채용 상세가 없습니다",
+            "주요업무\nPython 백엔드 개발",
+        ),
+    )
+    def test_extract_jd_body_sections_returns_empty_without_target(self, body: str) -> None:
+        assert extract_jd_body_sections(body) == {}
 
 
 class TestSaraminAdapter:
