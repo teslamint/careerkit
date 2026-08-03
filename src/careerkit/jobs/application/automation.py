@@ -606,6 +606,7 @@ class JobsExtractionStage:
             extract_company_from_detail,
             extract_detail_fields,
             extract_jd_body,
+            extract_jd_body_sections,
             extract_position_from_detail,
         )
 
@@ -615,6 +616,7 @@ class JobsExtractionStage:
         position = _normalize_text(extract_position_from_detail(html)) or f"saramin-{job_id}"
         fields = extract_detail_fields(html)
         jd_body = extract_jd_body(html, job_id)
+        sections = extract_jd_body_sections(jd_body)
         experience = fields.get("경력", "") or fields.get("경력조건", "")
         location = fields.get("지역", "")
         introduction = ""
@@ -628,8 +630,12 @@ class JobsExtractionStage:
             introduction = "\n".join(parts)
         else:
             introduction = jd_body
-        requirements = fields.get("자격요건", "")
-        preferred = fields.get("우대사항", "")
+        requirements = _canonicalize_saramin_requirements(
+            fields.get("자격요건", "") or sections.get("자격요건", "")
+        )
+        preferred = _canonicalize_saramin_requirements(
+            fields.get("우대사항", "") or sections.get("우대사항", "")
+        )
         benefits_parts = []
         for key in ("급여제도", "선물", "교육/생활", "근무 환경", "조직문화", "리프레시"):
             if key in fields:
@@ -1042,6 +1048,22 @@ def _format_groupby_company_context(
 
 def _normalize_canonical_bullets(text: str) -> str:
     return re.sub(r"(?m)^(?P<indent>\s*)•\s*(?P<text>.*\S)\s*$", r"\g<indent>- \g<text>", text)
+
+
+def _canonicalize_saramin_requirements(text: str) -> str:
+    normalized = _normalize_canonical_bullets(text).strip()
+    if not normalized or normalized == "정보 없음":
+        return normalized
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    canonical_lines = []
+    for line in lines:
+        if re.match(r"^[-*+•◦]\s*", line):
+            canonical_lines.append(line)
+        else:
+            canonical_lines.append(f"- {line}")
+    return "\n".join(canonical_lines)
 
 
 def _format_jd_markdown(

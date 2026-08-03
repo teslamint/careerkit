@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
+import textwrap
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Sequence
+
+import pytest
 
 from careerkit.jobs import cli
 from careerkit.jobs.adapters.screening.cli_provider import FakeProvider
@@ -318,6 +322,58 @@ def _groupby_payload(*, task: str, qualification: str, preferred: str, brief_int
                 "serviceAreas": ["SaaS", "Data"],
             },
         },
+    }
+
+
+def _saramin_detail_html(
+    job_id: str,
+    *,
+    intro: str = "플랫폼 소개 문단",
+    detail_requirements: str = "",
+    detail_preferred: str = "",
+    jd_body: str = "",
+) -> str:
+    encoded_body = base64.b64encode(jd_body.encode("utf-8")).decode("ascii")
+    return textwrap.dedent(f"""\
+        <html>
+        <head>
+            <title>[마감전] Backend Engineer (D-3) - 사람인</title>
+            <meta name="description" content="GoldenCo, Backend Engineer, 경력:경력 3~7년, 학력:무관">
+        </head>
+        <body>
+            <span class="corp_name">GoldenCo</span>
+            <dl>
+                <dt class="tit">지역</dt>
+                <dd class="desc">서울</dd>
+                <dt class="tit">경력</dt>
+                <dd class="desc">경력 3~7년</dd>
+                <dt class="tit">근무형태</dt>
+                <dd class="desc">정규직</dd>
+                <dt class="tit">급여</dt>
+                <dd class="desc">면접 후 결정</dd>
+                <dt class="tit">자격요건</dt>
+                <dd class="desc">{detail_requirements}</dd>
+                <dt class="tit">우대사항</dt>
+                <dd class="desc">{detail_preferred}</dd>
+                <dt class="tit">급여제도</dt>
+                <dd class="desc">성과급</dd>
+            </dl>
+            <script>
+                var detailContents_{job_id} = {{
+                    contents: '{encoded_body}',
+                    mobile_contents_yn: ''
+                }};
+            </script>
+            <div>{intro}</div>
+        </body>
+        </html>
+    """)
+
+
+def _saramin_text_by_url(url: str, html: str) -> dict[str, str]:
+    job_id = url.rsplit("=", 1)[-1]
+    return {
+        f"https://m.saramin.co.kr/job-search/view?rec_idx={job_id}": html,
     }
 
 
@@ -970,6 +1026,315 @@ def test_jobs_extraction_stage_groupby_separates_company_context_and_task_sectio
         RequirementKind.PREFERRED,
     ]
     assert manifest.ambiguous_qualifications is False
+
+
+def test_saramin_extraction_renders_detail_field_manifest_rows(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616301"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616301",
+                    detail_requirements="<ul><li>Python 백엔드 개발 경험</li><li>SQL 활용 능력</li></ul>",
+                    detail_preferred="<p>테스트 코드 작성 경험</p><p>Docker 운영 경험</p>",
+                    jd_body="회사 소개\n안정적인 SaaS 운영",
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "자격 요건") == "- Python 백엔드 개발 경험\n- SQL 활용 능력"
+    assert _section_body(markdown, "우대사항") == "- 테스트 코드 작성 경험\n- Docker 운영 경험"
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+        ("SQL 활용 능력", RequirementKind.REQUIRED),
+        ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
+        ("Docker 운영 경험", RequirementKind.PREFERRED),
+    ]
+
+
+def test_saramin_extraction_canonicalizes_mixed_detail_requirement_lines(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616307"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616307",
+                    detail_requirements="<ul><li>Python 백엔드 개발 경험</li></ul><p>SQL 활용 능력</p><br>문제 해결 능력",
+                    jd_body="회사 소개\n안정적인 SaaS 운영",
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "자격 요건") == (
+        "- Python 백엔드 개발 경험\n- SQL 활용 능력\n- 문제 해결 능력"
+    )
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+        ("SQL 활용 능력", RequirementKind.REQUIRED),
+        ("문제 해결 능력", RequirementKind.REQUIRED),
+    ]
+
+
+@pytest.mark.parametrize(
+    (
+        "detail_requirements",
+        "detail_preferred",
+        "jd_body",
+        "expected_requirements",
+        "expected_preferred",
+        "expected_manifest",
+    ),
+    [
+        (
+            "",
+            "<p>Docker 운영 경험</p>",
+            "자격요건\nPython 백엔드 개발 경험\nSQL 활용 능력",
+            "- Python 백엔드 개발 경험\n- SQL 활용 능력",
+            "- Docker 운영 경험",
+            [
+                ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+                ("SQL 활용 능력", RequirementKind.REQUIRED),
+                ("Docker 운영 경험", RequirementKind.PREFERRED),
+            ],
+        ),
+        (
+            "<ul><li>Python 백엔드 개발 경험</li></ul>",
+            "",
+            "우대사항\n테스트 코드 작성 경험\nDocker 운영 경험",
+            "- Python 백엔드 개발 경험",
+            "- 테스트 코드 작성 경험\n- Docker 운영 경험",
+            [
+                ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+                ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
+                ("Docker 운영 경험", RequirementKind.PREFERRED),
+            ],
+        ),
+    ],
+)
+def test_saramin_extraction_uses_body_sections_per_missing_field(
+    tmp_path: Path,
+    detail_requirements: str,
+    detail_preferred: str,
+    jd_body: str,
+    expected_requirements: str,
+    expected_preferred: str,
+    expected_manifest: list[tuple[str, RequirementKind]],
+) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616302"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616302",
+                    detail_requirements=detail_requirements,
+                    detail_preferred=detail_preferred,
+                    jd_body=jd_body,
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "자격 요건") == expected_requirements
+    assert _section_body(markdown, "우대사항") == expected_preferred
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == expected_manifest
+
+
+@pytest.mark.parametrize(
+    ("detail_requirements", "detail_preferred", "jd_body", "expected_manifest"),
+    [
+        (
+            "<ul><li>상세 자격 우선</li></ul>",
+            "",
+            "자격요건\n본문 자격 대체 금지\n우대사항\n본문 우대 허용",
+            [
+                ("상세 자격 우선", RequirementKind.REQUIRED),
+                ("본문 우대 허용", RequirementKind.PREFERRED),
+            ],
+        ),
+        (
+            "",
+            "<p>상세 우대 우선</p>",
+            "자격요건\n본문 자격 허용\n우대사항\n본문 우대 대체 금지",
+            [
+                ("본문 자격 허용", RequirementKind.REQUIRED),
+                ("상세 우대 우선", RequirementKind.PREFERRED),
+            ],
+        ),
+    ],
+)
+def test_saramin_extraction_applies_field_precedence_per_section(
+    tmp_path: Path,
+    detail_requirements: str,
+    detail_preferred: str,
+    jd_body: str,
+    expected_manifest: list[tuple[str, RequirementKind]],
+) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616303"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616303",
+                    detail_requirements=detail_requirements,
+                    detail_preferred=detail_preferred,
+                    jd_body=jd_body,
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    manifest = extract_requirement_manifest(batch.records[0].jd_markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == expected_manifest
+
+
+def test_saramin_extraction_preserves_intro_content_with_semantic_boundaries(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616304"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616304",
+                    detail_requirements="",
+                    detail_preferred="",
+                    jd_body=textwrap.dedent("""\
+                        회사 소개
+                        안정적인 SaaS 운영과 검색 API 제공 경험을 바탕으로 팀 협업과 서비스 안정성을 함께 높이는 포지션입니다.
+                        자격요건
+                        Python 백엔드 개발 경험
+                        SQL 활용 능력
+                        우대사항
+                        테스트 코드 작성 경험
+                        복리후생
+                        원격 근무 가능
+                    """),
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "포지션 소개") == (
+        "회사 소개\n안정적인 SaaS 운영과 검색 API 제공 경험을 바탕으로 팀 협업과 서비스 안정성을 함께 높이는 포지션입니다.\n자격요건\nPython 백엔드 개발 경험\nSQL 활용 능력\n우대사항\n"
+        "테스트 코드 작성 경험\n복리후생\n원격 근무 가능"
+    )
+    assert _section_body(markdown, "자격 요건") == "- Python 백엔드 개발 경험\n- SQL 활용 능력"
+    assert _section_body(markdown, "우대사항") == "- 테스트 코드 작성 경험"
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
+        ("SQL 활용 능력", RequirementKind.REQUIRED),
+        ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
+    ]
+
+
+def test_saramin_extraction_handles_missing_requirement_sources(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616305"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616305",
+                    detail_requirements="",
+                    detail_preferred="",
+                    jd_body="주요업무\n백엔드 API 개발",
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "자격 요건") == "정보 없음"
+    assert _section_body(markdown, "우대사항") == "정보 없음"
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert manifest.parents == ()
+    assert manifest.ambiguous_qualifications is False
+
+
+def test_saramin_extraction_flows_through_extract_with_manifest_boundaries(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616306"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url=_saramin_text_by_url(
+                url,
+                _saramin_detail_html(
+                    "54616306",
+                    detail_requirements="<ul><li>상세 자격 우선</li></ul>",
+                    detail_preferred="",
+                    jd_body=textwrap.dedent("""\
+                        회사 소개
+                        검색 플랫폼 운영
+                        우대사항
+                        본문 우대 보강
+                        자격요건
+                        본문 자격 대체 금지
+                    """),
+                ),
+            )
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert "회사 소개\n검색 플랫폼 운영" in _section_body(markdown, "포지션 소개")
+
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("상세 자격 우선", RequirementKind.REQUIRED),
+        ("본문 우대 보강", RequirementKind.PREFERRED),
+    ]
 
 
 def test_groupby_extraction_preserves_startup_metadata(tmp_path: Path) -> None:
