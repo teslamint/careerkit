@@ -127,6 +127,9 @@ def parse_match_table(markdown: str) -> tuple[list[MatchRow], str]:
             )
         )
 
+    if not rows:
+        return [], "매칭 표 행 없음"
+
     return rows, ""
 
 

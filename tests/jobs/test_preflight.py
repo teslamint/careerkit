@@ -9,7 +9,14 @@ from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
 from careerkit.jobs.application.config import SearchConfigService
 from careerkit.jobs.application.preflight import WorkspacePreflightService
-from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus, ScreeningVerdict
+from careerkit.jobs.domain.model import (
+    ApplicationEvent,
+    ApplicationStatus,
+    JobKey,
+    JobRecord,
+    PostingStatus,
+    ScreeningVerdict,
+)
 
 
 LEGACY_RAW = {
@@ -199,3 +206,89 @@ def test_storage_preflight_reports_malformed_manifest_per_record(tmp_path: Path)
         for item in result.findings
     )
     assert all("private body" not in item.message for item in result.findings)
+
+
+
+
+def test_storage_preflight_aggregates_application_timestamp_categories(tmp_path: Path) -> None:
+    records_root = tmp_path / "jd" / "records"
+    repository = JDRecordRepository(records_root)
+    repository.create(
+        JobRecord("wanted", "absent", "Acme", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    repository.create(
+        JobRecord(
+            "wanted",
+            "aware",
+            "Aware",
+            "Backend",
+            application_status=ApplicationStatus.APPLIED,
+            application_status_updated_at="2026-07-14T03:00:00+09:00",
+            application_history=(
+                ApplicationEvent(
+                    status=ApplicationStatus.APPLIED,
+                    occurred_at="2026-07-14T03:00:00+09:00",
+                    note=None,
+                ),
+            ),
+        ),
+        jd_markdown="# JD\n",
+    )
+    repository.create(
+        JobRecord(
+            "wanted",
+            "naive",
+            "Naive",
+            "Backend",
+            application_status=ApplicationStatus.APPLIED,
+            application_status_updated_at="2026-07-14T03:00:00",
+            application_history=(
+                ApplicationEvent(
+                    status=ApplicationStatus.APPLIED,
+                    occurred_at="2026-07-14T03:00:00",
+                    note=None,
+                ),
+            ),
+        ),
+        jd_markdown="# JD\n",
+    )
+    repository.create(
+        JobRecord(
+            "wanted",
+            "invalid",
+            "Invalid",
+            "Backend",
+            application_status=ApplicationStatus.APPLIED,
+        ),
+        jd_markdown="# JD\n",
+    )
+    invalid_manifest = records_root / "wanted" / "invalid" / "record.json"
+    invalid_payload = json.loads(invalid_manifest.read_text(encoding="utf-8"))
+    invalid_payload["schema_version"] = 1
+    invalid_payload["record"]["schema_version"] = 1
+    invalid_payload["record"]["application_status_updated_at"] = "not-a-timestamp"
+    invalid_payload["record"].pop("application_history", None)
+    invalid_manifest.write_text(
+        json.dumps(invalid_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "jd" / "config" / "search_config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("search:\n  role: backend\n", encoding="utf-8")
+    service = WorkspacePreflightService(
+        config_service=_config_service(config_path),
+        repository=repository,
+        derived_root=tmp_path / "jd" / "derived",
+        temp_root=tmp_path / "tmp",
+    )
+
+    result = service.preflight_storage()
+
+    assert result.ready is True
+    assert result.application_timestamp_categories == {
+        "absent": 1,
+        "aware": 1,
+        "invalid": 1,
+        "naive": 1,
+    }

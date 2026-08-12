@@ -17,7 +17,7 @@ careerkit
 │   ├── domain              # record identity, statuses, verdict rules
 │   ├── application         # search, automation, screening, migration
 │   ├── adapters            # platforms, storage, config, external tools
-│   ├── console             # loopback-only read-only review UI
+│   ├── console             # loopback-only review UI and controlled status writes
 │   └── cli.py              # career-jobs composition root
 └── workspace.py            # proven cross-product workspace discovery only
 ```
@@ -78,13 +78,14 @@ Use `uv run <command>` in a source checkout; installed wheels invoke the command
 | Jobs | `career-jobs storage preflight` | metadata-only corpus readiness proof |
 | Jobs | `career-jobs index rebuild`, `summary rebuild` | rebuild derived views |
 | Jobs | `career-jobs company validate` | validate human-maintained company information |
-| Jobs | `career-jobs console serve` | serve loopback-only read-only review UI |
+| Jobs | `career-jobs console serve` | serve loopback-only review UI with application status writes |
 | Jobs | `career-jobs config check|preview|apply` | inspect or explicitly migrate config |
+| Jobs | `career-jobs semantic-eval capture|run|compare` | private semantic-eval queue, score, and comparison artifacts |
 
 Exit status contract:
 
-- `0`: command completed or a read-only check is ready.
-- `2`: invalid input, rejected/required migration, missing capability, or failed readiness check.
+- `0`: command completed or a read-only check is ready. Semantic eval `run` and `compare` return `0` only for `pass`.
+- `2`: invalid input, rejected/required migration, missing capability, failed readiness check, or semantic eval states `fail`, `insufficient_data`, and `unavailable`.
 - Diagnostics go to stderr. Stable JSON is provided only where `--json` appears in help and a checked-in
   consumer or acceptance test owns the schema; JSON must contain metadata, never private document bodies.
 
@@ -125,8 +126,8 @@ Exit status contract:
 - Screening orchestration: `src/careerkit/jobs/application/screening.py`.
 - Provider/process boundary: `src/careerkit/jobs/adapters/screening/`.
 - Local review server/assets: `src/careerkit/jobs/console/`.
-- Preserve explicit candidate-context consent, redaction, loopback binding, Host validation, CSP,
-  read-only HTTP behavior, and safe text rendering.
+- Preserve explicit candidate-context consent, redaction, loopback binding, Host validation, exact
+  Origin checks on writes, CSP, narrow PATCH-only status writes, and safe text rendering.
 
 ## Cutover rules
 
@@ -136,3 +137,28 @@ Legacy deletion is blocked until tracked and external callers are dispositioned,
 checks pass, a legacy-free clean export passes, and distribution/privacy/equivalence gates are green.
 Historical documents under `docs/plans/`, `docs/research/`, and `docs/superpowers/` are evidence, not active
 operator instructions.
+
+
+## Semantic eval operations
+
+Semantic eval artifacts stay private. Use only workspace-private paths or a temporary root such as `/private/tmp`.
+The writer rejects tracked paths and existing targets. Publish a new file instead of overwriting a report.
+
+Manual queue-to-gold promotion:
+
+1. Merge ordered source queues.
+2. Deduplicate by normalized title.
+3. Review title families together.
+4. Assign final labels and authoritative splits.
+5. Seal the canonical lock digest.
+
+Semantic eval states:
+
+- `pass`: the requested gate passed.
+- `fail`: the safety or comparison gate failed.
+- `insufficient_data`: the sample is too small.
+- `unavailable`: the scorer or provenance is unavailable.
+
+`capture` publishes a private unlabeled queue.
+`run` publishes one immutable score report.
+`compare` optionally publishes one immutable comparison report.

@@ -36,6 +36,11 @@ _VERDICT_LABELS = {
     ScreeningVerdict.NOT_RECOMMENDED: "지원 비추천",
 }
 
+_EXTRACTION_FAILURE_MESSAGE = "job extraction failed"
+_SCREENING_FAILURE_MESSAGE = "screening failed"
+_COMPANY_INFO_FAILURE_MESSAGE = "company info unavailable"
+_COMPANY_INFO_FAILURE_CODE = "company_info_failed"
+
 
 def _safe_error_message(exc: Exception) -> str:
     """Strip filesystem paths from an exception message before it reaches the extension."""
@@ -157,24 +162,40 @@ def handle_get_company_info(
 ) -> dict[str, Any]:
     key = _resolve_key(msg)
     if key is None:
-        return {"status": "ok", "data": None}
+        return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}
     try:
         stored = repository.get(key)
     except JobRecordNotFound:
-        return {"status": "ok", "data": None}
+        return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}
     company = stored.record.company
     if not company:
-        return {"status": "ok", "data": None}
-    path = company_info_service.find_matching_file(company)
-    if path is None:
-        return {"status": "ok", "data": None}
+        return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}
+    lookup = company_info_service.inspect(company)
+    if lookup.status == "missing":
+        return {
+            "status": "ok",
+            "data": {
+                "status": "warning",
+                "warning_code": "missing",
+                "completeness": None,
+                "company_info_markdown": None,
+            },
+        }
+    if lookup.status not in {"ready", "incomplete"} or lookup.file_path is None or lookup.validation is None:
+        return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}
     try:
-        markdown = path.read_text(encoding="utf-8")
+        markdown = lookup.file_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return {"status": "ok", "data": None}
-    if len(json.dumps({"company_info_markdown": markdown}, ensure_ascii=False).encode("utf-8")) > _MAX_RESPONSE_BYTES:
-        return {"status": "ok", "data": None}
-    return {"status": "ok", "data": {"company_info_markdown": markdown}}
+        return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}
+    data = {
+        "status": "ready" if lookup.status == "ready" else "warning",
+        "warning_code": None if lookup.status == "ready" else "below_threshold",
+        "completeness": lookup.validation.completeness_score,
+        "company_info_markdown": markdown,
+    }
+    if len(json.dumps(data, ensure_ascii=False).encode("utf-8")) > _MAX_RESPONSE_BYTES:
+        return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}
+    return {"status": "ok", "data": data}
 
 
 _MAX_IN_FLIGHT = 10
@@ -187,35 +208,20 @@ def handle_rescreen(
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
-    key = _resolve_key(msg)
-    if key is None:
-        return {"status": "error", "message": "unrecognized or unsupported job URL"}
-
-    url = msg.get("url")
-
-    stored = repository.find(key)
-    if stored is None:
-        return {"status": "error", "message": "record not found — collect first"}
-
-    if in_flight is not None and in_flight_lock is not None:
-        with in_flight_lock:
-            if url in in_flight:
-                return {"status": "error", "message": "already queued"}
-            if len(in_flight) >= _MAX_IN_FLIGHT:
-                return {"status": "error", "message": "queue full"}
-
-    tracking_id = str(uuid.uuid4())
-    if in_flight is not None and in_flight_lock is not None:
-        with in_flight_lock:
-            in_flight.add(url)
-    work_queue.put((url, tracking_id, True))
-    return {"status": "accepted", "action": "rescreen", "tracking_id": tracking_id}
+    response, work_item = _prepare_rescreen(msg, repository, in_flight, in_flight_lock)
+    if work_item is not None:
+        url = work_item[0]
+        if in_flight is not None and in_flight_lock is not None:
+            with in_flight_lock:
+                in_flight.add(url)
+        work_queue.put(work_item)
+    return response
 
 
 def handle_collect(
     msg: dict[str, Any],
     repository: JDRecordRepository,
-    work_queue: "queue.Queue[tuple[str, str]]",
+    work_queue: "queue.Queue[tuple[str, str, bool]]",
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
@@ -224,36 +230,14 @@ def handle_collect(
     scripts (`service-worker.js` reads `response.tracking_id` top-level,
     `panel.js` checks `response.status === "duplicate"`, `badge.js` renders
     `response.data` as a record dict via the same path as `lookup`)."""
-    key = _resolve_key(msg)
-    if key is None:
-        return {"status": "error", "message": "unrecognized or unsupported job URL"}
-
-    url = msg.get("url")
-
-    if in_flight is not None and in_flight_lock is not None:
-        with in_flight_lock:
-            if url in in_flight:
-                return {"status": "error", "message": "already queued"}
-            if len(in_flight) >= _MAX_IN_FLIGHT:
-                return {"status": "error", "message": "queue full"}
-
-    stored = repository.find(key)
-    if stored is not None:
-        if stored.record.screening_verdict is not None:
-            return {"status": "duplicate", "action": "collect", "data": stored.record.to_dict()}
-        tracking_id = str(uuid.uuid4())
+    response, work_item = _prepare_collect(msg, repository, in_flight, in_flight_lock)
+    if work_item is not None:
+        url = work_item[0]
         if in_flight is not None and in_flight_lock is not None:
             with in_flight_lock:
                 in_flight.add(url)
-        work_queue.put((url, tracking_id, True))
-        return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}
-
-    tracking_id = str(uuid.uuid4())
-    if in_flight is not None and in_flight_lock is not None:
-        with in_flight_lock:
-            in_flight.add(url)
-    work_queue.put((url, tracking_id, False))
-    return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}
+        work_queue.put(work_item)
+    return response
 
 
 _HANDLERS = {
@@ -264,6 +248,66 @@ _HANDLERS = {
 
 
 _worker_context: dict[str, Any] | None = None
+
+
+def _prepare_collect(
+    msg: dict[str, Any],
+    repository: JDRecordRepository,
+    in_flight: set[str] | None = None,
+    in_flight_lock: threading.Lock | None = None,
+) -> tuple[dict[str, Any], tuple[str, str, bool] | None]:
+    key = _resolve_key(msg)
+    if key is None:
+        return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
+
+    url = msg.get("url")
+    if not isinstance(url, str):
+        return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
+
+    if in_flight is not None and in_flight_lock is not None:
+        with in_flight_lock:
+            if url in in_flight:
+                return {"status": "error", "message": "already queued"}, None
+            if len(in_flight) >= _MAX_IN_FLIGHT:
+                return {"status": "error", "message": "queue full"}, None
+
+    stored = repository.find(key)
+    if stored is not None:
+        if stored.record.screening_verdict is not None:
+            return {"status": "duplicate", "action": "collect", "data": stored.record.to_dict()}, None
+        tracking_id = str(uuid.uuid4())
+        return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, (url, tracking_id, True)
+
+    tracking_id = str(uuid.uuid4())
+    return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, (url, tracking_id, False)
+
+
+def _prepare_rescreen(
+    msg: dict[str, Any],
+    repository: JDRecordRepository,
+    in_flight: set[str] | None = None,
+    in_flight_lock: threading.Lock | None = None,
+) -> tuple[dict[str, Any], tuple[str, str, bool] | None]:
+    key = _resolve_key(msg)
+    if key is None:
+        return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
+
+    url = msg.get("url")
+    if not isinstance(url, str):
+        return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
+    stored = repository.find(key)
+    if stored is None:
+        return {"status": "error", "message": "record not found — collect first"}, None
+
+    if in_flight is not None and in_flight_lock is not None:
+        with in_flight_lock:
+            if url in in_flight:
+                return {"status": "error", "message": "already queued"}, None
+            if len(in_flight) >= _MAX_IN_FLIGHT:
+                return {"status": "error", "message": "queue full"}, None
+
+    tracking_id = str(uuid.uuid4())
+    return {"status": "accepted", "action": "rescreen", "tracking_id": tracking_id}, (url, tracking_id, True)
 
 
 def _ensure_worker_alive() -> None:
@@ -287,7 +331,7 @@ def _ensure_worker_alive() -> None:
             break
 
     for item in orphaned:
-        url, tracking_id = item[0], item[1]
+        tracking_id = item[1]
         with stdout_lock:
             write_message(
                 stdout,
@@ -297,7 +341,9 @@ def _ensure_worker_alive() -> None:
 
     in_flight: set[str] | None = ctx.get("in_flight")
     if in_flight is not None:
-        in_flight_lock: threading.Lock = ctx.get("in_flight_lock")
+        in_flight_lock = ctx.get("in_flight_lock")
+        if in_flight_lock is None:
+            return
         with in_flight_lock:
             in_flight.clear()
 
@@ -313,27 +359,59 @@ def _ensure_worker_alive() -> None:
 def dispatch(
     msg: dict[str, Any],
     repository: JDRecordRepository,
-    work_queue: "queue.Queue[tuple[str, str]] | None" = None,
+    work_queue: "queue.Queue[tuple[str, str, bool]] | None" = None,
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
     company_info_service: CompanyInfoService | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], tuple[str, str, bool] | None]:
     action = msg.get("action")
+    if not isinstance(action, str):
+        return {"status": "error", "message": "unknown action: None"}, None
     if action == "get_company_info":
         if company_info_service is None:
-            return {"status": "ok", "data": None}
-        return handle_get_company_info(msg, repository, company_info_service)
+            return {"status": "error", "message": _COMPANY_INFO_FAILURE_MESSAGE}, None
+        return handle_get_company_info(msg, repository, company_info_service), None
     if action in ("collect", "rescreen"):
         if work_queue is None:
-            return {"status": "error", "message": f"{action} action unavailable: queue not configured"}
+            return {"status": "error", "message": f"{action} action unavailable: queue not configured"}, None
         _ensure_worker_alive()
         if action == "rescreen":
-            return handle_rescreen(msg, repository, work_queue, in_flight, in_flight_lock)
-        return handle_collect(msg, repository, work_queue, in_flight, in_flight_lock)
+            return _prepare_rescreen(msg, repository, in_flight, in_flight_lock)
+        return _prepare_collect(msg, repository, in_flight, in_flight_lock)
     handler = _HANDLERS.get(action)
     if handler is None:
-        return {"status": "error", "message": f"unknown action: {action!r}"}
-    return handler(msg, repository)
+        return {"status": "error", "message": f"unknown action: {action!r}"}, None
+    return handler(msg, repository), None
+
+
+def _screening_progress(
+    tracking_id: str,
+    *,
+    stage: str,
+    state: str,
+) -> dict[str, str]:
+    return {
+        "type": "screening_progress",
+        "tracking_id": tracking_id,
+        "stage": stage,
+        "state": state,
+    }
+
+
+def _completion_company_info(result: dict[str, object | None]) -> dict[str, object | None]:
+    return {
+        "status": result.get("status"),
+        "attempted": result.get("attempted"),
+        "persisted": result.get("persisted"),
+        "completeness": result.get("completeness"),
+        "warning_code": result.get("warning_code"),
+    }
+
+
+def _failure_message_from_item(failure: dict[str, Any] | None, *, default: str) -> str:
+    if failure is not None and failure.get("error_code") == _COMPANY_INFO_FAILURE_CODE:
+        return _COMPANY_INFO_FAILURE_MESSAGE
+    return default
 
 
 def run_screening_worker(
@@ -366,7 +444,7 @@ def run_screening_worker(
             batch = extraction_stage.extract([url], dry_run=False, screening_only=screening_only)
             if not batch.records:
                 failures = batch.metadata.get("failures") or []
-                error = failures[0]["error"] if failures else "extraction failed"
+                error = _failure_message_from_item(failures[0] if failures else None, default=_EXTRACTION_FAILURE_MESSAGE)
                 with stdout_lock:
                     write_message(
                         stdout,
@@ -374,10 +452,16 @@ def run_screening_worker(
                     )
                 continue
 
-            screening_result = screening_stage.screen(batch, dry_run=False, llm_timeout=180)
-
             key = batch.records[0].record.key
             item_id = f"{key.platform}:{key.job_id}"
+            company_contexts = getattr(batch, "company_contexts", {}) or {}
+            with stdout_lock:
+                write_message(stdout, _screening_progress(tracking_id, stage="company_info", state="checking"))
+                if item_id in company_contexts:
+                    write_message(stdout, _screening_progress(tracking_id, stage="company_info", state="enriching"))
+                write_message(stdout, _screening_progress(tracking_id, stage="screening", state="running"))
+
+            screening_result = screening_stage.screen(batch, dry_run=False, llm_timeout=180)
 
             screening_failures = screening_result.metadata.get("failures") or []
             record_failure = next(
@@ -388,7 +472,11 @@ def run_screening_worker(
                 with stdout_lock:
                     write_message(
                         stdout,
-                        {"type": "screening_failed", "tracking_id": tracking_id, "message": record_failure["error"]},
+                        {
+                            "type": "screening_failed",
+                            "tracking_id": tracking_id,
+                            "message": _failure_message_from_item(record_failure, default=_SCREENING_FAILURE_MESSAGE),
+                        },
                     )
                 continue
 
@@ -398,22 +486,34 @@ def run_screening_worker(
                 with stdout_lock:
                     write_message(
                         stdout,
-                        {"type": "screening_failed", "tracking_id": tracking_id, "message": "screening produced no verdict"},
+                        {"type": "screening_failed", "tracking_id": tracking_id, "message": _SCREENING_FAILURE_MESSAGE},
+                    )
+                continue
+
+            if stored is None:
+                with stdout_lock:
+                    write_message(
+                        stdout,
+                        {"type": "screening_failed", "tracking_id": tracking_id, "message": _SCREENING_FAILURE_MESSAGE},
                     )
                 continue
 
             data = stored.record.to_dict()
             data["verdict_label"] = _VERDICT_LABELS.get(verdict)
+            company_info_results = screening_result.metadata.get("company_info_results") or {}
+            company_info_result = company_info_results.get(item_id)
+            if isinstance(company_info_result, dict):
+                data["company_info"] = _completion_company_info(company_info_result)
             with stdout_lock:
                 write_message(
                     stdout,
                     {"type": "screening_complete", "tracking_id": tracking_id, "data": data},
                 )
-        except Exception as exc:  # noqa: BLE001 - report to extension, keep worker alive
+        except Exception:  # noqa: BLE001 - report to extension, keep worker alive
             with stdout_lock:
                 write_message(
                     stdout,
-                    {"type": "screening_failed", "tracking_id": tracking_id, "message": _safe_error_message(exc)},
+                    {"type": "screening_failed", "tracking_id": tracking_id, "message": _SCREENING_FAILURE_MESSAGE},
                 )
         finally:
             if in_flight is not None and in_flight_lock is not None:
@@ -427,7 +527,7 @@ def serve(
     stdout: BinaryIO,
     repository: JDRecordRepository,
     *,
-    work_queue: "queue.Queue[tuple[str, str]] | None" = None,
+    work_queue: "queue.Queue[tuple[str, str, bool]] | None" = None,
     stdout_lock: threading.Lock | None = None,
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
@@ -444,38 +544,61 @@ def serve(
             continue
 
         if msg is None:
+            if work_queue is not None:
+                work_queue.join()
             break
 
         request_id = msg.get("request_id") if isinstance(msg, dict) else None
 
         try:
-            response = dispatch(msg, repository, work_queue, in_flight, in_flight_lock, company_info_service=company_info_service)
+            response, work_item = dispatch(
+                msg,
+                repository,
+                work_queue,
+                in_flight,
+                in_flight_lock,
+                company_info_service=company_info_service,
+            )
         except Exception as exc:  # noqa: BLE001 - report to extension, keep host alive
             response = {"status": "error", "message": _safe_error_message(exc)}
+            work_item = None
 
         if request_id is not None:
             response["request_id"] = request_id
         with lock:
             write_message(stdout, response)
+        if work_item is not None and work_queue is not None:
+            if in_flight is not None and in_flight_lock is not None:
+                with in_flight_lock:
+                    in_flight.add(work_item[0])
+            work_queue.put(work_item)
 
-
-def main() -> None:
+def serve_with_worker(
+    stdin: BinaryIO,
+    stdout: BinaryIO,
+    repository: JDRecordRepository,
+    *,
+    extraction_stage: JobsExtractionStage,
+    screening_stage: JobsScreeningStage,
+    company_info_service: CompanyInfoService | None = None,
+) -> None:
     global _worker_context
 
-    workspace = resolve_workspace()
-    repository = JDRecordRepository(workspace.jobs_records_dir)
-    work_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+    work_queue: "queue.Queue[tuple[str, str, bool]]" = queue.Queue()
     stdout_lock = threading.Lock()
     in_flight: set[str] = set()
     in_flight_lock = threading.Lock()
 
-    extraction_stage = JobsExtractionStage(repository=repository)
-    screening_stage = JobsScreeningStage(
-        workspace=workspace,
-        repository=repository,
-        candidate_context=load_candidate_context(workspace),
+    worker_args = (
+        work_queue,
+        repository,
+        extraction_stage,
+        screening_stage,
+        stdout,
+        stdout_lock,
+        in_flight,
+        in_flight_lock,
     )
-    worker_args = (work_queue, repository, extraction_stage, screening_stage, sys.stdout.buffer, stdout_lock, in_flight, in_flight_lock)
     worker = threading.Thread(
         target=run_screening_worker,
         args=worker_args,
@@ -483,19 +606,44 @@ def main() -> None:
     )
     worker.start()
 
+    previous_context = _worker_context
     _worker_context = {
         "worker": worker,
         "worker_args": worker_args,
         "in_flight": in_flight,
         "in_flight_lock": in_flight_lock,
     }
+    try:
+        serve(
+            stdin,
+            stdout,
+            repository,
+            work_queue=work_queue,
+            stdout_lock=stdout_lock,
+            in_flight=in_flight,
+            in_flight_lock=in_flight_lock,
+            company_info_service=company_info_service,
+        )
+    finally:
+        _worker_context = previous_context
 
+
+def main() -> None:
+    workspace = resolve_workspace()
+    repository = JDRecordRepository(workspace.jobs_records_dir)
+    extraction_stage = JobsExtractionStage(repository=repository)
+    screening_stage = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        candidate_context=load_candidate_context(workspace),
+    )
     company_info_service = CompanyInfoService(workspace=workspace)
-
-    serve(
-        sys.stdin.buffer, sys.stdout.buffer, repository,
-        work_queue=work_queue, stdout_lock=stdout_lock,
-        in_flight=in_flight, in_flight_lock=in_flight_lock,
+    serve_with_worker(
+        sys.stdin.buffer,
+        sys.stdout.buffer,
+        repository,
+        extraction_stage=extraction_stage,
+        screening_stage=screening_stage,
         company_info_service=company_info_service,
     )
 

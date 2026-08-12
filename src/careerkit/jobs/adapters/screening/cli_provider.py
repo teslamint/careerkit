@@ -306,16 +306,21 @@ def resolve_commands(environment: dict[str, str] | None = None) -> list[tuple[st
     claude_cmd = env.get("CLAUDE_SCREENING_CMD")
     codex_cmd = env.get("CODEX_SCREENING_CMD")
 
+    claude_model = env.get("CLAUDE_SCREENING_MODEL", "")
+    codex_model = env.get("CODEX_SCREENING_MODEL", "")
+
     if not claude_cmd:
         claude_bin = find_executable(
             "claude",
             [Path.home() / ".local" / "bin" / "claude", Path("/opt/homebrew/bin/claude")],
         )
-        claude_cmd = f"{claude_bin} --print" if claude_bin else None
+        model_flag = f" --model {claude_model}" if claude_model else ""
+        claude_cmd = f"{claude_bin} --print{model_flag}" if claude_bin else None
 
     if not codex_cmd:
         codex_bin = find_executable("codex", [Path("/opt/homebrew/bin/codex")])
-        codex_cmd = f"{codex_bin} exec" if codex_bin else None
+        model_flag = f" --model {codex_model}" if codex_model else ""
+        codex_cmd = f"{codex_bin} exec{model_flag}" if codex_bin else None
 
     providers: list[tuple[str, list[str]]] = []
     if claude_cmd:

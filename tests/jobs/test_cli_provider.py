@@ -1,12 +1,14 @@
 import json
 import subprocess
 import urllib.error
+from pathlib import Path
 
 import pytest
 
 from careerkit.jobs.adapters.screening import cli_provider
 from careerkit.jobs.adapters.screening.cli_provider import (
     CLIProvider,
+    resolve_commands,
     resolve_local_llm,
     run_local_llm,
 )
@@ -471,3 +473,70 @@ def test_run_local_llm_returns_content_and_token_count(
 
     assert content == "본문"
     assert tokens == 1234
+
+
+def test_resolve_commands_custom_cmd_ignores_model_env() -> None:
+    cmds = resolve_commands({
+        "PATH": "",
+        "CLAUDE_SCREENING_CMD": "/usr/bin/claude --print",
+        "CLAUDE_SCREENING_MODEL": "haiku",
+    })
+    claude_cmds = [c for c in cmds if c[0] == "claude"]
+    assert len(claude_cmds) == 1
+    assert claude_cmds[0] == ("claude", ["/usr/bin/claude", "--print"])
+
+
+def test_resolve_commands_applies_model_to_default_claude(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("#!/bin/sh\n")
+    fake_claude.chmod(0o755)
+    monkeypatch.setattr(
+        cli_provider,
+        "find_executable",
+        lambda name, extra_paths=None: str(fake_claude) if name == "claude" else None,
+    )
+    cmds = resolve_commands({
+        "CLAUDE_SCREENING_MODEL": "haiku",
+    })
+    assert len(cmds) >= 1
+    claude_cmd = cmds[0]
+    assert claude_cmd[0] == "claude"
+    assert claude_cmd[1][0] == str(fake_claude)
+    assert "--model" in claude_cmd[1]
+    assert "haiku" in claude_cmd[1]
+
+
+def test_resolve_commands_applies_codex_screening_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_codex = tmp_path / "codex"
+    fake_codex.write_text("#!/bin/sh\n")
+    fake_codex.chmod(0o755)
+    monkeypatch.setattr(
+        cli_provider,
+        "find_executable",
+        lambda name, extra_paths=None: str(fake_codex) if name == "codex" else None,
+    )
+    cmds = resolve_commands({
+        "CODEX_SCREENING_MODEL": "gpt-4.1-mini",
+    })
+    assert len(cmds) >= 1
+    codex_cmd = [c for c in cmds if c[0] == "codex"]
+    assert len(codex_cmd) == 1
+    assert codex_cmd[0][1][0] == str(fake_codex)
+    assert "--model" in codex_cmd[0][1]
+    assert "gpt-4.1-mini" in codex_cmd[0][1]
+
+
+def test_resolve_commands_no_model_env_uses_default() -> None:
+    cmds = resolve_commands({
+        "PATH": "",
+        "CLAUDE_SCREENING_CMD": "/usr/bin/claude --print",
+    })
+    claude_cmds = [c for c in cmds if c[0] == "claude"]
+    assert len(claude_cmds) == 1
+    assert "--model" not in " ".join(claude_cmds[0][1])

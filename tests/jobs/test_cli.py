@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,11 +19,20 @@ from careerkit.jobs.application.automation import (
     JobsScreeningStage,
     load_candidate_context,
 )
+from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.company_info import CompanyValidationSummary
 from careerkit.jobs.application.maintenance import CheckClosedResult
 from careerkit.jobs.application.pipeline import IngestResult, QueueStatusResult
 from careerkit.jobs.application.preflight import PreflightFinding, StoragePreflightResult
-from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus, ScreeningVerdict
+from careerkit.jobs.domain.model import (
+    ApplicationEvent,
+    ApplicationStatus,
+    JobKey,
+    JobRecord,
+    PostingStatus,
+    ScreeningVerdict,
+)
+from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
 from careerkit.workspace import WorkspacePaths
 
 
@@ -33,6 +42,10 @@ class FakeMaintenance:
     cleaned_preflights: list[Path] | None = None
     search_calls: list[tuple[tuple[str, ...] | None, int | None]] | None = None
     check_closed_calls: list[dict[str, object]] | None = None
+    semantic_eval_capture_calls: list[dict[str, object]] | None = None
+    semantic_eval_run_calls: list[dict[str, object]] | None = None
+    semantic_eval_compare_calls: list[dict[str, object]] | None = None
+    semantic_eval_run_error: Exception | None = None
 
     def relative_path(self, path: Path) -> str:
         return str(path)
@@ -98,7 +111,22 @@ class FakeMaintenance:
         )
 
     def storage_preflight(self):
-        return StoragePreflightResult(ready=True, record_count=1, screening_count=1, checked_keys=('wanted:1',), schema_version=1, isolated_output_root=Path('tmp/preflight'), findings=(PreflightFinding('ok', 'clear', 'wanted:1'),), status_counts={'records:total': 1})
+        return StoragePreflightResult(
+            ready=True,
+            record_count=1,
+            screening_count=1,
+            checked_keys=('wanted:1',),
+            schema_version=2,
+            isolated_output_root=Path('tmp/preflight'),
+            findings=(PreflightFinding('ok', 'clear', 'wanted:1'),),
+            status_counts={'records:total': 1},
+            application_timestamp_categories={
+                'absent': 1,
+                'aware': 2,
+                'invalid': 3,
+                'naive': 4,
+            },
+        )
 
     def cleanup_preflight(self, output_root: Path) -> None:
         if self.cleaned_preflights is None:
@@ -114,6 +142,66 @@ class FakeMaintenance:
     def rebuild_summary(self, *, output_path=None):
         from careerkit.jobs.application.maintenance import SummaryRebuildResult
         return SummaryRebuildResult(output_path=Path('private/jd/derived/screening-summary.md'), record_count=1)
+
+    def semantic_eval_capture(self, *, output_path: Path, seed: int | None = None):
+        if self.semantic_eval_capture_calls is None:
+            self.semantic_eval_capture_calls = []
+        self.semantic_eval_capture_calls.append({'output_path': output_path, 'seed': seed})
+        return SimpleNamespace(
+            output_path=output_path,
+            status='ok',
+            error_code=None,
+            aggregate={
+                'status': 'ok',
+                'error_code': None,
+                'counts': {'captured_cases': 1},
+                'capture_provenance': {'platforms': {'wanted': {'complete': True}}},
+            },
+            private_titles=('SENTINEL PRIVATE BACKEND TITLE',),
+            private_case_ids=('case-private-1',),
+        )
+
+    def semantic_eval_run(self, *, dataset_path: Path, output_path: Path):
+        if self.semantic_eval_run_error is not None:
+            raise self.semantic_eval_run_error
+        if self.semantic_eval_run_calls is None:
+            self.semantic_eval_run_calls = []
+        self.semantic_eval_run_calls.append({'dataset_path': dataset_path, 'output_path': output_path})
+        return SimpleNamespace(
+            output_path=output_path,
+            status='insufficient_data',
+            error_code='insufficient_data',
+            aggregate={
+                'status': 'insufficient_data',
+                'authorizes_production_change': False,
+                'counts': {'holdout_cases': 1},
+                'comparison': None,
+            },
+            private_titles=('SENTINEL PRIVATE BACKEND TITLE',),
+            private_case_ids=('case-private-1',),
+        )
+
+    def semantic_eval_compare(self, *, dataset_path: Path, incumbent_path: Path, candidate_path: Path, output_path: Path | None = None):
+        if self.semantic_eval_compare_calls is None:
+            self.semantic_eval_compare_calls = []
+        self.semantic_eval_compare_calls.append({
+            'dataset_path': dataset_path,
+            'incumbent_path': incumbent_path,
+            'candidate_path': candidate_path,
+            'output_path': output_path,
+        })
+        return SimpleNamespace(
+            output_path=output_path,
+            status='fail',
+            error_code='candidate_not_authorized',
+            aggregate={
+                'status': 'fail',
+                'authorizes_production_change': False,
+                'comparison': {'reason': 'candidate_not_authorized', 'candidate_gains': 0, 'candidate_losses': 0, 'mcnemar_p_value': 1.0},
+            },
+            private_titles=('SENTINEL PRIVATE BACKEND TITLE',),
+            private_case_ids=('case-private-1',),
+        )
 
     def company_validate(self, *, file_name=None, fix=False):
         return CompanyValidationSummary(
@@ -133,6 +221,9 @@ class FakeMaintenance:
 class FakePipeline:
     status_calls: list[dict[str, object]] | None = None
     classify_error: Exception | None = None
+    repository: JDRecordRepository = field(
+        default_factory=lambda: JDRecordRepository(Path('/tmp/fake-cli-records'))
+    )
 
     def ingest_url(self, url: str) -> IngestResult:
         return IngestResult(source=url, job_id='1', outcome='needs_manual', message='extract me')
@@ -142,14 +233,58 @@ class FakePipeline:
 
     def show_record(self, key: JobKey):
         from careerkit.jobs.adapters.storage.file_records import StoredJobMetadata
-        return StoredJobMetadata(record=JobRecord('wanted', '1', 'Acme', 'Backend', screening_verdict=ScreeningVerdict.HOLD), has_screening=True)
+        return StoredJobMetadata(
+            record=JobRecord(
+                'wanted',
+                '1',
+                'Acme',
+                'Backend',
+                screening_verdict=ScreeningVerdict.HOLD,
+                application_status=ApplicationStatus.INTERVIEW,
+                application_status_updated_at='2026-07-14T11:00:00+09:00',
+                application_history=(
+                    ApplicationEvent(
+                        status=ApplicationStatus.APPLIED,
+                        occurred_at='2026-07-13T09:00:00+09:00',
+                        note='지원서 제출',
+                    ),
+                    ApplicationEvent(
+                        status=ApplicationStatus.INTERVIEW,
+                        occurred_at='2026-07-14T11:00:00+09:00',
+                        note='1차 기술 면접',
+                    ),
+                ),
+            ),
+            has_screening=True,
+        )
 
     def set_record_status(self, key: JobKey, **kwargs):
         from careerkit.jobs.adapters.storage.file_records import StoredJobRecord
         if self.status_calls is None:
             self.status_calls = []
         self.status_calls.append(kwargs)
-        return StoredJobRecord(record=JobRecord('wanted', '1', 'Acme', 'Backend', application_status=ApplicationStatus.APPLIED, posting_status=PostingStatus.ACTIVE, application_status_updated_at='2026-07-14'), jd_markdown='# JD', screening_markdown=None)
+        note = cast(str | None, kwargs.get('application_note'))
+        occurred_at = cast(str | None, kwargs.get('application_status_updated_at')) or '2026-07-14T11:00:00+09:00'
+        return StoredJobRecord(
+            record=JobRecord(
+                'wanted',
+                '1',
+                'Acme',
+                'Backend',
+                application_status=ApplicationStatus.APPLIED,
+                posting_status=PostingStatus.ACTIVE,
+                application_status_updated_at=occurred_at,
+                application_history=(
+                    ApplicationEvent(
+                        status=ApplicationStatus.APPLIED,
+                        occurred_at=occurred_at,
+                        note=note,
+                    ),
+                ),
+            ),
+            jd_markdown='# JD',
+            screening_markdown=None,
+        )
 
     def set_record_verdict(self, key: JobKey, verdict: ScreeningVerdict):
         from careerkit.jobs.adapters.storage.file_records import StoredJobRecord
@@ -207,6 +342,12 @@ def test_cli_json_commands_dispatch_through_service_bundle(monkeypatch, capsys) 
     assert exit_code == 0
     assert payload['record_count'] == 1
     assert payload['finding_codes'] == ['ok']
+    assert payload['application_timestamp_categories'] == {
+        'absent': 1,
+        'aware': 2,
+        'invalid': 3,
+        'naive': 4,
+    }
     assert 'wanted:1' not in storage_output
     assert 'checked_keys' not in payload
     assert 'isolated_output_root' not in payload
@@ -217,6 +358,89 @@ def test_cli_json_commands_dispatch_through_service_bundle(monkeypatch, capsys) 
     assert exit_code == 0
     assert payload['output_path'] == 'private/jd/derived/screening-summary.md'
 
+
+
+
+
+def test_semantic_eval_parser_requires_integer_seed_and_exact_shapes() -> None:
+    parser = cli.build_parser()
+
+    capture = parser.parse_args(['semantic-eval', 'capture', '--output', 'private/jd/runtime/semantic-eval/queue.json', '--seed', '17', '--json'])
+    assert capture.command == 'semantic-eval'
+    assert capture.semantic_eval_command == 'capture'
+    assert capture.seed == 17
+
+    run = parser.parse_args(['semantic-eval', 'run', '--dataset', 'private/jd/evals/semantic-filter/gold.json', '--output', 'private/jd/evals/semantic-filter/reports/incumbent.json', '--json'])
+    assert run.semantic_eval_command == 'run'
+    assert run.dataset == Path('private/jd/evals/semantic-filter/gold.json')
+
+    compare = parser.parse_args(['semantic-eval', 'compare', '--dataset', 'private/jd/evals/semantic-filter/gold.json', '--incumbent', 'private/jd/evals/semantic-filter/reports/incumbent.json', '--candidate', 'private/jd/evals/semantic-filter/reports/candidate.json', '--output', 'private/jd/evals/semantic-filter/reports/compare.json', '--json'])
+    assert compare.semantic_eval_command == 'compare'
+    assert compare.output == Path('private/jd/evals/semantic-filter/reports/compare.json')
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(['semantic-eval', 'capture', '--output', 'private/jd/runtime/semantic-eval/queue.json', '--seed', 'nope', '--json'])
+
+
+def test_cli_semantic_eval_json_dispatches_stable_exit_codes_and_redacts_private_fields(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    maintenance = FakeMaintenance()
+    bundle = cli.ServiceBundle(maintenance=maintenance, pipeline=FakePipeline(), automation=FakeAutomation())
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['semantic-eval', 'capture', '--output', 'private/jd/runtime/semantic-eval/queue.json', '--json']) == 0
+    capture_payload = json.loads(capsys.readouterr().out)
+    assert capture_payload['command'] == 'semantic-eval capture'
+    assert capture_payload['status'] == 'ok'
+    assert capture_payload['error_code'] is None
+    assert 'SENTINEL PRIVATE BACKEND TITLE' not in json.dumps(capture_payload, ensure_ascii=False)
+    assert 'case-private-1' not in json.dumps(capture_payload, ensure_ascii=False)
+
+    assert cli.main(['semantic-eval', 'run', '--dataset', 'private/jd/evals/semantic-filter/gold.json', '--output', 'private/jd/evals/semantic-filter/reports/incumbent.json', '--json']) == 2
+    run_payload = json.loads(capsys.readouterr().out)
+    assert run_payload['status'] == 'insufficient_data'
+    assert run_payload['error_code'] == 'insufficient_data'
+    serialized = json.dumps(run_payload, ensure_ascii=False)
+    assert 'SENTINEL PRIVATE BACKEND TITLE' not in serialized
+    assert 'case-private-1' not in serialized
+
+    assert cli.main(['semantic-eval', 'compare', '--dataset', 'private/jd/evals/semantic-filter/gold.json', '--incumbent', 'private/jd/evals/semantic-filter/reports/incumbent.json', '--candidate', 'private/jd/evals/semantic-filter/reports/candidate.json', '--json']) == 2
+    compare_payload = json.loads(capsys.readouterr().out)
+    assert compare_payload['status'] == 'fail'
+    assert compare_payload['error_code'] == 'candidate_not_authorized'
+    assert 'comparison' in compare_payload
+    assert 'SENTINEL PRIVATE BACKEND TITLE' not in json.dumps(compare_payload, ensure_ascii=False)
+    assert 'case-private-1' not in json.dumps(compare_payload, ensure_ascii=False)
+
+
+def test_cli_semantic_eval_json_rejects_wrong_artifact_class_roots(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    maintenance = FakeMaintenance()
+    maintenance.semantic_eval_run_error = ValueError('semantic eval output path must stay inside the synthetic temp root')
+    bundle = cli.ServiceBundle(maintenance=maintenance, pipeline=FakePipeline(), automation=FakeAutomation())
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['semantic-eval', 'run', '--dataset', 'private/jd/evals/semantic-filter/gold.json', '--output', 'private/jd/derived/not-allowed.json', '--json']) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['status'] == 'error'
+    assert payload['error_code'] == 'unsafe_output_path'
+
+
+def test_cli_semantic_eval_json_returns_stable_error_codes_for_validation_failures(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    maintenance = FakeMaintenance()
+    maintenance.semantic_eval_run_error = ValueError('semantic eval output must not target a tracked git path')
+    bundle = cli.ServiceBundle(maintenance=maintenance, pipeline=FakePipeline(), automation=FakeAutomation())
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['semantic-eval', 'run', '--dataset', 'private/jd/evals/semantic-filter/gold.json', '--output', 'private/jd/evals/semantic-filter/reports/incumbent.json', '--json']) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['status'] == 'error'
+    assert payload['error_code'] == 'unsafe_output_path'
+    assert 'tracked git path' not in capsys.readouterr().err
 
 def test_cli_run_auto_and_record_show_dispatch(monkeypatch, capsys) -> None:
     workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
@@ -377,7 +601,7 @@ def test_print_check_closed_human_retains_all_empty_sections(capsys) -> None:
     )
 
 
-def test_cli_record_status_defaults_application_timestamp(monkeypatch, capsys) -> None:
+def test_cli_record_status_leaves_default_timestamp_to_repository(monkeypatch, capsys) -> None:
     workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
     pipeline = FakePipeline()
     bundle = cli.ServiceBundle(
@@ -385,10 +609,8 @@ def test_cli_record_status_defaults_application_timestamp(monkeypatch, capsys) -
         pipeline=pipeline,
         automation=FakeAutomation(),
     )
-    frozen = SimpleNamespace(now=lambda: SimpleNamespace(isoformat=lambda: '2026-07-15T03:00:00'))
     monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
     monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
-    monkeypatch.setattr(cli, 'datetime', frozen)
 
     assert cli.main(
         ['record', 'set-status', 'wanted:1', '--application-status', 'applied', '--json']
@@ -398,8 +620,248 @@ def test_cli_record_status_defaults_application_timestamp(monkeypatch, capsys) -
         {
             'application_status': ApplicationStatus.APPLIED,
             'posting_status': None,
-            'application_status_updated_at': '2026-07-15T03:00:00',
+            'application_status_updated_at': None,
+            'application_note': None,
         }
+    ]
+
+
+def test_cli_record_status_json_includes_note_and_history(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    pipeline = FakePipeline()
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=pipeline,
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(
+        [
+            'record',
+            'set-status',
+            'wanted:1',
+            '--application-status',
+            'applied',
+            '--application-note',
+            '지원서 제출',
+            '--json',
+        ]
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert pipeline.status_calls == [
+        {
+            'application_status': ApplicationStatus.APPLIED,
+            'posting_status': None,
+            'application_status_updated_at': None,
+            'application_note': '지원서 제출',
+        }
+    ]
+    assert payload['application_history'] == [
+        {
+            'status': 'applied',
+            'occurred_at': '2026-07-14T11:00:00+09:00',
+            'note': '지원서 제출',
+        }
+    ]
+
+
+def test_cli_record_show_outputs_history_in_json_and_human_modes(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['record', 'show', 'wanted:1', '--json']) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['application_history'] == [
+        {
+            'status': 'applied',
+            'occurred_at': '2026-07-13T09:00:00+09:00',
+            'note': '지원서 제출',
+        },
+        {
+            'status': 'interview',
+            'occurred_at': '2026-07-14T11:00:00+09:00',
+            'note': '1차 기술 면접',
+        },
+    ]
+
+    assert cli.main(['record', 'show', 'wanted:1']) == 0
+    assert capsys.readouterr().out == (
+        'job_key=wanted:1\n'
+        'has_screening=True\n'
+        'screening_verdict=hold\n'
+        'application_status=interview\n'
+        'posting_status=active\n'
+        'application_status_updated_at=2026-07-14T11:00:00+09:00\n'
+        'schema_version=2\n'
+        'application_history[1]=2026-07-13T09:00:00+09:00 applied note=지원서 제출\n'
+        'application_history[2]=2026-07-14T11:00:00+09:00 interview note=1차 기술 면접\n'
+    )
+
+
+def test_cli_record_status_rejects_note_without_application_status_before_service_call(
+    monkeypatch, capsys
+) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    pipeline = FakePipeline()
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=pipeline,
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(
+        ['record', 'set-status', 'wanted:1', '--application-note', '지원서 제출']
+    ) == 2
+
+    assert pipeline.status_calls is None
+    assert 'application status is required when application_note is set' in capsys.readouterr().err
+
+
+def test_cli_record_status_rejects_timestamp_without_application_status_before_service_call(
+    monkeypatch, capsys
+) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    pipeline = FakePipeline()
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=pipeline,
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(
+        [
+            'record',
+            'set-status',
+            'wanted:1',
+            '--application-status-updated-at',
+            '2026-08-10T09:30:00+09:00',
+        ]
+    ) == 2
+
+    assert pipeline.status_calls is None
+    assert 'application status is required when application_status_updated_at is set' in capsys.readouterr().err
+
+
+def test_cli_record_show_json_synthesizes_history_for_legacy_v1_records(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    bundle = cli._build_services(workspace)
+    maintenance = cast(JobsMaintenanceService, bundle.maintenance)
+    repository = maintenance.repository
+    repository.create(
+        JobRecord(
+            'wanted',
+            '1',
+            'Acme',
+            'Backend',
+            application_status=ApplicationStatus.APPLIED,
+            application_status_updated_at='2026-07-13T09:00:00+09:00',
+            schema_version=1,
+        ),
+        jd_markdown='# JD',
+    )
+    manifest_path = tmp_path / 'private' / 'jd' / 'records' / 'wanted' / '1' / 'record.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest['schema_version'] = 1
+    manifest['record']['schema_version'] = 1
+    manifest['record'].pop('application_history', None)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['record', 'show', 'wanted:1', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['schema_version'] == 2
+    assert payload['application_history'] == [
+        {
+            'status': 'applied',
+            'occurred_at': '2026-07-13T09:00:00+09:00',
+            'note': None,
+        }
+    ]
+
+
+def test_cli_record_status_preserves_repeated_and_corrective_history_end_to_end(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    bundle = cli._build_services(workspace)
+    maintenance = cast(JobsMaintenanceService, bundle.maintenance)
+    maintenance.repository.create(
+        JobRecord('wanted', '1', 'Acme', 'Backend'),
+        jd_markdown='# JD',
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    commands = [
+        [
+            'record',
+            'set-status',
+            'wanted:1',
+            '--application-status',
+            'applied',
+            '--application-note',
+            '지원서 제출',
+        ],
+        [
+            'record',
+            'set-status',
+            'wanted:1',
+            '--application-status',
+            'interview',
+            '--application-note',
+            '1차 기술 면접',
+        ],
+        [
+            'record',
+            'set-status',
+            'wanted:1',
+            '--application-status',
+            'interview',
+            '--application-note',
+            '2차 기술 면접',
+        ],
+        [
+            'record',
+            'set-status',
+            'wanted:1',
+            '--application-status',
+            'rejected',
+            '--application-note',
+            '최종 결과 수신',
+        ],
+    ]
+    for command in commands:
+        assert cli.main(command) == 0
+        capsys.readouterr()
+
+    assert cli.main(['record', 'show', 'wanted:1', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (item['status'], item['note'])
+        for item in payload['application_history']
+    ] == [
+        ('applied', '지원서 제출'),
+        ('interview', '1차 기술 면접'),
+        ('interview', '2차 기술 면접'),
+        ('rejected', '최종 결과 수신'),
     ]
 
 
@@ -1027,6 +1489,50 @@ def test_cli_screening_validate_reports_json(monkeypatch, capsys, tmp_path: Path
     assert payload['path'] == str(screening_file)
 
 
+def test_cli_screening_lint_file_reports_screening_structure(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    records_root = tmp_path / 'private/jd/records'
+    repository = JDRecordRepository(records_root)
+    record = JobRecord(platform='wanted', job_id='1', company='Acme', position='Backend', screening_verdict=ScreeningVerdict.RECOMMENDED)
+    repository.create(record, jd_markdown='# JD')
+    repository.update_screening_result(record.key, screening_markdown='## 기본 정보\n\nA\n')
+    screen_path = next((records_root / 'wanted' / '1' / 'content').glob('*/screening.md'))
+    bundle = cli.ServiceBundle(maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation())
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['screening', 'lint', '--file', str(screen_path), '--json']) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['findings'][0]['check'] == 'screening-structure'
+
+
+def test_cli_screening_lint_hook_reports_structure_before_hash_integrity(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    records_root = tmp_path / 'private/jd/records'
+    repository = JDRecordRepository(records_root)
+    record = JobRecord(platform='wanted', job_id='1', company='Acme', position='Backend', screening_verdict=ScreeningVerdict.RECOMMENDED)
+    repository.create(record, jd_markdown='# JD')
+    repository.update_screening_result(record.key, screening_markdown='## 기본 정보\n\nA\n')
+    screen_path = next((records_root / 'wanted' / '1' / 'content').glob('*/screening.md'))
+    bundle = cli.ServiceBundle(maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation())
+    payload = {
+        'cwd': str(tmp_path),
+        'tool_name': 'Write',
+        'tool_input': {'file_path': str(screen_path.relative_to(tmp_path))},
+    }
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+    monkeypatch.setattr(
+        cli,
+        'sys',
+        SimpleNamespace(stdin=io.StringIO(json.dumps(payload)), stdout=cli.sys.stdout, stderr=cli.sys.stderr),
+    )
+
+    assert cli.main(['screening', 'lint', '--hook', '--json']) == 2
+    output = json.loads(capsys.readouterr().out)
+    assert output['findings'][0]['check'] == 'screening-structure'
+
+
 def test_cli_screening_run_reads_explicit_candidate_context(monkeypatch, capsys, tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     (tmp_path / 'private/jd/records').mkdir(parents=True)
@@ -1052,6 +1558,7 @@ def test_cli_screening_run_reads_explicit_candidate_context(monkeypatch, capsys,
             screening_path=Path('wanted/1/screening.md'),
             provider='fake-provider',
             used_fallback=False,
+            fallback_reason=None,
         )
 
     monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
@@ -1092,6 +1599,7 @@ def test_cli_screening_run_loads_workspace_candidate_context_by_default(
             screening_path=Path('wanted/1/screening.md'),
             provider='fake-provider',
             used_fallback=False,
+            fallback_reason=None,
         )
 
     monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
@@ -1212,11 +1720,12 @@ def test_cli_console_serve_uses_loopback_server(monkeypatch, capsys, tmp_path: P
         def server_close(self) -> None:
             calls['closed'] = True
 
-    def fake_create_server(*, records_root, database_path, host, port):
+    def fake_create_server(*, records_root, database_path, pipeline_service, host, port):
         calls.update(
             {
                 'records_root': records_root,
                 'database_path': database_path,
+                'pipeline_service': pipeline_service,
                 'host': host,
                 'port': port,
             }
@@ -1230,11 +1739,62 @@ def test_cli_console_serve_uses_loopback_server(monkeypatch, capsys, tmp_path: P
     assert cli.main(['console', 'serve', '--host', '127.0.0.1', '--port', '9900']) == 0
     assert calls['records_root'] == tmp_path / 'private' / 'jd' / 'records'
     assert calls['database_path'] == Path('private/jd/derived') / 'search.sqlite3'
+    assert calls['pipeline_service'] is bundle.pipeline
     assert calls['host'] == '127.0.0.1'
     assert calls['port'] == 9900
     assert calls['served'] is True
     assert calls['closed'] is True
     assert 'career-jobs console serving http://127.0.0.1:9900' in capsys.readouterr().out
+
+
+def test_cli_screening_lint_hook_tolerates_empty_stdin(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+    monkeypatch.setattr(
+        cli.screening_lint,
+        'hook_target_paths',
+        lambda *, payload, records_root: (_ for _ in ()).throw(AssertionError('should not inspect empty stdin')),
+    )
+    monkeypatch.setattr(
+        cli,
+        'sys',
+        SimpleNamespace(stdin=io.StringIO(''), stdout=cli.sys.stdout, stderr=cli.sys.stderr),
+    )
+
+    assert cli.main(['screening', 'lint', '--hook']) == 0
+    assert '검사 0건: 위반 0, 경고 0' in capsys.readouterr().out
+
+
+def test_cli_screening_lint_hook_tolerates_malformed_json(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+    monkeypatch.setattr(
+        cli.screening_lint,
+        'hook_target_paths',
+        lambda *, payload, records_root: (_ for _ in ()).throw(AssertionError('should not inspect malformed stdin')),
+    )
+    monkeypatch.setattr(
+        cli,
+        'sys',
+        SimpleNamespace(stdin=io.StringIO('{bad json'), stdout=cli.sys.stdout, stderr=cli.sys.stderr),
+    )
+
+    assert cli.main(['screening', 'lint', '--hook']) == 0
+    assert '검사 0건: 위반 0, 경고 0' in capsys.readouterr().out
 
 
 def test_cli_screening_lint_hook_dispatches_stdin_payload(monkeypatch, capsys, tmp_path: Path) -> None:
@@ -1246,26 +1806,26 @@ def test_cli_screening_lint_hook_dispatches_stdin_payload(monkeypatch, capsys, t
     )
     captured: dict[str, object] = {}
 
-    def fake_hook_keys(stdin, *, records_root):
-        captured['payload'] = stdin.read()
+    def fake_hook_targets(*, payload, records_root):
+        captured['payload'] = payload
         captured['records_root'] = records_root
-        return [JobKey('wanted', '1')]
+        return [tmp_path / 'private' / 'jd' / 'records' / 'wanted' / '1' / 'content' / 'rev' / 'screening.md']
 
-    def fake_run(keys, repository):
-        captured['keys'] = keys
+    def fake_lint_path(path, repository):
+        captured['path'] = path
         captured['repository_root'] = repository.root
-        return cli.screening_lint.LintReport(findings=(), keys_checked=1)
+        return []
 
     monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
     monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
-    monkeypatch.setattr(cli.screening_lint, 'hook_keys_from_stdin', fake_hook_keys)
-    monkeypatch.setattr(cli.screening_lint, 'run', fake_run)
+    monkeypatch.setattr(cli.screening_lint, 'hook_target_paths', fake_hook_targets)
+    monkeypatch.setattr(cli.screening_lint, 'lint_path', fake_lint_path)
     monkeypatch.setattr(cli, 'sys', SimpleNamespace(stdin=io.StringIO('{"tool_name":"Write"}'), stdout=cli.sys.stdout, stderr=cli.sys.stderr))
 
     assert cli.main(['screening', 'lint', '--hook']) == 0
-    assert captured['payload'] == '{"tool_name":"Write"}'
+    assert captured['payload'] == {'tool_name': 'Write'}
     assert captured['records_root'] == tmp_path / 'private' / 'jd' / 'records'
-    assert captured['keys'] == [JobKey('wanted', '1')]
+    assert captured['path'] == tmp_path / 'private' / 'jd' / 'records' / 'wanted' / '1' / 'content' / 'rev' / 'screening.md'
     assert captured['repository_root'] == tmp_path / 'private' / 'jd' / 'records'
     assert '검사 1건: 위반 0, 경고 0' in capsys.readouterr().out
 
@@ -1346,7 +1906,7 @@ def test_cli_company_fetch_remember_prints_json(monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(remember_mod, 'remember_company_http', lambda cid, **kw: fake_info)
 
-    assert cli.main(['company', 'fetch', '--platform', 'remember', '--id', '12345']) == 0
+    assert cli.main(['company', 'fetch', '--platform', 'remember', '--id', '12345', '--json']) == 0
     out = capsys.readouterr().out
     data = _json.loads(out)
     assert data['company_id'] == 12345
@@ -1369,6 +1929,190 @@ def test_cli_company_fetch_remember_error_returns_1(monkeypatch, capsys) -> None
 
     assert cli.main(['company', 'fetch', '--platform', 'remember', '--id', '99999']) == 1
     assert 'error' in capsys.readouterr().err.lower()
+
+
+def test_cli_company_fetch_wanted_prints_markdown(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name='테스트',
+        industry='Software',
+        founded_year=2019,
+        location='서울',
+        employee_count=42,
+        avg_salary_manwon=6000,
+        hired_1y=5,
+        left_1y=2,
+        total_sales_eok=10.5,
+        sales_year='2025',
+        tags=('AI', 'Remote'),
+        description='소개',
+        homepage='https://example.com',
+    )
+    monkeypatch.setattr(wanted_mod, 'wanted_company_http', lambda cid, **kw: fake_info)
+
+    assert cli.main(['company', 'fetch', '--platform', 'wanted', '--id', '12345']) == 0
+    out = capsys.readouterr().out
+    assert out == wanted_mod.format_wanted_company_markdown(fake_info) + '\n'
+
+
+def test_cli_company_fetch_wanted_prints_json_with_list_tags(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name='테스트',
+        industry='Software',
+        founded_year=2019,
+        location='서울',
+        employee_count=42,
+        avg_salary_manwon=6000,
+        hired_1y=5,
+        left_1y=2,
+        total_sales_eok=10.5,
+        sales_year='2025',
+        tags=('AI', 'Remote'),
+        description='소개',
+        homepage='https://example.com',
+    )
+    monkeypatch.setattr(wanted_mod, 'wanted_company_http', lambda cid, **kw: fake_info)
+
+    assert cli.main(['company', 'fetch', '--platform', 'wanted', '--id', '12345', '--json']) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['company_id'] == 12345
+    assert payload['tags'] == ['AI', 'Remote']
+
+
+def test_cli_company_fetch_saramin_preserves_opaque_identifier(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import saramin as saramin_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    fake_info = saramin_mod.SaraminCompanyInfo(
+        name='테스트',
+        industry='Software',
+        company_type='IT',
+        founded_date='2020-01-01',
+        employee_count=10,
+        avg_salary_manwon=4000,
+        ceo='홍길동',
+        homepage='https://example.com',
+        address='서울',
+    )
+    seen: list[str] = []
+
+    def _fake(company_id: str, **kw):
+        seen.append(company_id)
+        return fake_info
+
+    monkeypatch.setattr(saramin_mod, 'saramin_company_http', _fake)
+
+    opaque_id = 'Q29tcGFueS0xMjM='
+    assert cli.main(['company', 'fetch', '--platform', 'saramin', '--id', opaque_id]) == 0
+    assert seen == [opaque_id]
+
+
+@pytest.mark.parametrize('company_id', ['0', '-1', 'not-a-number'])
+def test_cli_company_fetch_wanted_rejects_non_positive_identifier_before_http_call(
+    monkeypatch, capsys, company_id: str
+) -> None:
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    called = False
+
+    def _unexpected(company_id: int, **kw):
+        nonlocal called
+        called = True
+        raise AssertionError(company_id)
+
+    monkeypatch.setattr(wanted_mod, 'wanted_company_http', _unexpected)
+
+    assert cli.main(['company', 'fetch', '--platform', 'wanted', '--id', company_id]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert captured.err == 'error: Wanted company id must be a positive integer\n'
+    assert called is False
+
+
+def test_cli_company_fetch_wanted_surfaces_stable_public_error(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    def _fail(company_id: int, **kw):
+        raise RuntimeError('missing internal payload details')
+
+    monkeypatch.setattr(wanted_mod, 'wanted_company_http', _fail)
+
+    assert cli.main(['company', 'fetch', '--platform', 'wanted', '--id', '12345']) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert captured.err == 'error: failed to fetch Wanted company info\n'
+
+
+def test_cli_company_fetch_wanted_dispatches_packaged_command(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    seen: list[int] = []
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name='테스트',
+        industry='Software',
+        founded_year=None,
+        location='서울',
+        employee_count=None,
+        avg_salary_manwon=None,
+        hired_1y=None,
+        left_1y=None,
+        total_sales_eok=None,
+        sales_year='',
+        tags=(),
+        description='',
+        homepage='',
+    )
+
+    def _fake(company_id: int, **kw):
+        seen.append(company_id)
+        return fake_info
+
+    monkeypatch.setattr(wanted_mod, 'wanted_company_http', _fake)
+
+    assert cli.main(['company', 'fetch', '--platform', 'wanted', '--id', '12345', '--json']) == 0
+    assert seen == [12345]
+    assert json.loads(capsys.readouterr().out)['company_id'] == 12345
 
 
 def _capped_record(job_id: str, *, capped: bool, provider: str | None = 'ollama') -> JobRecord:
@@ -1451,6 +2195,7 @@ def _screening(**overrides):
         'provider': 'ollama',
         'published': False,
         'used_fallback': False,
+        'fallback_reason': None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -1944,3 +2689,63 @@ def test_queue_fallback_rescreen_failed_after_publish(monkeypatch, capsys, tmp_p
     payload = json.loads(capsys.readouterr().out)
     assert payload['failed_after_publish'] == 1
     assert payload['failed'] == 0
+
+
+def test_cli_company_apply_uses_packaged_locked_writer(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    source = tmp_path / 'candidate.md'
+    source.write_text(
+        '# Acme\n\n'
+        '## 기업 정보\n\n'
+        '| 항목 | 내용 |\n|------|------|\n'
+        '| 설립 | 2021년 |\n'
+        '| 직원수 | 12명 |\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['company', 'apply', '--company-name', 'Acme', '--input', str(source), '--json']) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['command'] == 'company apply'
+    assert payload['status'] == 'ready'
+    assert payload['persisted'] is True
+    assert payload['file_path'] == 'private/company_info/acme.md'
+
+
+def test_cli_company_apply_returns_usage_error_for_digest_conflict(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    company_dir = tmp_path / 'private' / 'company_info'
+    company_dir.mkdir(parents=True)
+    company_file = company_dir / 'acme.md'
+    company_file.write_text(
+        '# Acme\n\n## 기업 정보\n\n| 항목 | 내용 |\n|------|------|\n| 설립 | 2021년 |\n| 직원수 | 11명 |\n',
+        encoding='utf-8',
+    )
+    source = tmp_path / 'candidate.md'
+    source.write_text(
+        '# Acme\n\n## 기업 정보\n\n| 항목 | 내용 |\n|------|------|\n| 설립 | 2021년 |\n| 직원수 | 12명 |\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    digest = cli.CompanyInfoService(workspace=workspace).inspect('Acme').digest
+    assert isinstance(digest, str)
+    company_file.write_text(
+        '# Acme\n\n## 기업 정보\n\n| 항목 | 내용 |\n|------|------|\n| 설립 | 2021년 |\n| 직원수 | 13명 |\n',
+        encoding='utf-8',
+    )
+
+    assert cli.main(['company', 'apply', '--company-name', 'Acme', '--input', str(source), '--expected-digest', digest]) == 2
+    assert 'digest' in capsys.readouterr().err

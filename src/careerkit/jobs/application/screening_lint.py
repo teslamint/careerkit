@@ -11,6 +11,7 @@ from careerkit.jobs.adapters.storage.file_records import (
     JobRecordIntegrityError,
     JobRecordNotFound,
 )
+from careerkit.jobs.application.screening import validate_screening_structure
 from careerkit.jobs.domain.model import ApplicationStatus, JobKey, PostingStatus, ScreeningVerdict
 from careerkit.jobs.domain.verdict import parse_verdict_from_screening
 
@@ -77,6 +78,9 @@ def lint_record(key: JobKey, repository: JDRecordRepository) -> list[Finding]:
     text = stored.screening_markdown
     jd_text = stored.jd_markdown
     findings: list[Finding] = []
+    valid, reason = validate_screening_structure(text)
+    if not valid:
+        findings.append(Finding("violation", "screening-structure", name, reason))
     verdict = parse_verdict_from_screening(text)
     if verdict is None:
         findings.append(Finding("violation", "verdict-missing", name, "최종 판정을 파싱할 수 없음"))
@@ -117,6 +121,21 @@ def lint_record(key: JobKey, repository: JDRecordRepository) -> list[Finding]:
     return findings
 
 
+def lint_path(path: Path, repository: JDRecordRepository) -> list[Finding]:
+    key = key_from_screening_path(path, repository.root)
+    name = f"{key.platform}:{key.job_id}" if key is not None else str(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return [Finding("violation", "storage-corrupt", name, _safe_detail(str(exc), repository.root))]
+    valid, reason = validate_screening_structure(text)
+    if not valid:
+        return [Finding("violation", "screening-structure", name, reason)]
+    if key is None:
+        return []
+    return lint_record(key, repository)
+
+
 def key_from_screening_path(path: Path, records_root: Path) -> JobKey | None:
     try:
         relative = path.resolve().relative_to(records_root.resolve())
@@ -153,16 +172,12 @@ def hook_target_paths(*, payload: dict[str, object], records_root: Path) -> list
     return targets
 
 
-def hook_keys_from_stdin(stdin: TextIO, *, records_root: Path) -> list[JobKey]:
+def hook_payload_from_stdin(stdin: TextIO) -> dict[str, object] | None:
     try:
         payload = json.load(stdin)
     except (json.JSONDecodeError, OSError):
-        return []
-    return [
-        key
-        for path in hook_target_paths(payload=payload, records_root=records_root)
-        if (key := key_from_screening_path(path, records_root)) is not None
-    ]
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def run(keys: list[JobKey], repository: JDRecordRepository) -> LintReport:

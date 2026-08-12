@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+from collections.abc import Sequence
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,8 +15,9 @@ from careerkit.jobs.adapters.platforms.saramin import (
     extract_company_from_detail,
     extract_csn_from_html,
     extract_detail_fields,
+    extract_detail_sections,
     extract_jd_body,
-    extract_jd_body_sections,
+    extract_jd_sections,
     extract_position_from_detail,
     format_company_markdown,
     parse_search_html,
@@ -89,6 +92,27 @@ SEARCH_CARD_HTML_PAGE_2 = textwrap.dedent("""\
     </div>
 """)
 
+
+def _search_card_html(job_id: int) -> str:
+    return textwrap.dedent(
+        f"""\
+        <div id="list_{job_id}" class="recruit_container list_link recruit"
+             data-data_layer="keyword_free|paid_n" data-rec_idx={job_id}>
+            <a href="/job-search/view?rec_idx={job_id}" class="link">
+                <div class="list">
+                    <p class="tit">Backend Engineer {job_id}</p>
+                    <div class="meta">
+                        <span>서울 강남구</span><span>경력5년↑</span><span>대졸↑</span>
+                    </div>
+                    <div class="corp">
+                        <span class="corp_name">테스트컴퍼니</span>
+                    </div>
+                </div>
+            </a>
+        </div>
+        """
+    )
+
 DETAIL_PAGE_HTML = textwrap.dedent("""\
     <html>
     <head><title>[매드업] 백엔드 개발자 채용 (D-30) - 사람인</title></head>
@@ -123,6 +147,32 @@ DETAIL_PAGE_HTML = textwrap.dedent("""\
     </html>
 """)
 
+
+
+def _detail_html(*, job_id: str, encoded_body: str, detail_pairs: tuple[tuple[str, str], ...] = ()) -> str:
+    detail_html = "".join(
+        f'<dt class="tit">{label}</dt><dd class="desc">{value}</dd>'
+        for label, value in detail_pairs
+    )
+    return textwrap.dedent(f"""\
+        <html>
+        <body>
+        <dl>{detail_html}</dl>
+        <script>
+            var detailContents_{job_id} = {{
+                contents: '{encoded_body}',
+                mobile_contents_yn: ''
+            }};
+        </script>
+        </body>
+        </html>
+    """)
+
+
+def _encode_body(html: str) -> str:
+    return base64.b64encode(html.encode(encoding="utf-8")).decode(encoding="utf-8")
+
+
 COMPANY_JSONLD_HTML = textwrap.dedent("""\
     <html>
     <head><title>(주)매드업 기업정보</title></head>
@@ -145,25 +195,6 @@ COMPANY_JSONLD_HTML = textwrap.dedent("""\
     </body>
     </html>
 """)
-
-JD_BODY_TARGET_ALIASES = (
-    "자격요건",
-    "자격 요건",
-    "지원자격",
-    "지원 자격",
-    "필수요건",
-    "필수 요건",
-    "우대사항",
-    "우대 사항",
-)
-
-JD_BODY_BOUNDARY_LABELS = (
-    "주요업무",
-    "근무조건",
-    "복리후생",
-    "전형절차",
-    "회사소개",
-)
 
 
 class TestParseSearchHtml:
@@ -217,70 +248,6 @@ class TestDetailPageParsing:
         assert fields["지역"] == "서울 강남구"
         assert fields["경력"] == "경력 1~4년"
 
-    def test_extract_fields_keeps_scalar_values(self) -> None:
-        html = textwrap.dedent("""\
-            <dl>
-                <dt class="tit">근무형태</dt>
-                <dd class="desc">정규직</dd>
-                <dt class="tit">급여</dt>
-                <dd class="desc">면접 후 결정</dd>
-            </dl>
-        """)
-        fields = extract_detail_fields(html)
-        assert fields == {
-            "근무형태": "정규직",
-            "급여": "면접 후 결정",
-        }
-
-    def test_extract_fields_ignores_malformed_detail_block(self) -> None:
-        html = textwrap.dedent("""\
-            <dl>
-                <dt class="tit">근무형태</dt>
-                <dd class="desc">정규직
-            </dl>
-        """)
-        assert extract_detail_fields(html) == {}
-
-    def test_extract_fields_ignores_empty_detail_block(self) -> None:
-        html = textwrap.dedent("""\
-            <dl>
-                <dt class="tit">우대사항</dt>
-                <dd class="desc"></dd>
-            </dl>
-        """)
-        assert extract_detail_fields(html) == {}
-
-    def test_extract_fields_preserves_semantic_boundaries(self) -> None:
-        html = textwrap.dedent("""\
-            <dl>
-                <dt class="tit">자격요건</dt>
-                <dd class="desc">
-                    <ul>
-                        <li>Python 백엔드 개발 경험</li>
-                        <li>SQL 활용 능력</li>
-                    </ul>
-                </dd>
-                <dt class="tit">우대사항</dt>
-                <dd class="desc">
-                    <p>테스트 코드 작성 경험</p>
-                    <p>Docker 운영 경험</p>
-                </dd>
-            </dl>
-        """)
-        fields = extract_detail_fields(html)
-        assert fields["자격요건"] == "- Python 백엔드 개발 경험\n- SQL 활용 능력"
-        assert fields["우대사항"] == "테스트 코드 작성 경험\nDocker 운영 경험"
-
-    def test_extract_fields_does_not_invent_break_bullets(self) -> None:
-        html = textwrap.dedent("""\
-            <dl>
-                <dt class="tit">근무환경</dt>
-                <dd class="desc">원격 근무 가능<br>주 1회 오피스 출근</dd>
-            </dl>
-        """)
-        fields = extract_detail_fields(html)
-        assert fields["근무환경"] == "원격 근무 가능\n주 1회 오피스 출근"
-
     def test_extract_experience_from_meta_fallback(self) -> None:
         html_no_dt = textwrap.dedent("""\
             <html>
@@ -309,70 +276,21 @@ class TestDetailPageParsing:
     def test_extract_jd_body_missing_returns_empty(self) -> None:
         assert extract_jd_body("<html></html>", "99999") == ""
 
-    def test_extract_jd_body_preserves_semantic_boundaries(self) -> None:
-        html = textwrap.dedent("""\
-            <script>
-                var detailContents_100 = {
-                    contents: 'PHA+4pagIOyekOqyqeyalOqxtDwvcD48dWw+PGxpPlB5dGhvbiDrsLHsl5Trk5wg6rCc67CcIOqyve2XmDwvbGk+PGxpPlNRTCDtmZzsmqkg64ql66ClPC9saT48L3VsPjxwPigxKSDsmrDrjIAg7IKs7ZWtPC9wPjxwPu2FjOyKpO2KuCDsvZTrk5wg7J6R7ISx6rK97ZeYPC9wPg==',
-                    mobile_contents_yn: ''
-                };
-            </script>
-        """)
-        body = extract_jd_body(html, "100")
-        assert body == "■ 자격요건\n- Python 백엔드 개발 경험\n- SQL 활용 능력\n(1) 우대 사항\n테스트 코드 작성경험"
+    def test_extract_jd_body_separates_list_items(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<p>■ 자격요건</p><ul><li>Python 백엔드 개발 경험</li><li>SQL 활용 능력</li></ul>"
+            ),
+        )
 
-    @pytest.mark.parametrize("heading", JD_BODY_TARGET_ALIASES)
-    def test_extract_jd_body_sections_supports_all_target_aliases(self, heading: str) -> None:
-        body = textwrap.dedent(f"""\
-            {heading}
-            Python 백엔드 개발 경험
-            * 테스트 코드 작성 경험
-        """)
-        key = "우대사항" if "우대" in heading else "자격요건"
-        assert extract_jd_body_sections(body) == {
-            key: "- Python 백엔드 개발 경험\n- 테스트 코드 작성 경험",
-        }
+        body = extract_jd_body(html, "123")
 
-    @pytest.mark.parametrize("boundary_label", JD_BODY_BOUNDARY_LABELS)
-    def test_extract_jd_body_sections_stops_at_each_boundary_group(self, boundary_label: str) -> None:
-        body = textwrap.dedent(f"""\
-            ■ 자격요건
-            Python 백엔드 개발 경험
-            {boundary_label}
-            원격 근무 가능
-            (1) 우대 사항
-            • 테스트 코드 작성 경험
-            + Docker 운영 경험
-        """)
-        assert extract_jd_body_sections(body) == {
-            "자격요건": "- Python 백엔드 개발 경험",
-            "우대사항": "- 테스트 코드 작성 경험\n- Docker 운영 경험",
-        }
-
-    def test_extract_jd_body_sections_skips_marker_only_lines(self) -> None:
-        body = textwrap.dedent("""\
-            자격요건
-            •
-            Python 백엔드 개발 경험
-            우대사항
-            -
-            테스트 코드 작성 경험
-        """)
-        assert extract_jd_body_sections(body) == {
-            "자격요건": "- Python 백엔드 개발 경험",
-            "우대사항": "- 테스트 코드 작성 경험",
-        }
-
-    @pytest.mark.parametrize(
-        "body",
-        (
-            "",
-            "채용 상세가 없습니다",
-            "주요업무\nPython 백엔드 개발",
-        ),
-    )
-    def test_extract_jd_body_sections_returns_empty_without_target(self, body: str) -> None:
-        assert extract_jd_body_sections(body) == {}
+        assert body.splitlines() == [
+            "■ 자격요건",
+            "- Python 백엔드 개발 경험",
+            "- SQL 활용 능력",
+        ]
 
 
 class TestSaraminAdapter:
@@ -382,7 +300,10 @@ class TestSaraminAdapter:
         assert adapter.name == "saramin"
 
     def test_search_returns_candidates(self) -> None:
-        http = StubSearchHttp(SEARCH_CARD_HTML, count="3")
+        http = StubSearchHttp([
+            {"count": "3", "innerHTML": SEARCH_CARD_HTML},
+            {"count": "3", "innerHTML": ""},
+        ])
         config = SimpleNamespace(
             http_client=http,
             platforms={"saramin": SimpleNamespace(base_url="https://www.saramin.co.kr")},
@@ -397,7 +318,10 @@ class TestSaraminAdapter:
         assert result.items[0].company == "킨코스코리아(주)"
 
     def test_search_url_format(self) -> None:
-        http = StubSearchHttp(SEARCH_CARD_HTML, count="3")
+        http = StubSearchHttp([
+            {"count": "3", "innerHTML": SEARCH_CARD_HTML},
+            {"count": "3", "innerHTML": ""},
+        ])
         config = SimpleNamespace(
             http_client=http,
             platforms={"saramin": SimpleNamespace(base_url="https://www.saramin.co.kr")},
@@ -449,14 +373,19 @@ class TestSaraminAdapter:
         assert "exp_max" not in query
         assert "exp_none" not in query
 
-    def test_search_serializes_configured_experience_range_on_first_and_next_pages(self) -> None:
+    def test_search_serializes_configured_experience_range_on_first_and_next_pages(self, monkeypatch) -> None:
         http = StubSearchHttp([
             {"count": "4", "innerHTML": SEARCH_CARD_HTML},
             {"count": "4", "innerHTML": SEARCH_CARD_HTML_PAGE_2},
+            {"count": "4", "innerHTML": ""},
         ])
+        config = _config(http, api_min_experience=5, api_max_experience=10)
+        config.rate_limits = {"saramin": 1.5}
+        sleeps: list[float] = []
+        monkeypatch.setattr("careerkit.jobs.adapters.platforms.saramin.time.sleep", sleeps.append)
         result = SaraminAdapter().search(
             "백엔드",
-            config=_config(http, api_min_experience=5, api_max_experience=10),
+            config=config,
             state=None,
             http=http,
         )
@@ -473,6 +402,15 @@ class TestSaraminAdapter:
         assert second_query["exp_min"] == ["5"]
         assert second_query["exp_max"] == ["10"]
         assert second_query["exp_none"] == ["y"]
+
+        assert parse_qs(urlparse(http.urls[2]).query)["page"] == ["3"]
+        assert sleeps == [1.5, 1.5]
+        for url in http.urls:
+            query = parse_qs(urlparse(url).query)
+            assert query["exp_cd"] == ["2"]
+            assert query["exp_min"] == ["5"]
+            assert query["exp_max"] == ["10"]
+            assert query["exp_none"] == ["y"]
 
     def test_search_serializes_browser_captured_experience_contract(self) -> None:
         http = StubSearchHttp([{"count": "0", "innerHTML": ""}])
@@ -498,6 +436,8 @@ class TestSaraminAdapter:
         assert [item.job_id for item in result.items] == ["54607844", "53930400", "54700001"]
         assert result.complete is False
         assert result.pages_fetched == 1
+        assert result.stop_reason == "request_error"
+        assert result.total_count == 4
         first_query = parse_qs(urlparse(http.urls[0]).query)
         second_query = parse_qs(urlparse(http.urls[1]).query)
         assert first_query["exp_cd"] == ["2"]
@@ -508,6 +448,308 @@ class TestSaraminAdapter:
         assert second_query["exp_min"] == ["5"]
         assert second_query["exp_max"] == ["10"]
         assert second_query["exp_none"] == ["y"]
+
+    def test_search_fetches_past_five_pages_until_empty_api_page(self) -> None:
+        http = StubSearchHttp([
+            {"count": "6", "innerHTML": _search_card_html(job_id)}
+            for job_id in range(1, 7)
+        ] + [{"count": "6", "innerHTML": ""}])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == [str(job_id) for job_id in range(1, 7)]
+        assert result.pages_fetched == 7
+        assert result.total_count == 6
+        assert result.complete is True
+        assert result.stop_reason == "api_end"
+        assert [parse_qs(urlparse(url).query)["page"] for url in http.urls] == [
+            [str(page)] for page in range(1, 8)
+        ]
+
+    def test_search_treats_count_as_advisory_and_keeps_collecting(self) -> None:
+        http = StubSearchHttp([
+            {"count": "1", "innerHTML": _search_card_html(1)},
+            {"count": "1", "innerHTML": _search_card_html(2)},
+            {"count": "1", "innerHTML": ""},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == ["1", "2"]
+        assert result.pages_fetched == 3
+        assert result.total_count == 1
+        assert result.stop_reason == "api_end"
+
+    def test_search_returns_none_total_count_for_missing_invalid_or_conflicting_counts(self) -> None:
+        http = StubSearchHttp([
+            {"innerHTML": _search_card_html(1)},
+            {"count": "not-a-number", "innerHTML": _search_card_html(2)},
+            {"innerHTML": ""},
+        ])
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+        assert [item.job_id for item in result.items] == ["1", "2"]
+        assert result.pages_fetched == 3
+        assert result.stop_reason == "api_end"
+        assert result.total_count is None
+
+        for first_count, second_count in [(-1, -1), ("1", "2"), ("²", "²")]:
+            http = StubSearchHttp([
+                {"count": first_count, "innerHTML": _search_card_html(1)},
+                {"count": second_count, "innerHTML": _search_card_html(2)},
+                {"count": second_count, "innerHTML": ""},
+            ])
+            result = SaraminAdapter().search(
+                "백엔드", config=_config(http), state=None, http=http
+            )
+            assert [item.job_id for item in result.items] == ["1", "2"]
+            assert result.pages_fetched == 3
+            assert result.total_count is None
+
+    def test_search_preserves_integer_total_count(self) -> None:
+        http = StubSearchHttp([
+            {"count": 2, "innerHTML": _search_card_html(1)},
+            {"count": 2, "innerHTML": ""},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert result.total_count == 2
+
+    def test_search_normalizes_valid_count_strings(self) -> None:
+        http = StubSearchHttp([
+            {"count": " 1,234 ", "innerHTML": _search_card_html(1)},
+            {"count": "1234", "innerHTML": ""},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert result.total_count == 1234
+
+    def test_search_returns_malformed_response_for_invalid_envelopes(self) -> None:
+        responses = [
+            None,
+            [],
+            {"count": "1"},
+            {"count": "1", "innerHTML": None},
+            {"count": "1", "innerHTML": 123},
+        ]
+        for response in responses:
+            http = StubSearchHttp([response])
+            result = SaraminAdapter().search(
+                "백엔드", config=_config(http), state=None, http=http
+            )
+            assert result.items == ()
+            assert result.pages_fetched == 1
+            assert result.complete is False
+            assert result.stop_reason == "malformed_response"
+            assert result.total_count is None
+
+    def test_search_returns_malformed_page_for_non_empty_unparseable_html(self) -> None:
+        http = StubSearchHttp([{"count": "1", "innerHTML": "<div>no cards</div>"}])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert result.items == ()
+        assert result.complete is False
+        assert result.stop_reason == "malformed_page"
+
+    def test_search_stops_on_repeated_page_and_keeps_partial_items(self) -> None:
+        http = StubSearchHttp([
+            {"count": "2", "innerHTML": _search_card_html(1)},
+            {"count": "2", "innerHTML": _search_card_html(1)},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == ["1"]
+        assert result.pages_fetched == 2
+        assert result.complete is False
+        assert result.stop_reason == "repeated_page"
+
+    def test_search_keeps_new_ids_from_partial_overlap(self) -> None:
+        http = StubSearchHttp([
+            {"count": "3", "innerHTML": _search_card_html(1) + _search_card_html(2)},
+            {"count": "3", "innerHTML": _search_card_html(2) + _search_card_html(3)},
+            {"count": "3", "innerHTML": ""},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == ["1", "2", "3"]
+        assert result.stop_reason == "api_end"
+
+    def test_search_stops_when_page_has_no_new_ids(self) -> None:
+        http = StubSearchHttp([
+            {"count": "2", "innerHTML": _search_card_html(1) + _search_card_html(2)},
+            {"count": "2", "innerHTML": _search_card_html(2) + _search_card_html(1)},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == ["1", "2"]
+        assert result.pages_fetched == 2
+        assert result.complete is False
+        assert result.stop_reason == "no_new_items"
+
+    def test_search_reraises_first_page_request_error(self) -> None:
+        http = StubSearchHttp([RuntimeError("page 1 unavailable")])
+
+        with pytest.raises(RuntimeError, match="page 1 unavailable"):
+            SaraminAdapter().search("백엔드", config=_config(http), state=None, http=http)
+
+    def test_search_preserves_candidates_before_later_malformed_response(self) -> None:
+        malformed_responses = [
+            None,
+            [],
+            {"count": "2"},
+            {"count": "2", "innerHTML": None},
+            {"count": "2", "innerHTML": 123},
+        ]
+        for malformed_response in malformed_responses:
+            http = StubSearchHttp([
+                {"count": "2", "innerHTML": _search_card_html(1)},
+                malformed_response,
+            ])
+            result = SaraminAdapter().search(
+                "백엔드", config=_config(http), state=None, http=http
+            )
+            assert [item.job_id for item in result.items] == ["1"]
+            assert result.pages_fetched == 2
+            assert result.complete is False
+            assert result.stop_reason == "malformed_response"
+
+    def test_search_preserves_candidates_before_later_malformed_page(self) -> None:
+        http = StubSearchHttp([
+            {"count": "2", "innerHTML": _search_card_html(1)},
+            {"count": "2", "innerHTML": "<div>no cards</div>"},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == ["1"]
+        assert result.pages_fetched == 2
+        assert result.complete is False
+        assert result.stop_reason == "malformed_page"
+
+    def test_search_stops_at_page_safety_limit(self) -> None:
+        http = StubSearchHttp([
+            {"count": "1000", "innerHTML": _search_card_html(job_id)}
+            for job_id in range(1000)
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert len(result.items) == 1000
+        assert result.pages_fetched == 1000
+        assert len(http.urls) == 1000
+        assert parse_qs(urlparse(http.urls[-1]).query)["page"] == ["1000"]
+        assert result.complete is False
+        assert result.stop_reason == "safety_page_limit"
+
+    def test_search_stops_at_time_safety_limit(self, monkeypatch) -> None:
+        calls: list[None] = []
+
+        def fake_monotonic() -> float:
+            calls.append(None)
+            return 0.0 if len(calls) <= 3 else 600.0
+
+        monkeypatch.setattr("careerkit.jobs.adapters.platforms.saramin.time.monotonic", fake_monotonic)
+        http = StubSearchHttp([
+            {"count": "2", "innerHTML": _search_card_html(1)},
+            {"count": "2", "innerHTML": _search_card_html(2)},
+        ])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert [item.job_id for item in result.items] == ["1"]
+        assert result.pages_fetched == 1
+        assert result.complete is False
+        assert result.stop_reason == "safety_time_limit"
+
+    def test_search_reports_safety_after_slow_response(self, monkeypatch) -> None:
+        calls: list[None] = []
+
+        def fake_monotonic() -> float:
+            calls.append(None)
+            return 0.0 if len(calls) <= 2 else 600.0
+
+        monkeypatch.setattr("careerkit.jobs.adapters.platforms.saramin.time.monotonic", fake_monotonic)
+        http = StubSearchHttp([{"count": "0", "innerHTML": ""}])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert result.items == ()
+        assert result.pages_fetched == 1
+        assert result.complete is False
+        assert result.stop_reason == "safety_time_limit"
+
+    def test_search_bounds_request_timeout_to_deadline(self, monkeypatch) -> None:
+        calls: list[None] = []
+
+        def fake_monotonic() -> float:
+            calls.append(None)
+            return 0.0 if len(calls) == 1 else 599.0
+
+        monkeypatch.setattr("careerkit.jobs.adapters.platforms.saramin.time.monotonic", fake_monotonic)
+        http = StubSearchHttp([{"count": "0", "innerHTML": ""}])
+
+        result = SaraminAdapter().search(
+            "백엔드", config=_config(http), state=None, http=http
+        )
+
+        assert http.timeouts == [1]
+        assert result.complete is True
+        assert result.stop_reason == "api_end"
+
+    def test_search_caps_rate_limit_sleep_to_remaining_deadline(self, monkeypatch) -> None:
+        calls: list[None] = []
+        sleeps: list[float] = []
+
+        def fake_monotonic() -> float:
+            calls.append(None)
+            return 0.0 if len(calls) <= 3 else 599.0
+
+        monkeypatch.setattr("careerkit.jobs.adapters.platforms.saramin.time.monotonic", fake_monotonic)
+        monkeypatch.setattr("careerkit.jobs.adapters.platforms.saramin.time.sleep", sleeps.append)
+        http = StubSearchHttp([
+            {"count": "1", "innerHTML": _search_card_html(1)},
+            {"count": "1", "innerHTML": ""},
+        ])
+        config = _config(http)
+        config.rate_limits = {"saramin": 10.0}
+
+        result = SaraminAdapter().search(
+            "백엔드", config=config, state=None, http=http
+        )
+
+        assert sleeps == [1.0]
+        assert result.stop_reason == "api_end"
 
 
 class TestCompanyInfo:
@@ -611,15 +853,17 @@ class TestCompanyInfo:
 
 
 class StubSearchHttp:
-    def __init__(self, responses: str | list[dict | Exception], count: str = "0") -> None:
+    def __init__(self, responses: str | Sequence[dict | Exception], count: str = "0") -> None:
         if isinstance(responses, list):
             self.responses = list(responses)
         else:
             self.responses = [{"count": count, "innerHTML": responses}]
         self.urls: list[str] = []
+        self.timeouts: list[object] = []
 
     def request_json(self, url: str, **kwargs) -> dict:
         self.urls.append(url)
+        self.timeouts.append(kwargs.get("timeout"))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -629,6 +873,203 @@ class StubSearchHttp:
         return ""
 
 
+class TestSaraminSectionExtraction:
+    def test_extract_jd_sections_splits_alias_headings_and_keeps_unclassified_prose(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<h2>담당업무</h2><ul><li>API 개발</li><li>장애 대응</li></ul>"
+                "<h2>지원자격</h2><p>Python 경험</p><ul><li>FastAPI 경험</li></ul>"
+                "<h2>우대조건</h2><p>AWS 경험</p>"
+                "<h2>기타</h2><p>팀 소개</p>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.main_duties == ("- API 개발", "- 장애 대응")
+        assert sections.requirements == ("Python 경험", "- FastAPI 경험")
+        assert sections.preferred == ("- AWS 경험",)
+        assert sections.introduction == ("팀 소개",)
+
+    def test_extract_jd_sections_preserves_html_boundaries_before_tag_removal(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<h2>주요업무</h2><ul><li>서비스 운영</li><li>품질 개선</li></ul>"
+                "<h2>자격요건</h2><p>문서화 역량</p><p>협업 역량</p>"
+                "<h2>우대사항</h2><p>커뮤니케이션</p><br>테스트 자동화"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.main_duties == ("- 서비스 운영", "- 품질 개선")
+        assert sections.requirements == ("문서화 역량", "협업 역량")
+        assert sections.preferred == ("- 커뮤니케이션", "- 테스트 자동화")
+
+    def test_extract_jd_sections_reads_plain_text_icon_headings(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<div>모집분야</div>"
+                "<div>📋 주요업무</div><div>• API 개발</div>"
+                "<div>📋 자격요건</div><div>• Python 경험</div>"
+                "<div>🏠 근무조건</div><div>• 정규직</div>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.main_duties == ("- API 개발",)
+        assert sections.requirements == ("- Python 경험",)
+        assert sections.preferred == ()
+
+    def test_extract_jd_sections_reads_plain_text_sections_inside_generic_headings(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<h2>모집부문 / 상세내용</h2>"
+                "<div>업무내용</div><div>• API 개발</div>"
+                "<div>필요 역량/경험</div><div>• Python 경험</div>"
+                "<div>선호 역량/경험</div><div>• AWS 경험</div>"
+                "<div>마감일 및 근무지</div><div>2026년 8월 31일</div>"
+                "<h2>복지 및 혜택</h2><div>식대 지원</div>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.main_duties == ("- API 개발",)
+        assert sections.requirements == ("- Python 경험",)
+        assert sections.preferred == ("- AWS 경험",)
+
+
+
+    def test_extract_jd_sections_drops_marker_only_lines(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<div>자격요건</div><div>•</div><div>Python 경험</div>"
+                "<div>우대사항</div><div>-</div><div>AWS 경험</div>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.requirements == ("- Python 경험",)
+        assert sections.preferred == ("- AWS 경험",)
+
+    def test_extract_jd_sections_drops_repeated_and_unspaced_markers(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<div>자격요건</div><div>•Python 경험</div><div>- • AWS 경험</div>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.requirements == ("- Python 경험", "- AWS 경험")
+
+    def test_extract_detail_sections_drops_marker_only_rows(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body("<p>ignored</p>"),
+            detail_pairs=(("자격요건", "<ul><li></li><li>Python 경험</li></ul>"),),
+        )
+
+        sections = extract_detail_sections(html)
+
+        assert sections.requirements == ("- Python 경험",)
+
+    def test_extract_jd_sections_normalizes_bracketed_parenthesized_and_numbered_headings(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<h2>[자격요건]</h2><ul><li>Python</li></ul>"
+                "<h2>(우대사항)</h2><p>AWS</p>"
+                "<h2>2. 담당업무</h2><ul><li>서비스 개발</li></ul>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.main_duties == ("- 서비스 개발",)
+        assert sections.requirements == ("- Python",)
+        assert sections.preferred == ("- AWS",)
+
+    def test_extract_detail_sections_normalizes_bracketed_parenthesized_and_numbered_labels(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body("<p>ignored</p>"),
+            detail_pairs=(
+                ("[자격요건]", "Python"),
+                ("(우대사항)", "AWS"),
+                ("2. 담당업무", "서비스 개발"),
+            ),
+        )
+
+        sections = extract_detail_sections(html)
+
+        assert sections.main_duties == ("- 서비스 개발",)
+        assert sections.requirements == ("- Python",)
+        assert sections.preferred == ("- AWS",)
+
+    def test_extract_jd_sections_normalizes_combined_numbered_and_wrapped_headings(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<h2>1. [자격요건]</h2><ul><li>Python</li></ul>"
+                "<h2>1) (우대사항)</h2><p>AWS</p>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.requirements == ("- Python",)
+        assert sections.preferred == ("- AWS",)
+
+    def test_extract_jd_sections_ignores_inline_strong_or_b_in_requirement_content(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body(
+                "<h2>자격요건</h2><ul><li><strong>필수</strong> Python 경험</li></ul>"
+            ),
+        )
+
+        sections = extract_jd_sections(html, "123")
+
+        assert sections.requirements == ("- 필수 Python 경험",)
+        assert sections.introduction == ()
+
+    def test_extract_jd_sections_missing_or_invalid_body_returns_empty_sections(self) -> None:
+        missing = extract_jd_sections("<html></html>", "123")
+        invalid = extract_jd_sections(_detail_html(job_id="123", encoded_body="bm90IGJhc2U2NA=="), "123")
+
+        assert missing.main_duties == ()
+        assert missing.requirements == ()
+        assert missing.preferred == ()
+        assert missing.introduction == ()
+        assert invalid == missing
+
+    def test_extract_detail_sections_maps_detail_fields_to_sections(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body("<p>ignored</p>"),
+            detail_pairs=(
+                ("담당업무", "API 개발<br>장애 대응"),
+                ("자격요건", "Python 경험<br>FastAPI 경험"),
+                ("우대사항", "AWS 경험"),
+            ),
+        )
+
+        sections = extract_detail_sections(html)
+
+        assert sections.main_duties == ("- API 개발", "- 장애 대응")
+        assert sections.requirements == ("- Python 경험", "- FastAPI 경험")
+        assert sections.preferred == ("- AWS 경험",)
+        assert sections.introduction == ()
 def _config(
     http: StubSearchHttp,
     *,

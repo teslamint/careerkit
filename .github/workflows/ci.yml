@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -34,6 +37,10 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+      SEMANTIC_MODEL_NAME: jhgan/ko-sroberta-multitask
+      SEMANTIC_MODEL_REVISION: 8fca7c9c98c26599be0e14b9916b11a756a26f19
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -47,8 +54,218 @@ jobs:
           sudo apt-get install -y pandoc weasyprint poppler-utils
       - name: Sync development environment
         run: UV_CACHE_DIR=.uv-cache uv sync --locked --all-groups --all-extras
+      - name: Configure semantic model paths
+        run: |
+          echo "HF_HOME=$RUNNER_TEMP/hf-home" >> "$GITHUB_ENV"
+          echo "HF_PUBLIC_CACHE=$RUNNER_TEMP/public-hf-models" >> "$GITHUB_ENV"
+      - name: Restore pinned semantic model cache
+        id: semantic_model_cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: |
+            ${{ runner.temp }}/public-hf-models/models--jhgan--ko-sroberta-multitask/blobs
+            ${{ runner.temp }}/public-hf-models/models--jhgan--ko-sroberta-multitask/snapshots/8fca7c9c98c26599be0e14b9916b11a756a26f19
+          key: semantic-model-v2-${{ runner.os }}-jhgan-ko-sroberta-multitask-8fca7c9c98c26599be0e14b9916b11a756a26f19
+      - name: Validate pinned semantic model cache path
+        run: |
+          set -euo pipefail
+          mkdir -p "$HF_HOME" "$HF_PUBLIC_CACHE"
+          test -d "$HF_PUBLIC_CACHE"
+          if [ "${{ steps.semantic_model_cache.outputs.cache-hit }}" = "true" ]; then
+            export SEMANTIC_CACHE_REQUIRED=1
+          else
+            export SEMANTIC_CACHE_REQUIRED=0
+          fi
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          cache_root = Path(os.environ["HF_PUBLIC_CACHE"])
+          hf_home = Path(os.environ["HF_HOME"])
+          revision = os.environ["SEMANTIC_MODEL_REVISION"]
+          repo_dir = cache_root / "models--jhgan--ko-sroberta-multitask"
+          snapshots_dir = repo_dir / "snapshots"
+          expected_snapshot = snapshots_dir / revision
+          blobs_dir = repo_dir / "blobs"
+          cache_required = os.environ["SEMANTIC_CACHE_REQUIRED"] == "1"
+
+          for token_path in (hf_home / "token", cache_root / "token"):
+              if token_path.exists():
+                  raise SystemExit(f"token file is not allowed in semantic cache: {token_path}")
+
+          for root in (hf_home, cache_root):
+              for path in root.rglob("*"):
+                  parts = set(path.parts)
+                  if "private" in parts:
+                      raise SystemExit(f"private directory is not allowed in semantic cache: {path}")
+                  if "semantic-eval" in parts:
+                      raise SystemExit(f"eval artifacts are not allowed in semantic cache: {path}")
+
+          if not repo_dir.exists():
+              if cache_required:
+                  raise SystemExit("semantic cache restore was required but repository root is absent")
+              raise SystemExit(0)
+
+          hub_metadata_entries = {".locks", "CACHEDIR.TAG", "version.txt"}
+          extra_repos = [
+              path
+              for path in cache_root.iterdir()
+              if path.name != "models--jhgan--ko-sroberta-multitask"
+              and path.name not in hub_metadata_entries
+              and not path.name.startswith("tmp")
+          ]
+          if extra_repos:
+              raise SystemExit(f"unexpected model repository: {extra_repos[0]}")
+          if (repo_dir / "refs").exists():
+              raise SystemExit("refs directory is not allowed")
+
+          repo_entries = {path.name for path in repo_dir.iterdir()}
+          if not {"blobs", "snapshots"} <= repo_entries or repo_entries - {"blobs", "snapshots", ".no_exist"}:
+              raise SystemExit(f"unexpected repository entries: {sorted(repo_entries)}")
+
+          snapshot_entries = list(snapshots_dir.iterdir()) if snapshots_dir.exists() else []
+          if snapshot_entries != [expected_snapshot]:
+              raise SystemExit(f"unexpected extra snapshot directories: {[path.name for path in snapshot_entries]}")
+
+          referenced_blobs: set[Path] = set()
+          for snapshot_path in expected_snapshot.rglob("*"):
+              if snapshot_path.is_dir():
+                  continue
+              if not snapshot_path.is_symlink():
+                  raise SystemExit(f"snapshot files must be symlinks into blobs: {snapshot_path}")
+              target = snapshot_path.resolve(strict=True)
+              if blobs_dir not in target.parents:
+                  raise SystemExit(f"snapshot target must stay inside blobs: {snapshot_path} -> {target}")
+              referenced_blobs.add(target)
+
+          actual_blobs = {path.resolve() for path in blobs_dir.rglob("*") if path.is_file()}
+          if actual_blobs - referenced_blobs:
+              raise SystemExit(f"unexpected extra blobs: {sorted(str(path) for path in actual_blobs - referenced_blobs)[:1]}")
+          if referenced_blobs - actual_blobs:
+              raise SystemExit(f"missing referenced blobs: {sorted(str(path) for path in referenced_blobs - actual_blobs)[:1]}")
+          PY
       - name: Install Playwright browsers
         run: UV_CACHE_DIR=.uv-cache uv run playwright install --with-deps chromium
+      - name: Run semantic eval deterministic tests
+        run: UV_CACHE_DIR=.uv-cache uv run pytest tests/jobs/test_semantic_eval.py tests/jobs/test_semantic_filter.py -q
+      - name: Run pinned semantic eval synthetic smoke
+        run: |
+          set -euo pipefail
+          report_dir="$RUNNER_TEMP/semantic-filter-eval"
+          dataset_path="$report_dir/dataset.json"
+          report_path="$report_dir/report.json"
+          stdout_path="$report_dir/stdout.json"
+          install -d -m 700 "$report_dir"
+          install -m 600 tests/fixtures/jobs/semantic_filter_eval.json "$dataset_path"
+          if [ "${{ steps.semantic_model_cache.outputs.cache-hit }}" = "true" ]; then
+            export HF_HUB_OFFLINE=1
+          fi
+          set +e
+          UV_CACHE_DIR=.uv-cache HF_HOME="$RUNNER_TEMP/hf-home" HF_HUB_CACHE="$RUNNER_TEMP/public-hf-models" uv run --extra semantic career-jobs --workspace tests/fixtures/workspace/basic semantic-eval run --dataset "$dataset_path" --output "$report_path" --json >"$stdout_path"
+          status=$?
+          set -e
+          if [ "$status" -eq 2 ]; then
+            grep -q '"status": "insufficient_data"' "$stdout_path" || {
+              echo "unexpected semantic-eval exit 2"
+              cat "$stdout_path"
+              exit 1
+            }
+          elif [ "$status" -ne 0 ]; then
+            echo "unexpected semantic-eval exit code: $status"
+            cat "$stdout_path"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("semantic-filter-eval", "report.json").read_text(encoding="utf-8"))
+          stdout_payload = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("semantic-filter-eval", "stdout.json").read_text(encoding="utf-8"))
+          assert report["schema"] == "semantic-filter-score-report/v1"
+          assert report["evidence_tier"] == "synthetic"
+          assert report["authorizes_production_change"] is False
+          assert stdout_payload["status"] == "insufficient_data"
+          assert stdout_payload["error_code"] == "insufficient_data"
+          assert stdout_payload["authorizes_production_change"] is False
+          assert stdout_payload["provenance"]["model_revision"] == "8fca7c9c98c26599be0e14b9916b11a756a26f19"
+          command = stdout_payload["provenance"]["command"]
+          assert "semantic-filter-eval/dataset.json" in command
+          assert "semantic-filter-eval/report.json" in command
+          assert "private/" not in command
+          PY
+      - name: Validate semantic model cache before save
+        run: |
+          set -euo pipefail
+          export SEMANTIC_CACHE_REQUIRED=1
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          cache_root = Path(os.environ["HF_PUBLIC_CACHE"])
+          hf_home = Path(os.environ["HF_HOME"])
+          revision = os.environ["SEMANTIC_MODEL_REVISION"]
+          repo_dir = cache_root / "models--jhgan--ko-sroberta-multitask"
+          snapshots_dir = repo_dir / "snapshots"
+          expected_snapshot = snapshots_dir / revision
+          blobs_dir = repo_dir / "blobs"
+
+          for token_path in (hf_home / "token", cache_root / "token"):
+              if token_path.exists():
+                  raise SystemExit(f"token file is not allowed in semantic cache: {token_path}")
+
+          for root in (hf_home, cache_root):
+              for path in root.rglob("*"):
+                  parts = set(path.parts)
+                  if "private" in parts:
+                      raise SystemExit(f"private directory is not allowed in semantic cache: {path}")
+                  if "semantic-eval" in parts:
+                      raise SystemExit(f"eval artifacts are not allowed in semantic cache: {path}")
+
+          if not repo_dir.exists():
+              raise SystemExit("semantic cache save requires the repository root")
+          locks_dir = cache_root / ".locks"
+          hub_metadata_entries = {".locks", "CACHEDIR.TAG", "version.txt"}
+          extra_repos = [
+              path
+              for path in cache_root.iterdir()
+              if path.name != "models--jhgan--ko-sroberta-multitask"
+              and path.name not in hub_metadata_entries
+              and not path.name.startswith("tmp")
+          ]
+          if extra_repos:
+              raise SystemExit(f"unexpected model repository: {extra_repos[0]}")
+          extra_locks = [path for path in locks_dir.iterdir() if path.name != "models--jhgan--ko-sroberta-multitask"] if locks_dir.exists() else []
+          if extra_locks:
+              raise SystemExit(f"unexpected lock repository: {extra_locks[0]}")
+          if (repo_dir / "refs").exists():
+              raise SystemExit("refs directory is not allowed")
+
+          repo_entries = {path.name for path in repo_dir.iterdir()}
+          if not {"blobs", "snapshots"} <= repo_entries or repo_entries - {"blobs", "snapshots", ".no_exist"}:
+              raise SystemExit(f"unexpected repository entries: {sorted(repo_entries)}")
+
+          snapshot_entries = list(snapshots_dir.iterdir()) if snapshots_dir.exists() else []
+          if snapshot_entries != [expected_snapshot]:
+              raise SystemExit(f"unexpected extra snapshot directories: {[path.name for path in snapshot_entries]}")
+
+          referenced_blobs: set[Path] = set()
+          for snapshot_path in expected_snapshot.rglob("*"):
+              if snapshot_path.is_dir():
+                  continue
+              if not snapshot_path.is_symlink():
+                  raise SystemExit(f"snapshot files must be symlinks into blobs: {snapshot_path}")
+              target = snapshot_path.resolve(strict=True)
+              if blobs_dir not in target.parents:
+                  raise SystemExit(f"snapshot target must stay inside blobs: {snapshot_path} -> {target}")
+              referenced_blobs.add(target)
+
+          actual_blobs = {path.resolve() for path in blobs_dir.rglob("*") if path.is_file()}
+          if actual_blobs - referenced_blobs:
+              raise SystemExit(f"unexpected extra blobs: {sorted(str(path) for path in actual_blobs - referenced_blobs)[:1]}")
+          if referenced_blobs - actual_blobs:
+              raise SystemExit(f"missing referenced blobs: {sorted(str(path) for path in referenced_blobs - actual_blobs)[:1]}")
+          PY
       - name: Run complete suite
         run: |
           UV_CACHE_DIR=.uv-cache uv build

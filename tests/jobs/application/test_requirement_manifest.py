@@ -320,7 +320,7 @@ def test_bracket_boundary_unknown_resets_kind_and_excludes_items() -> None:
 ## 자격 요건
 - Python 개발 경험 3년 이상
 
-[이런 분과 함께하고 싶어요]
+[근무 환경]
 - 주체적으로 문제를 해결하는 분
 - 유연한 커뮤니케이션이 가능한 분
 """.strip()
@@ -330,6 +330,26 @@ def test_bracket_boundary_unknown_resets_kind_and_excludes_items() -> None:
     assert manifest.parents[0].text == "Python 개발 경험 3년 이상"
     assert manifest.parents[0].kind == RequirementKind.REQUIRED
     assert manifest.ambiguous_qualifications is True
+
+
+def test_wanted_bracket_label_preserves_required_section() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+- Python 개발 경험 3년 이상
+
+[이런 분과 함께하고 싶어요]
+- 주체적으로 문제를 해결하는 분
+- 유연한 커뮤니케이션이 가능한 분
+""".strip()
+    )
+
+    assert len(manifest.parents) == 3
+    assert manifest.parents[0].text == "Python 개발 경험 3년 이상"
+    assert manifest.parents[1].text == "주체적으로 문제를 해결하는 분"
+    assert manifest.parents[2].text == "유연한 커뮤니케이션이 가능한 분"
+    assert all(p.kind == RequirementKind.REQUIRED for p in manifest.parents)
+    assert manifest.ambiguous_qualifications is False
 
 
 def test_bracket_boundary_known_maps_to_section_kind() -> None:
@@ -432,7 +452,7 @@ def test_bracket_boundary_resets_parent_index() -> None:
 ## 자격 요건
 - Python, Django
 
-[이런 분을 찾아요]
+[근무 환경]
 - 열정적인 분
 
 ## 우대사항
@@ -448,6 +468,29 @@ def test_bracket_boundary_resets_parent_index() -> None:
     assert len(manifest.parents) == 2
     assert manifest.parents[1].text == "Kafka 경험"
     assert manifest.parents[1].kind == RequirementKind.PREFERRED
+
+
+def test_wanted_bracket_label_preserves_across_sections() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+
+[이런 분과 함께하고 싶습니다]
+- Java 백엔드 개발 경험
+- RESTful API 설계 경험
+
+## 우대사항
+
+[이런 분이면 더 좋습니다]
+- 클라우드 플랫폼 경험
+""".strip()
+    )
+
+    assert len(manifest.parents) == 3
+    assert manifest.parents[0].kind == RequirementKind.REQUIRED
+    assert manifest.parents[1].kind == RequirementKind.REQUIRED
+    assert manifest.parents[2].kind == RequirementKind.PREFERRED
+    assert manifest.ambiguous_qualifications is False
 
 
 def test_mixed_heading_and_bracket_sections() -> None:
@@ -507,3 +550,113 @@ def test_extract_requirement_manifest_parses_unicode_bullet() -> None:
     assert manifest.parents[0].text == "백엔드 개발 7년 이상 경력"
     assert manifest.parents[1].text == "RDBMS 설계 및 성능 최적화"
     assert manifest.ambiguous_qualifications is False
+
+
+def test_extract_requirement_manifest_parses_numbered_list_dot() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+1. Java / Spring Boot 기반 서버 개발 경력 5년 이상
+2. REST API 설계 경험
+
+## 우대사항
+1. AWS 환경 배포 경험
+""".strip()
+    )
+
+    assert len(manifest.parents) == 3
+    assert manifest.parents[0].kind == RequirementKind.REQUIRED
+    assert manifest.parents[1].kind == RequirementKind.REQUIRED
+    assert manifest.parents[2].kind == RequirementKind.PREFERRED
+    assert manifest.parents[0].text == "Java / Spring Boot 기반 서버 개발 경력 5년 이상"
+    assert manifest.parents[1].text == "REST API 설계 경험"
+    assert manifest.parents[2].text == "AWS 환경 배포 경험"
+
+
+def test_extract_requirement_manifest_parses_numbered_list_paren() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+1) Python 백엔드 개발 경험
+2) Docker 운영 경험
+""".strip()
+    )
+
+    assert len(manifest.parents) == 2
+    assert manifest.parents[0].text == "Python 백엔드 개발 경험"
+    assert manifest.parents[1].text == "Docker 운영 경험"
+
+
+def test_extract_requirement_manifest_numbered_list_composite_splitting() -> None:
+    jd_markdown = """
+## 자격 요건
+1. Python / Django, PostgreSQL
+""".strip()
+
+    manifest = extract_requirement_manifest(jd_markdown)
+
+    parent = manifest.parents[0]
+    children = [item for item in manifest.items if item.parent_id == parent.id]
+
+    assert parent.assessable is False
+    assert [item.text for item in children] == ["Python", "Django", "PostgreSQL"]
+    for child in children:
+        assert child.source_span is not None
+        start, end = child.source_span
+        assert jd_markdown[start:end] == child.text
+
+
+def test_extract_requirement_manifest_numbered_list_without_main_duty() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 주요 업무
+1. API 개발
+2. 서비스 운영
+
+## 자격 요건
+1. Python 3년 이상
+""".strip()
+    )
+
+    filtered = without_main_duty(manifest)
+
+    assert len(filtered.parents) == 1
+    assert filtered.parents[0].text == "Python 3년 이상"
+    assert filtered.parents[0].kind == RequirementKind.REQUIRED
+
+
+def test_extract_requirement_manifest_numbered_list_ignored_outside_sections() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 포지션 소개
+1. 세계최초 Medical LLM 1위
+2. NVIDIA 공동연구
+
+## 자격 요건
+1. Java 개발 5년 이상
+""".strip()
+    )
+
+    assert len(manifest.parents) == 1
+    assert manifest.parents[0].text == "Java 개발 5년 이상"
+    assert manifest.parents[0].kind == RequirementKind.REQUIRED
+
+
+def test_extract_requirement_manifest_mixed_bullet_and_numbered() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+- Python 개발 경험
+1. Java 개발 경험
+
+## 우대사항
+• Kafka 경험
+2) Redis 경험
+""".strip()
+    )
+
+    assert len(manifest.parents) == 4
+    assert manifest.parents[0].text == "Python 개발 경험"
+    assert manifest.parents[1].text == "Java 개발 경험"
+    assert manifest.parents[2].text == "Kafka 경험"
+    assert manifest.parents[3].text == "Redis 경험"

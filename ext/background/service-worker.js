@@ -9,7 +9,8 @@
 // - Background -> native host: forwards the request object as-is over the port
 // - Native host -> background: either a response to the oldest in-flight
 //   request (FIFO — the host answers requests in the order it received them)
-//   or an unsolicited push message shaped {type: "screening_complete" | "screening_failed", tracking_id, ...}
+//   or an unsolicited push message shaped
+//   {type: "screening_progress" | "screening_complete" | "screening_failed", tracking_id, ...}
 
 var NATIVE_HOST_NAME = "com.careerkit.host";
 var KEEPALIVE_ALARM_NAME = "keepalive";
@@ -17,7 +18,9 @@ var KEEPALIVE_PERIOD_MINUTES = 0.5;
 
 var nativePort = null;
 var nextRequestId = 1;
+var notificationContexts = new Map();
 var pendingRequests = new Map(); // request_id -> {resolve, reject}
+var COMPLETION_DATA_ALLOWLIST = ["company", "position", "verdict_label", "screening_verdict", "verdict_capped"];
 
 function connectNativeHost() {
   if (nativePort) return nativePort;
@@ -50,13 +53,104 @@ function handleNativeDisconnect() {
   sweepPendingScreeningsAsOrphans("Native host disconnected");
 }
 
+function isFiniteCompleteness(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
+function isValidTrackingId(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isValidProgressMessage(message) {
+  if (!message || message.type !== "screening_progress") return false;
+  if (!isValidTrackingId(message.tracking_id)) return false;
+  if (!pendingScreenings.has(message.tracking_id)) return false;
+  if (Object.keys(message).length !== 4) return false;
+  if (message.stage === "company_info") {
+    return message.state === "checking" || message.state === "enriching";
+  }
+  if (message.stage === "screening") {
+    return message.state === "running";
+  }
+  return false;
+}
+
+function isValidCompanyInfoResult(result) {
+  if (!result || typeof result !== "object") return false;
+  var keys = Object.keys(result).sort();
+  var expectedKeys = ["attempted", "completeness", "persisted", "status", "warning_code"];
+  if (keys.length !== expectedKeys.length) return false;
+  for (var i = 0; i < expectedKeys.length; i++) {
+    if (keys[i] !== expectedKeys[i]) return false;
+  }
+  if (typeof result.attempted !== "boolean" || typeof result.persisted !== "boolean") return false;
+  if (result.status === "ready") {
+    return result.warning_code === null && isFiniteCompleteness(result.completeness);
+  }
+  if (result.status === "warning") {
+    if (result.warning_code === "missing") {
+      return result.completeness === null;
+    }
+    if (result.warning_code === "below_threshold") {
+      return isFiniteCompleteness(result.completeness);
+    }
+  }
+  return false;
+}
+
+function isValidCompletionMessage(message) {
+  if (!message || message.type !== "screening_complete") return false;
+  if (!isValidTrackingId(message.tracking_id)) return false;
+  if (!pendingScreenings.has(message.tracking_id)) return false;
+  if (!message.data || typeof message.data !== "object") return false;
+  if (!Object.prototype.hasOwnProperty.call(message.data, "company_info")) return false;
+  return isValidCompanyInfoResult(message.data.company_info);
+}
+
+function sanitizeCompletionData(data) {
+  if (!data || !isValidCompanyInfoResult(data.company_info)) return null;
+  var sanitized = {};
+  for (var i = 0; i < COMPLETION_DATA_ALLOWLIST.length; i++) {
+    var key = COMPLETION_DATA_ALLOWLIST[i];
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+      sanitized[key] = data[key];
+    }
+  }
+  sanitized.company_info = data.company_info;
+  return sanitized;
+}
+
+function isValidFailureMessage(message) {
+  return (
+    !!message &&
+    message.type === "screening_failed" &&
+    isValidTrackingId(message.tracking_id) &&
+    pendingScreenings.has(message.tracking_id) &&
+    typeof message.message === "string" &&
+    message.message.length > 0
+  );
+}
+
 function handleNativeMessage(message) {
-  if (message && message.type === "screening_complete") {
+  if (isValidProgressMessage(message)) {
+    onScreeningProgress(message);
+    return;
+  }
+  if (message && message.type === "screening_progress") {
+    return;
+  }
+  if (isValidCompletionMessage(message)) {
     onScreeningComplete(message);
     return;
   }
-  if (message && message.type === "screening_failed") {
+  if (message && message.type === "screening_complete") {
+    return;
+  }
+  if (isValidFailureMessage(message)) {
     onScreeningFailed(message);
+    return;
+  }
+  if (message && message.type === "screening_failed") {
     return;
   }
 
@@ -172,15 +266,37 @@ function incrementBadgeCount() {
   });
 }
 
+function onScreeningProgress(message) {
+  var pending = pendingScreenings.get(message.tracking_id);
+  if (!pending) return;
+  var payload = {
+    action: "screening_progress",
+    tracking_id: message.tracking_id,
+    stage: message.stage,
+    state: message.state,
+    url: pending.url
+  };
+  chrome.runtime.sendMessage(payload, function () {
+    void chrome.runtime.lastError;
+  });
+  if (pending.tabId) {
+    notifyTab(pending.tabId, payload);
+  }
+}
+
 function onScreeningComplete(message) {
   var trackingId = message.tracking_id;
-  var data = message.data || {};
+  var data = sanitizeCompletionData(message.data || {});
+  if (!data) return;
 
   popPendingScreening(trackingId).then(function (pending) {
-    var label = data.verdict_label || data.verdict || "스크리닝 완료";
-    var title = data.company ? data.company + " — " + data.position : "CareerKit";
+    if (!pending) return;
+    var label = data.verdict_label || data.screening_verdict || "스크리닝 완료";
+    var title = data.company && data.position ? data.company + " — " + data.position : "CareerKit";
 
-    chrome.notifications.create("careerkit-" + trackingId, {
+    var notifId = "careerkit-" + trackingId;
+    notificationContexts.set(notifId, { tabId: pending.tabId, url: pending.url });
+    chrome.notifications.create(notifId, {
       type: "basic",
       iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
       title: title,
@@ -195,10 +311,6 @@ function onScreeningComplete(message) {
     });
     if (pending && pending.tabId) {
       notifyTab(pending.tabId, payload);
-    } else {
-      chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-        if (tabs && tabs[0]) notifyTab(tabs[0].id, payload);
-      });
     }
   });
 }
@@ -207,23 +319,31 @@ function onScreeningFailed(message) {
   var trackingId = message.tracking_id;
 
   popPendingScreening(trackingId).then(function (pending) {
+    if (!pending) return;
     var payload = { action: "screening_failed", message: message.message, url: pending && pending.url };
     chrome.runtime.sendMessage(payload, function () {
       void chrome.runtime.lastError;
     });
     if (pending && pending.tabId) {
       notifyTab(pending.tabId, payload);
-    } else {
-      chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-        if (tabs && tabs[0]) notifyTab(tabs[0].id, payload);
-      });
     }
   });
 }
 
 // --- message routing from content scripts / side panel ---
 
+function getPendingStatusForUrl(url) {
+  var found = false;
+  pendingScreenings.forEach(function (entry) {
+    if (entry.url === url) found = true;
+  });
+  return { status: "ok", pending: found };
+}
+
 function handleAction(request, sender) {
+  if (request.action === "get_pending_status") {
+    return Promise.resolve(getPendingStatusForUrl(request.url));
+  }
   return sendToNativeHost(request).then(function (response) {
     if (
       (request.action === "collect" || request.action === "rescreen") &&
@@ -263,6 +383,30 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
   return true; // keep sendResponse channel open for the async response above
 });
 
+// --- notification click handler ---
+
+chrome.notifications.onClicked.addListener(function (notifId) {
+  chrome.notifications.clear(notifId);
+  var ctx = notificationContexts.get(notifId);
+  notificationContexts.delete(notifId);
+  if (ctx && ctx.tabId) {
+    chrome.tabs.update(ctx.tabId, { active: true }, function () {
+      if (chrome.runtime.lastError) return;
+      chrome.tabs.get(ctx.tabId, function (tab) {
+        if (chrome.runtime.lastError || !tab) return;
+        chrome.windows.update(tab.windowId, { focused: true });
+        chrome.sidePanel.open({ tabId: ctx.tabId }).catch(function () {});
+      });
+    });
+  } else {
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      if (tabs && tabs[0]) {
+        chrome.sidePanel.open({ tabId: tabs[0].id }).catch(function () {});
+      }
+    });
+  }
+});
+
 // --- lifecycle: install/startup + keepalive ---
 
 chrome.runtime.onInstalled.addListener(function () {
@@ -279,3 +423,28 @@ chrome.alarms.onAlarm.addListener(function (alarm) {
     connectNativeHost();
   }
 });
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    handleNativeMessage: handleNativeMessage,
+    isValidProgressMessage: isValidProgressMessage,
+    isValidCompletionMessage: isValidCompletionMessage,
+    isValidFailureMessage: isValidFailureMessage,
+    sanitizeCompletionData: sanitizeCompletionData,
+    __setPendingScreening: function (trackingId, entry) {
+      pendingScreenings.set(trackingId, entry);
+    },
+    __getPendingScreening: function (trackingId) {
+      return pendingScreenings.get(trackingId);
+    },
+    __hasPendingScreening: function (trackingId) {
+      return pendingScreenings.has(trackingId);
+    },
+    __setPendingRequest: function (requestId, resolve) {
+      pendingRequests.set(requestId, { resolve: resolve, reject: function () {} });
+    },
+    __hasPendingRequest: function (requestId) {
+      return pendingRequests.has(requestId);
+    }
+  };
+}

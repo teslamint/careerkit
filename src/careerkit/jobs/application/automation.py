@@ -7,7 +7,7 @@ import os
 import re
 import tempfile
 from collections import Counter, defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -15,8 +15,22 @@ from typing import Any, Mapping, Protocol, Sequence
 from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
 from careerkit.jobs.adapters.http import HttpClient, HttpError, UrllibHttpClient
 from careerkit.jobs.adapters.platforms.groupby import format_groupby_experience
+from careerkit.jobs.adapters.platforms.remember import remember_company_http
+from careerkit.jobs.adapters.platforms.saramin import extract_csn_from_html, saramin_company_http
+from careerkit.jobs.adapters.platforms.wanted import (
+    WantedCompanyInfo,
+    wanted_company_http,
+    wanted_company_is_valid,
+    wanted_company_matches,
+    wanted_search_company_id,
+)
 from careerkit.jobs.adapters.screening.cli_provider import LLMProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
+from careerkit.jobs.application.company_enrichment import (
+    CompanyEnrichmentContext,
+    CompanyEnrichmentService,
+    CompanyInfoEnrichmentResult,
+)
 from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService
@@ -35,9 +49,12 @@ logger = logging.getLogger(__name__)
 
 _COMPANY_INFO_MISSING = "company info file missing"
 _COMPANY_INFO_INCOMPLETE = "company info completeness below 70"
+_COMPANY_INFO_FAILURE_CODE = "company_info_failed"
+_COMPANY_INFO_FAILURE_MESSAGE = "company info unavailable"
 
 MAX_CANDIDATE_CONTEXT_CHARS = 60_000
 MAX_CANDIDATE_FILE_CHARS = 4_000
+MAX_TELEMETRY_DETAIL_CHARS = 240
 PROFILE_CONTEXT_FILES = (
     "summary-job.md",
     "skills-job.md",
@@ -59,6 +76,7 @@ class ExtractionBatch:
     records: tuple[StoredJobRecord, ...]
     metadata: dict[str, Any]
     failed_urls: tuple[str, ...] = ()
+    company_contexts: dict[str, CompanyEnrichmentContext] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -407,6 +425,7 @@ class JobsExtractionStage:
         screening_only: bool,
     ) -> ExtractionBatch:
         records: list[StoredJobRecord] = []
+        company_contexts: dict[str, CompanyEnrichmentContext] = {}
         successful_urls: list[str] = []
         failed_urls: list[str] = []
         failures: list[dict[str, str]] = []
@@ -418,7 +437,11 @@ class JobsExtractionStage:
                 if not screening_only and key is not None and self.repository.find(key) is not None:
                     duplicates.append(f"{key.platform}:{key.job_id}")
                     continue
-                record = self._resolve_existing(url) if screening_only else self._extract_url(url, dry_run=dry_run)
+                if screening_only:
+                    record = self._resolve_existing(url, dry_run=dry_run)
+                    context = self._extract_context_for_url(url)
+                else:
+                    record, context = self._extract_url(url, dry_run=dry_run)
             except (FileNotFoundError, HttpError, RuntimeError, ValueError) as exc:
                 key = _job_key_from_url(url)
                 item_id = f"{key.platform}:{key.job_id}" if key is not None else f"item-{index}"
@@ -426,6 +449,9 @@ class JobsExtractionStage:
                 failed_urls.append(url)
                 continue
             records.append(record)
+            item_id = f"{record.record.platform}:{record.record.job_id}"
+            if context is not None:
+                company_contexts[item_id] = context
             successful_urls.append(url)
         item_ids = tuple(f"{item.record.platform}:{item.record.job_id}" for item in records)
         metadata = {
@@ -453,42 +479,74 @@ class JobsExtractionStage:
             records=tuple(records),
             metadata=metadata,
             failed_urls=tuple(failed_urls),
+            company_contexts=company_contexts,
         )
 
-    def _resolve_existing(self, url: str) -> StoredJobRecord:
+    def _resolve_existing(self, url: str, *, dry_run: bool = False) -> StoredJobRecord:
         key = _job_key_from_url(url)
         if key is None:
             raise ValueError(f"unsupported or invalid job URL: {url}")
-        return self.repository.get(key)
+        stored = self.repository.get(key)
+        if _has_assessable_requirements(stored.jd_markdown):
+            return stored
+        try:
+            refreshed, _context = self._extract_url(url, dry_run=dry_run)
+        except (HttpError, OSError, RuntimeError, ValueError):
+            return stored
+        return refreshed
 
-    def _extract_url(self, url: str, *, dry_run: bool) -> StoredJobRecord:
+    def _extract_url(
+        self, url: str, *, dry_run: bool
+    ) -> tuple[StoredJobRecord, CompanyEnrichmentContext | None]:
         key = _job_key_from_url(url)
         if key is None:
             raise ValueError(f"unsupported or invalid job URL: {url}")
         if key.platform == "wanted":
-            company, position, markdown = self._extract_wanted(url, key.job_id)
+            company, position, markdown, context = self._extract_wanted(url, key.job_id)
         elif key.platform == "remember":
-            company, position, markdown = self._extract_remember(url, key.job_id)
+            company, position, markdown, context = self._extract_remember(url, key.job_id)
         elif key.platform == "groupby":
-            company, position, markdown = self._extract_groupby(url, key.job_id)
+            company, position, markdown, context = self._extract_groupby(url, key.job_id)
         elif key.platform == "saramin":
-            company, position, markdown = self._extract_saramin(url, key.job_id)
+            company, position, markdown, context = self._extract_saramin(url, key.job_id)
         else:
             raise ValueError(
                 "career-jobs run auto currently supports canonical extraction for wanted, remember, groupby, and saramin URLs only; "
                 f"got {key.platform}:{key.job_id}"
             )
-        return _save_or_preview_record(
-            repository=self.repository,
-            key=key,
-            company=company,
-            position=position,
-            source_url=url,
-            jd_markdown=markdown,
-            dry_run=dry_run,
+        return (
+            _save_or_preview_record(
+                repository=self.repository,
+                key=key,
+                company=company,
+                position=position,
+                source_url=url,
+                jd_markdown=markdown,
+                dry_run=dry_run,
+            ),
+            context,
         )
 
-    def _extract_wanted(self, url: str, job_id: str) -> tuple[str, str, str]:
+    def _extract_context_for_url(self, url: str) -> CompanyEnrichmentContext | None:
+        key = _job_key_from_url(url)
+        if key is None:
+            return None
+        try:
+            if key.platform == "wanted":
+                return self._extract_wanted(url, key.job_id)[3]
+            if key.platform == "remember":
+                return self._extract_remember(url, key.job_id)[3]
+            if key.platform == "groupby":
+                return self._extract_groupby(url, key.job_id)[3]
+            if key.platform == "saramin":
+                return self._extract_saramin(url, key.job_id)[3]
+        except (AssertionError, HttpError, OSError, RuntimeError, ValueError):
+            return None
+        return None
+
+    def _extract_wanted(
+        self, url: str, job_id: str
+    ) -> tuple[str, str, str, CompanyEnrichmentContext]:
         html = self.http_client.request_text(url)
         data = _extract_next_data(html)
         try:
@@ -518,9 +576,20 @@ class JobsExtractionStage:
                 benefits=str(job.get("benefits", "") or ""),
                 source="Wanted",
             ),
+            CompanyEnrichmentContext(
+                platform="wanted",
+                item_id=f"wanted:{job_id}",
+                company_name=company,
+                company_id=str(company_info["company_id"]) if company_info.get("company_id") is not None else None,
+                source_url=url,
+                facts={},
+                fact_sources={},
+            ),
         )
 
-    def _extract_remember(self, url: str, job_id: str) -> tuple[str, str, str]:
+    def _extract_remember(
+        self, url: str, job_id: str
+    ) -> tuple[str, str, str, CompanyEnrichmentContext]:
         html = self.http_client.request_text(url)
         data = _extract_next_data(html)
         try:
@@ -528,6 +597,7 @@ class JobsExtractionStage:
         except (IndexError, KeyError, TypeError) as exc:
             raise ValueError(f"invalid Remember payload for {url}") from exc
         organization = posting.get("organization") or {}
+        company_id = _normalize_text(str(organization.get("id", "") or ""))
         company = _normalize_text((organization.get("name", "") or "").replace("(주)", "").replace("(주 )", "")) or "unknown-company"
         position = _normalize_text(posting.get("title", "")) or f"remember-{job_id}"
         benefit_parts = _remember_operator_details(posting)
@@ -550,9 +620,20 @@ class JobsExtractionStage:
                 benefits=benefits,
                 source="Remember",
             ),
+            CompanyEnrichmentContext(
+                platform="remember",
+                item_id=f"remember:{job_id}",
+                company_name=company,
+                company_id=company_id or None,
+                source_url=url,
+                facts={},
+                fact_sources={},
+            ),
         )
 
-    def _extract_groupby(self, url: str, job_id: str) -> tuple[str, str, str]:
+    def _extract_groupby(
+        self, url: str, job_id: str
+    ) -> tuple[str, str, str, CompanyEnrichmentContext]:
         payload = self.http_client.request_json(f"https://api.groupby.kr/startup-positions/{job_id}")
         try:
             if payload.get("status") != 200:
@@ -582,6 +663,26 @@ class JobsExtractionStage:
                 benefits = f"{benefits}\n\n{extra}" if benefits else extra
         company_context = _format_groupby_company_context(startup, data)
         task = _html_to_text(data.get("task", ""))
+        raw_areas = startup.get("serviceAreas", ())
+        industry_values = tuple(
+            _normalize_text(item.get("name", "") if isinstance(item, dict) else str(item))
+            for item in (raw_areas if isinstance(raw_areas, list) else ())
+            if _normalize_text(item.get("name", "") if isinstance(item, dict) else str(item))
+        )
+        facts: dict[str, object] = {
+            "employee_current": _safe_int(_first_groupby_value("memberCount", startup, data)),
+            "investment_round": _normalize_text(_first_groupby_value("fundingRound", startup, data)),
+            "is_startup": True,
+        }
+        if industry_values:
+            facts["industry"] = ", ".join(industry_values)
+        if location:
+            facts["location"] = location
+        fact_sources = {
+            field: (url,)
+            for field, value in facts.items()
+            if value not in (None, "", ())
+        }
         return (
             company,
             position,
@@ -598,43 +699,63 @@ class JobsExtractionStage:
                 benefits=benefits,
                 source="GroupBy",
             ),
+            CompanyEnrichmentContext(
+                platform="groupby",
+                item_id=f"groupby:{job_id}",
+                company_name=company,
+                company_id=job_id,
+                source_url=url,
+                facts={
+                    key: value for key, value in facts.items() if value not in (None, "", ())
+                },
+                fact_sources=fact_sources,
+            ),
         )
 
-    def _extract_saramin(self, url: str, job_id: str) -> tuple[str, str, str]:
+    def _extract_saramin(
+        self, url: str, job_id: str
+    ) -> tuple[str, str, str, CompanyEnrichmentContext]:
         from careerkit.jobs.adapters.platforms.saramin import (
             SARAMIN_MOBILE_BASE,
             extract_company_from_detail,
             extract_detail_fields,
+            extract_detail_sections,
             extract_jd_body,
-            extract_jd_body_sections,
+            extract_jd_sections,
             extract_position_from_detail,
         )
 
         detail_url = f"{SARAMIN_MOBILE_BASE}/job-search/view?rec_idx={job_id}"
         html = self.http_client.request_text(detail_url)
+        csn = extract_csn_from_html(html)
         company = _normalize_text(extract_company_from_detail(html)) or "unknown-company"
         position = _normalize_text(extract_position_from_detail(html)) or f"saramin-{job_id}"
         fields = extract_detail_fields(html)
         jd_body = extract_jd_body(html, job_id)
-        sections = extract_jd_body_sections(jd_body)
+        body_sections = extract_jd_sections(html, job_id)
+        detail_sections = extract_detail_sections(html)
         experience = fields.get("경력", "") or fields.get("경력조건", "")
         location = fields.get("지역", "")
-        introduction = ""
-        if len(jd_body) < 100:
+        introduction = _merge_saramin_intro(body_sections.introduction)
+        if not introduction:
             parts = []
             for key in ("근무형태", "급여", "근무일수"):
                 if key in fields:
                     parts.append(f"{key}: {fields[key]}")
-            if jd_body:
+            has_recognized_sections = any(
+                (body_sections.main_duties, body_sections.requirements, body_sections.preferred)
+            )
+            if jd_body and not has_recognized_sections:
                 parts.append(jd_body)
             introduction = "\n".join(parts)
-        else:
-            introduction = jd_body
-        requirements = _canonicalize_saramin_requirements(
-            fields.get("자격요건", "") or sections.get("자격요건", "")
+        main_duties = _saramin_section_text(
+            _merge_saramin_section_items(body_sections.main_duties, detail_sections.main_duties)
         )
-        preferred = _canonicalize_saramin_requirements(
-            fields.get("우대사항", "") or sections.get("우대사항", "")
+        requirements = _saramin_section_text(
+            _merge_saramin_section_items(body_sections.requirements, detail_sections.requirements)
+        )
+        preferred = _saramin_section_text(
+            _merge_saramin_section_items(body_sections.preferred, detail_sections.preferred)
         )
         benefits_parts = []
         for key in ("급여제도", "선물", "교육/생활", "근무 환경", "조직문화", "리프레시"):
@@ -653,11 +774,20 @@ class JobsExtractionStage:
                 location=location,
                 url=url,
                 introduction=introduction,
-                main_duties="",
+                main_duties=main_duties,
                 requirements=requirements,
                 preferred=preferred,
                 benefits="\n".join(benefits_parts),
                 source="Saramin",
+            ),
+            CompanyEnrichmentContext(
+                platform="saramin",
+                item_id=f"saramin:{job_id}",
+                company_name=company,
+                company_id=csn,
+                source_url=detail_url,
+                facts={},
+                fact_sources={},
             ),
         )
 
@@ -753,14 +883,15 @@ class JobsScreeningStage:
         # and succeeds on the next would otherwise report only the success, hiding
         # exactly the failure this telemetry exists to surface.
         provider_attempts: dict[str, Counter[str]] = defaultdict(Counter)
+        items: list[dict[str, object]] = []
         evidence_violations: Counter[str] = Counter()
         context_warning_messages: list[str] = []
         downgraded = 0
         capped = 0
         company_info = CompanyInfoService(workspace=self.workspace)
-        company_files: dict[str, Path | None] = {}
-        company_errors: dict[str, str | None] = {}
+        enrichment = CompanyEnrichmentService(company_info=company_info)
         company_info_warnings: dict[str, str] = {}
+        company_info_results: dict[str, dict[str, object | None]] = {}
         prior_records = self.repository.list()
         quick_filters = (
             self.quick_filters
@@ -770,6 +901,28 @@ class JobsScreeningStage:
         screening_only = extraction.metadata.get("mode") == "screening_only"
         for record in extraction.records:
             logger.debug("screening: %s:%s", record.record.platform, record.record.job_id)
+            item_id = f"{record.record.platform}:{record.record.job_id}"
+            context = extraction.company_contexts.get(item_id)
+            try:
+                company_result, company_error, effective_company_file = _resolve_company_screening_state(
+                    enrichment=enrichment,
+                    company_info=company_info,
+                    company_name=record.record.company,
+                    context=context,
+                    context_attempted=screening_only,
+                    dry_run=dry_run,
+                )
+            except (FileNotFoundError, OSError, RuntimeError, TimeoutError, ValueError):
+                logger.warning("company info failed: %s", _COMPANY_INFO_FAILURE_CODE)
+                failures.append(_public_company_info_failure(item_id))
+                continue
+            company_info_results[item_id] = _sanitize_company_info_result(company_result)
+            if company_result.status == "error":
+                logger.warning("company info invalid: %s", _COMPANY_INFO_FAILURE_CODE)
+                failures.append(_public_company_info_failure(item_id))
+                continue
+            if company_error is not None:
+                company_info_warnings[item_id] = company_error
             prescreen_reason = None
             if not screening_only:
                 prescreen_reason = _pre_screen_reason(
@@ -786,34 +939,6 @@ class JobsScreeningStage:
                         self.repository.update_status(record.record.key, application_status=ApplicationStatus.REJECTED)
                     self.repository.update_verdict(record.record.key, ScreeningVerdict.NOT_RECOMMENDED, prescreen_reason=prescreen_reason)
                 continue
-            company_name = record.record.company
-            if company_name not in company_files:
-                company_files[company_name] = company_info.find_matching_file(company_name)
-            item_id = f"{record.record.platform}:{record.record.job_id}"
-            company_file = company_files[company_name]
-            if company_name not in company_errors:
-                if company_file is None:
-                    company_errors[company_name] = _COMPANY_INFO_MISSING
-                else:
-                    validation = company_info.validate(file_name=str(company_file))
-                    if validation.errors:
-                        company_errors[company_name] = "; ".join(validation.errors)
-                    elif validation.incomplete_companies:
-                        company_errors[company_name] = _COMPANY_INFO_INCOMPLETE
-                    else:
-                        company_errors[company_name] = None
-            company_error = company_errors[company_name]
-            if company_error is not None and company_error not in (
-                _COMPANY_INFO_MISSING,
-                _COMPANY_INFO_INCOMPLETE,
-            ):
-                failures.append(
-                    {"job_key": item_id, "error": str(company_error)}
-                )
-                continue
-            effective_company_file = None if company_error == _COMPANY_INFO_MISSING else company_file
-            if company_error is not None:
-                company_info_warnings[item_id] = company_error
             try:
                 result = run_screening(
                     workspace=self.workspace,
@@ -834,14 +959,40 @@ class JobsScreeningStage:
             providers[result.provider] += 1
             if result.used_fallback:
                 fallback_count += 1
-            for attempt_label, attempt_details in result.provider_attempts.items():
+            item_provider_attempts = _sanitize_provider_attempts(
+                getattr(result, "provider_attempts", {})
+            )
+            for attempt_label, attempt_details in item_provider_attempts.items():
                 for attempt_detail in attempt_details:
                     provider_attempts[attempt_label][attempt_detail] += 1
             evidence_violations.update(result.evidence_violations)
-            downgraded += int(result.downgraded)
-            capped += int(result.verdict_capped)
-            if result.context_warning is not None:
-                context_warning_messages.append(result.context_warning)
+            verdict_capped = bool(getattr(result, "verdict_capped", False))
+            downgraded_flag = bool(getattr(result, "downgraded", False))
+            published = bool(getattr(result, "published", False))
+            fallback_reason = _sanitize_telemetry_detail(
+                getattr(result, "fallback_reason", None)
+            )
+            context_warning = _sanitize_telemetry_detail(
+                getattr(result, "context_warning", None)
+            )
+            downgraded += int(downgraded_flag)
+            capped += int(verdict_capped)
+            if context_warning is not None:
+                context_warning_messages.append(context_warning)
+            items.append(
+                {
+                    "job_key": item_id,
+                    "provider": result.provider,
+                    "verdict": result.verdict,
+                    "verdict_capped": verdict_capped,
+                    "downgraded": downgraded_flag,
+                    "published": published,
+                    "used_fallback": result.used_fallback,
+                    "fallback_reason": fallback_reason,
+                    "provider_attempts": item_provider_attempts,
+                    "context_warning": context_warning,
+                }
+            )
         metadata = {
             "item_ids": item_ids,
             "verdict_counts": dict(sorted(verdict_counts.items())),
@@ -850,6 +1001,7 @@ class JobsScreeningStage:
                 label: dict(sorted(counts.items()))
                 for label, counts in sorted(provider_attempts.items())
             },
+            "items": items,
             "fallback_count": fallback_count,
             "downgraded": downgraded,
             "capped": capped,
@@ -860,11 +1012,229 @@ class JobsScreeningStage:
             "context_warning_messages": sorted(set(context_warning_messages)),
             "failure_count": len(failures),
             "failures": failures,
+            "company_info_results": company_info_results,
             "company_info_warnings": company_info_warnings,
             "prescreened_count": sum(prescreen_reasons.values()),
             "prescreen_reasons": dict(sorted(prescreen_reasons.items())),
         }
         return ScreeningBatch(item_ids=tuple(item_ids), metadata=metadata)
+
+
+def _resolve_company_screening_state(
+    *,
+    enrichment: CompanyEnrichmentService,
+    company_info: CompanyInfoService,
+    company_name: str,
+    context: CompanyEnrichmentContext | None,
+    context_attempted: bool,
+    dry_run: bool,
+) -> tuple[CompanyInfoEnrichmentResult, str | None, Path | None]:
+    lookup = company_info.inspect(company_name)
+    if lookup.status == "ready":
+        result = CompanyInfoEnrichmentResult(
+            status="ready",
+            attempted=False,
+            persisted=False,
+            completeness=lookup.validation.completeness_score if lookup.validation is not None else None,
+            warning_code=None,
+            file_path=lookup.file_path,
+        )
+        return result, None, result.file_path
+    if context is not None:
+        context = _enrichment_context_with_fetched_facts(context)
+        result = enrichment.enrich(context, dry_run=dry_run)
+    else:
+        if lookup.status == "missing":
+            result = CompanyInfoEnrichmentResult(
+                status="warning",
+                attempted=context_attempted,
+                persisted=False,
+                completeness=None,
+                warning_code="missing",
+                file_path=None,
+            )
+        elif lookup.status == "incomplete":
+            result = CompanyInfoEnrichmentResult(
+                status="warning",
+                attempted=context_attempted,
+                persisted=False,
+                completeness=lookup.validation.completeness_score if lookup.validation is not None else None,
+                warning_code="below_threshold",
+                file_path=lookup.file_path,
+            )
+        else:
+            result = CompanyInfoEnrichmentResult(
+                status="error",
+                attempted=False,
+                persisted=False,
+                completeness=lookup.validation.completeness_score if lookup.validation is not None else None,
+                warning_code=None,
+                file_path=lookup.file_path,
+            )
+    company_error = _company_info_warning_from_result(result)
+    effective_company_file = None if company_error == _COMPANY_INFO_MISSING else result.file_path
+    return result, company_error, effective_company_file
+
+
+def _company_info_warning_from_result(
+    result: CompanyInfoEnrichmentResult,
+) -> str | None:
+    if result.status != "warning":
+        return None
+    if result.warning_code == "missing":
+        return _COMPANY_INFO_MISSING
+    return _COMPANY_INFO_INCOMPLETE
+
+
+def _public_company_info_failure(item_id: str) -> dict[str, str]:
+    return {
+        "job_key": item_id,
+        "error_code": _COMPANY_INFO_FAILURE_CODE,
+        "error": _COMPANY_INFO_FAILURE_MESSAGE,
+    }
+
+
+def _sanitize_company_info_result(
+    result: CompanyInfoEnrichmentResult,
+) -> dict[str, object | None]:
+    return {
+        "status": result.status,
+        "attempted": result.attempted,
+        "persisted": result.persisted,
+        "completeness": result.completeness,
+        "warning_code": result.warning_code,
+    }
+
+
+def _enrichment_context_with_fetched_facts(
+    context: CompanyEnrichmentContext,
+) -> CompanyEnrichmentContext:
+    if context.platform == "groupby":
+        return _groupby_context_with_corroborated_wanted_facts(context)
+    if context.facts or not context.company_id:
+        return context
+    if context.platform == "remember":
+        info = remember_company_http(context.company_id)
+        source_url = f"https://career.rememberapp.co.kr/job/company/{info.company_id}"
+        facts = {
+            "industry": info.industry,
+            "founded_year": _safe_year(info.established),
+            "employee_current": info.employee_count,
+            "employee_joined_1y": sum(_safe_int(stat.get("join")) or 0 for stat in info.employee_stats) or None,
+            "employee_left_1y": sum(_safe_int(stat.get("leave")) or 0 for stat in info.employee_stats) or None,
+        }
+        return replace(
+            context,
+            company_id=str(info.company_id),
+            source_url=source_url,
+            facts={key: value for key, value in facts.items() if value not in (None, "", ())},
+            fact_sources={
+                key: (source_url,)
+                for key, value in facts.items()
+                if value not in (None, "", ())
+            },
+        )
+    if context.platform == "saramin":
+        info = saramin_company_http(context.company_id)
+        source_url = f"https://m.saramin.co.kr/job-search/company-info-view?csn={context.company_id}"
+        facts = {
+            "industry": info.industry,
+            "founded_year": _safe_year(info.founded_date),
+            "employee_current": info.employee_count,
+        }
+        return replace(
+            context,
+            source_url=source_url,
+            facts={key: value for key, value in facts.items() if value not in (None, "", ())},
+            fact_sources={
+                key: (source_url,)
+                for key, value in facts.items()
+                if value not in (None, "", ())
+            },
+        )
+    if context.platform == "wanted":
+        try:
+            info = wanted_company_http(context.company_id)
+        except (ValueError, OSError, RuntimeError, TypeError, AttributeError, KeyError):
+            return context
+        if not wanted_company_is_valid(info):
+            return context
+        facts, fact_sources, source_url = _wanted_fact_payload(info)
+        return replace(
+            context,
+            source_url=source_url,
+            facts=facts,
+            fact_sources=fact_sources,
+        )
+    return context
+
+
+def _groupby_context_with_corroborated_wanted_facts(
+    context: CompanyEnrichmentContext,
+) -> CompanyEnrichmentContext:
+    sanitized = replace(context, company_id=None)
+    try:
+        wanted_company_id = wanted_search_company_id(
+            context.company_name,
+            verify_industry=str(context.facts.get("industry", "") or ""),
+            verify_location=str(context.facts.get("location", "") or ""),
+        )
+    except (ValueError, OSError, RuntimeError, TypeError, AttributeError, KeyError):
+        return sanitized
+    if wanted_company_id is None:
+        return sanitized
+    try:
+        info = wanted_company_http(wanted_company_id)
+    except (ValueError, OSError, RuntimeError, TypeError, AttributeError, KeyError):
+        return sanitized
+    if int(info.company_id) != int(wanted_company_id):
+        return sanitized
+    if not wanted_company_matches(
+        info,
+        context.company_name,
+        verify_industry=str(context.facts.get("industry", "") or ""),
+        verify_location=str(context.facts.get("location", "") or ""),
+    ):
+        return sanitized
+    wanted_facts, wanted_sources, _wanted_source_url = _wanted_fact_payload(info)
+    merged_facts = dict(context.facts)
+    merged_sources = dict(context.fact_sources)
+    for key, value in wanted_facts.items():
+        if key in merged_facts and merged_facts[key] not in (None, "", ()):
+            continue
+        merged_facts[key] = value
+        merged_sources[key] = wanted_sources[key]
+    return replace(
+        sanitized,
+        facts=merged_facts,
+        fact_sources=merged_sources,
+    )
+
+
+def _wanted_fact_payload(
+    info: WantedCompanyInfo,
+) -> tuple[dict[str, object], dict[str, tuple[str, ...]], str]:
+    source_url = f"https://www.wanted.co.kr/company/{info.company_id}"
+    facts: dict[str, object] = {
+        "industry": info.industry,
+        "founded_year": info.founded_year,
+        "employee_current": info.employee_count,
+        "avg_salary": info.avg_salary_manwon,
+        "employee_joined_1y": info.hired_1y,
+        "employee_left_1y": info.left_1y,
+        "revenue": info.total_sales_eok,
+    }
+    allowlisted = {
+        key: value for key, value in facts.items() if value not in (None, "", ())
+    }
+    return (
+        allowlisted,
+        {
+            key: (source_url,)
+            for key in allowlisted
+        },
+        source_url,
+    )
 
 
 def _load_quick_filters(workspace: WorkspacePaths) -> dict[str, Any]:
@@ -994,6 +1364,9 @@ def _render_json(payload: dict[str, Any], json_mode: bool) -> str:
             prefix = "item" if value.get("mode") == "screening_only" else "new"
             for item in value["items"]:
                 lines.append(f"{prefix}: {item['company']} — {item['position']} ({item['job_key']})")
+        elif key == "screening" and isinstance(value, Mapping) and "items" in value:
+            visible = {k: v for k, v in value.items() if k != "items"}
+            lines.append(f"{key}={visible}")
         else:
             lines.append(f"{key}={value}")
     counts = payload.get("counts")
@@ -1013,6 +1386,32 @@ def _extract_next_data(html: str) -> dict[str, Any]:
 
 def _normalize_text(text: str | None) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _safe_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_year(value: object) -> int | None:
+    text = _normalize_text(str(value or ""))
+    match = re.search(r"(\d{4})", text)
+    return int(match.group(1)) if match else None
+
+
+def _first_groupby_value(
+    name: str,
+    startup: Mapping[str, Any],
+    position: Mapping[str, Any],
+) -> Any:
+    value = startup.get(name)
+    if value not in (None, "", []):
+        return value
+    return position.get(name)
 
 
 def _format_groupby_company_context(
@@ -1048,22 +1447,6 @@ def _format_groupby_company_context(
 
 def _normalize_canonical_bullets(text: str) -> str:
     return re.sub(r"(?m)^(?P<indent>\s*)•\s*(?P<text>.*\S)\s*$", r"\g<indent>- \g<text>", text)
-
-
-def _canonicalize_saramin_requirements(text: str) -> str:
-    normalized = _normalize_canonical_bullets(text).strip()
-    if not normalized or normalized == "정보 없음":
-        return normalized
-    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    canonical_lines = []
-    for line in lines:
-        if re.match(r"^[-*+•◦]\s*", line):
-            canonical_lines.append(line)
-        else:
-            canonical_lines.append(f"- {line}")
-    return "\n".join(canonical_lines)
 
 
 def _format_jd_markdown(
@@ -1112,6 +1495,27 @@ def _format_jd_markdown(
 
 {benefits or '정보 없음'}
 """
+
+
+def _saramin_cross_source_key(text: str) -> str:
+    return _normalize_text(text.removeprefix("- "))
+
+
+def _merge_saramin_section_items(body_items: Sequence[str], detail_items: Sequence[str]) -> tuple[str, ...]:
+    merged = list(body_items)
+    seen_body = {_saramin_cross_source_key(item) for item in body_items}
+    for item in detail_items:
+        if _saramin_cross_source_key(item) not in seen_body:
+            merged.append(item)
+    return tuple(merged)
+
+
+def _saramin_section_text(items: Sequence[str]) -> str:
+    return "\n".join(item for item in items if _normalize_text(item))
+
+
+def _merge_saramin_intro(items: Sequence[str]) -> str:
+    return "\n".join(item for item in items if _normalize_text(item))
 
 
 def _format_wanted_experience(job: dict[str, Any]) -> str:
@@ -1284,6 +1688,48 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     _atomic_write_text(path, serialized)
 
 
+def _sanitize_provider_attempts(raw: object) -> dict[str, list[str]]:
+    if not isinstance(raw, Mapping):
+        return {}
+    sanitized: dict[str, list[str]] = {}
+    for label, details in raw.items():
+        label_text = str(label).strip()
+        if not label_text:
+            continue
+        if not isinstance(details, Sequence) or isinstance(details, str):
+            details = (details,)
+        item_details = [
+            cleaned
+            for detail in details
+            if (cleaned := _sanitize_telemetry_detail(detail)) is not None
+        ]
+        if item_details:
+            sanitized[label_text] = item_details
+    return dict(sorted(sanitized.items()))
+
+
+def _sanitize_telemetry_detail(detail: object) -> str | None:
+    if detail is None:
+        return None
+    text = str(detail).replace("\r", "\n").strip()
+    if not text:
+        return None
+    text = re.sub(r"\?[^ \n\)\]]+", "", text)
+    text = re.sub(
+        r"(\b[A-Za-z0-9_-]*(?:secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_-]*\s*=\s*)[^\s]+",
+        r"\1[redacted]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(?:(?<=^)|(?<=[\s=:\(\[]))/[^\s\)\]]+", "[path]", text)
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if not first_line:
+        return None
+    if len(first_line) > MAX_TELEMETRY_DETAIL_CHARS:
+        first_line = first_line[:MAX_TELEMETRY_DETAIL_CHARS].rstrip() + "..."
+    return first_line
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
@@ -1298,3 +1744,17 @@ def _atomic_write_text(path: Path, content: str) -> None:
         temporary_path.replace(path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def _has_assessable_requirements(jd_markdown: str) -> bool:
+    from careerkit.jobs.application.requirement_manifest import (
+        extract_requirement_manifest,
+        without_main_duty,
+    )
+
+    try:
+        manifest = extract_requirement_manifest(jd_markdown)
+        filtered = without_main_duty(manifest)
+        return any(item.assessable for item in filtered.leaves)
+    except (ValueError, AttributeError, TypeError, IndexError):
+        return False

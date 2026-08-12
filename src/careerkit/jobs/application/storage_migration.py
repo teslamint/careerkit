@@ -38,6 +38,7 @@ _KNOWN_PLATFORMS = {
     "offercent", "greeting", "private", "headhunter",
 }
 _ID_LIST_KEYS = {"seen_job_ids", "processed_ids", "job_ids"}
+MIGRATION_REPORT_SCHEMA_VERSION = 1
 
 
 def extract_metadata_from_jd(jd_content: str) -> dict[str, str]:
@@ -201,7 +202,7 @@ class MigrationReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": MIGRATION_REPORT_SCHEMA_VERSION,
             "ready": self.ready,
             "activated": self.activated,
             "counts": {
@@ -485,6 +486,7 @@ class StorageMigrator:
             posting_status=posting,
             application_status_updated_at=updated,
             migration_source=relative,
+            schema_version=1,
         )
         return _LegacyJD(path, relative, record, content), None
 

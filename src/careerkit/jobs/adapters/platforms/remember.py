@@ -141,6 +141,67 @@ def remember_company_http(
     )
 
 
+def format_company_markdown(info: RememberCompanyInfo) -> str:
+    founded_year = ""
+    if info.established and len(info.established) >= 4:
+        founded_year = info.established[:4]
+    lines = [
+        f"# {info.name}",
+        "",
+        "## 기업 정보",
+        "",
+        "| 항목 | 내용 |",
+        "|------|------|",
+    ]
+    if info.industry:
+        lines.append(f"| 업종 | {info.industry} |")
+    if info.company_type:
+        lines.append(f"| 기업형태 | {info.company_type} |")
+    if founded_year:
+        lines.append(f"| 설립 | {founded_year}년 |")
+    if info.employee_count is not None:
+        lines.append(f"| 직원수 | {info.employee_count:,}명 |")
+    if info.ceo:
+        lines.append(f"| 대표자 | {info.ceo} |")
+    if info.address:
+        lines.append(f"| 주소 | {info.address} |")
+    if info.homepage:
+        lines.append(f"| 홈페이지 | {info.homepage} |")
+    if info.avg_salary_manwon is not None:
+        lines.extend(["", "## 연봉 정보", ""])
+        lines.append(f"평균 연봉 **{info.avg_salary_manwon:,}만원**")
+        if info.salary_yoy_change is not None:
+            sign = "+" if info.salary_yoy_change > 0 else ""
+            lines.append(f"작년 대비 {sign}{info.salary_yoy_change:,}만원")
+    if info.employee_stats:
+        latest = info.employee_stats[0]
+        join_total = sum(s.get("join", 0) for s in info.employee_stats)
+        leave_total = sum(s.get("leave", 0) for s in info.employee_stats)
+        lines.extend([
+            "",
+            "## 인원 통계",
+            "",
+            "| 항목 | 수치 |",
+            "|------|------|",
+            f"| 현재 인원 | {latest['total']:,}명 |",
+            f"| 1년간 입사자 | {join_total}명 |",
+            f"| 1년간 퇴사자 | {leave_total}명 |",
+        ])
+    if info.tags:
+        lines.extend(["", "## 태그", ""])
+        for tag in info.tags:
+            lines.append(f"- {tag}")
+    lines.extend([
+        "",
+        "---",
+        "",
+        f"*추출일: 리멤버 HTTP API*",
+        f"*출처: {REMEMBER_BASE_URL}/job/company/{info.company_id}*",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def _format_experience(item: dict) -> str:
     minimum = item.get("min_experience")
     maximum = item.get("max_experience")

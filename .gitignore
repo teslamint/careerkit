@@ -23,6 +23,9 @@ node_modules/
 /private/
 /_workspace/
 
+# Rebuildable semantic caches written into fixture workspaces
+tests/fixtures/workspace/*/private/.cache/
+
 # Keep example data
 !/example/
 /example/build/

@@ -4,7 +4,7 @@ import base64
 import json
 import logging
 import os
-import textwrap
+import stat
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any, Sequence
 import pytest
 
 from careerkit.jobs import cli
+from careerkit.jobs.adapters.platforms.saramin import SaraminAdapter
 from careerkit.jobs.adapters.screening.cli_provider import FakeProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
 from careerkit.jobs.application.automation import (
@@ -26,16 +27,30 @@ from careerkit.jobs.application.automation import (
     JobsResumeStateService,
     JobsScreeningStage,
     ScreeningBatch,
+    _COMPANY_INFO_FAILURE_CODE,
     _COMPANY_INFO_MISSING,
     _COMPANY_INFO_INCOMPLETE,
+    _enrichment_context_with_fetched_facts,
     _render_json,
 )
+from careerkit.jobs.application.company_enrichment import (
+    CompanyEnrichmentContext,
+    CompanyInfoEnrichmentResult,
+)
 from careerkit.jobs.application.company_info import CompanyInfoService, CompanyValidationSummary
+from careerkit.jobs.application.config import load_runtime_config
 from careerkit.jobs.application.maintenance import JobsMaintenanceService
-from careerkit.jobs.application.requirement_manifest import RequirementKind, extract_requirement_manifest
+from careerkit.jobs.application.requirement_manifest import RequirementKind, extract_requirement_manifest, without_main_duty
 from careerkit.jobs.application.pipeline import JobsPipelineService
-from careerkit.jobs.application.search import SearchCandidate, SearchResult
-from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus, ScreeningVerdict
+from careerkit.jobs.application.search import SearchCandidate, SearchResult, SearchService, SearchState
+from careerkit.jobs.domain.model import (
+    ApplicationEvent,
+    ApplicationStatus,
+    JobKey,
+    JobRecord,
+    PostingStatus,
+    ScreeningVerdict,
+)
 from careerkit.workspace import resolve_workspace
 
 
@@ -215,6 +230,29 @@ class FakeHttpClient:
         return self.json_by_url[url]
 
 
+class SequenceJsonClient:
+    def __init__(self, responses: Sequence[object]) -> None:
+        self.responses = list(responses)
+        self.urls: list[str] = []
+
+    def request_json(self, url: str, **_: Any) -> object:
+        self.urls.append(url)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _saramin_search_card_html(job_id: int) -> str:
+    return (
+        f'<div id="list_{job_id}" class="recruit_container list_link recruit" data-rec_idx={job_id}>'
+        f'<p class="tit">Backend Engineer {job_id}</p>'
+        '<div class="meta"><span>서울</span><span>경력5년↑</span></div>'
+        '<div class="corp"><span class="corp_name">테스트회사</span></div>'
+        '</div>'
+    )
+
+
 def _search_result() -> SearchResult:
     return SearchResult(
         postings=(
@@ -227,6 +265,27 @@ def _search_result() -> SearchResult:
         duplicates=1,
         diagnostics=("semantic filter unavailable",),
         capabilities={"semantic": {"available": False, "reason": "missing model"}},
+    )
+
+
+def _search_result_with_pagination_diagnostic() -> SearchResult:
+    postings = tuple(
+        SearchCandidate(
+            "saramin",
+            str(index),
+            f"saramin:{index}",
+            f"Backend {index}",
+            "Acme",
+            "5년",
+            f"https://saramin.example/{index}",
+        )
+        for index in range(1, 4)
+    )
+    return SearchResult(
+        postings=postings,
+        updated_seen_job_keys={item.seen_key for item in postings},
+        total_found=3,
+        diagnostics=("saramin search incomplete after 7 pages: safety_page_limit",),
     )
 
 
@@ -325,58 +384,6 @@ def _groupby_payload(*, task: str, qualification: str, preferred: str, brief_int
     }
 
 
-def _saramin_detail_html(
-    job_id: str,
-    *,
-    intro: str = "플랫폼 소개 문단",
-    detail_requirements: str = "",
-    detail_preferred: str = "",
-    jd_body: str = "",
-) -> str:
-    encoded_body = base64.b64encode(jd_body.encode("utf-8")).decode("ascii")
-    return textwrap.dedent(f"""\
-        <html>
-        <head>
-            <title>[마감전] Backend Engineer (D-3) - 사람인</title>
-            <meta name="description" content="GoldenCo, Backend Engineer, 경력:경력 3~7년, 학력:무관">
-        </head>
-        <body>
-            <span class="corp_name">GoldenCo</span>
-            <dl>
-                <dt class="tit">지역</dt>
-                <dd class="desc">서울</dd>
-                <dt class="tit">경력</dt>
-                <dd class="desc">경력 3~7년</dd>
-                <dt class="tit">근무형태</dt>
-                <dd class="desc">정규직</dd>
-                <dt class="tit">급여</dt>
-                <dd class="desc">면접 후 결정</dd>
-                <dt class="tit">자격요건</dt>
-                <dd class="desc">{detail_requirements}</dd>
-                <dt class="tit">우대사항</dt>
-                <dd class="desc">{detail_preferred}</dd>
-                <dt class="tit">급여제도</dt>
-                <dd class="desc">성과급</dd>
-            </dl>
-            <script>
-                var detailContents_{job_id} = {{
-                    contents: '{encoded_body}',
-                    mobile_contents_yn: ''
-                }};
-            </script>
-            <div>{intro}</div>
-        </body>
-        </html>
-    """)
-
-
-def _saramin_text_by_url(url: str, html: str) -> dict[str, str]:
-    job_id = url.rsplit("=", 1)[-1]
-    return {
-        f"https://m.saramin.co.kr/job-search/view?rec_idx={job_id}": html,
-    }
-
-
 def _section_body(markdown: str, heading: str) -> str:
     marker = f"## {heading}\n\n"
     start = markdown.index(marker) + len(marker)
@@ -385,6 +392,21 @@ def _section_body(markdown: str, heading: str) -> str:
         end = len(markdown)
     return markdown[start:end].strip()
 
+
+
+
+def _saramin_detail_html(*, job_id: str, body_html: str, detail_pairs: tuple[tuple[str, str], ...]) -> str:
+    encoded_body = base64.b64encode(body_html.encode(encoding="utf-8")).decode(encoding="utf-8")
+    details = "".join(
+        f'<dt class="tit">{label}</dt><dd class="desc">{value}</dd>'
+        for label, value in detail_pairs
+    )
+    return (
+        f'<html><head><title>[테스트회사] Backend Engineer (D-7) - 사람인</title></head>'
+        f'<body><span class="corp_name">테스트회사</span><dl>{details}</dl>'
+        f"<script>var detailContents_{job_id} = {{contents: '{encoded_body}', mobile_contents_yn: ''}};</script>"
+        f'</body></html>'
+    )
 
 def _manifest_json_from_prompt(prompt: str) -> str:
     marker = "[source-owned requirement manifest]\n"
@@ -425,6 +447,79 @@ def test_run_auto_search_only_persists_final_seen_keys() -> None:
     }
     assert search_port.persisted == [{"wanted:1"}]
     assert search_port.calls == 1
+
+
+def test_run_auto_search_only_preserves_pagination_diagnostic_and_final_cap(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    search_port = FakeSearchPort(_search_result_with_pagination_diagnostic())
+    service = AutomationService(
+        search_port=search_port,
+        result_store=JobsAutoResultService(workspace=workspace),
+    )
+
+    result = service.run("auto", ["--search-only", "--max-urls", "1", "--json"])
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["url_count"] == 1
+    assert payload["counts"] == {
+        "total_found": 3,
+        "returned": 1,
+        "filtered_out": 0,
+        "duplicates": 0,
+    }
+    assert payload["diagnostics"] == [
+        "saramin search incomplete after 7 pages: safety_page_limit",
+    ]
+    request_path = tmp_path / payload["request_path"]
+    assert request_path.read_text(encoding="utf-8").splitlines() == [
+        "https://saramin.example/1",
+    ]
+    assert search_port.max_urls == [1]
+    assert search_port.persisted == [{"saramin:1"}]
+
+
+def test_run_auto_search_only_composes_saramin_pages_through_search_and_json(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    http = SequenceJsonClient(
+        [
+            {"count": 6, "innerHTML": _saramin_search_card_html(job_id)}
+            for job_id in range(1, 7)
+        ]
+        + [{"count": 6, "innerHTML": ""}]
+    )
+    config = replace(
+        load_runtime_config(
+            {
+                "search": {"role": "backend"},
+                "platforms": {"saramin": {"enabled": True}},
+                "search_queries": ["Backend"],
+                "execution": {"max_urls_per_run": 10},
+                "quick_filters": {"title_include": ["Backend"], "title_exclude": [], "title_prefer": []},
+                "filters": {"min_experience_upper": 9, "max_experience": 10},
+                "semantic_filter": {"enabled": False},
+            }
+        ),
+        http_client=http,
+        rate_limits={"saramin": 0.0},
+    )
+    search_result = SearchService(
+        adapters={"saramin": SaraminAdapter()}, semantic_filter=None
+    ).run(config, SearchState(seen_job_keys=set()))
+    search_port = FakeSearchPort(search_result)
+
+    result = AutomationService(
+        search_port=search_port,
+        result_store=JobsAutoResultService(workspace=workspace),
+    ).run("auto", ["--search-only", "--max-urls", "2", "--json"])
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["counts"]["total_found"] == 6
+    assert payload["counts"]["returned"] == 2
+    assert len(http.urls) == 7
+    request_path = tmp_path / payload["request_path"]
+    assert len(request_path.read_text(encoding="utf-8").splitlines()) == 2
 
 
 def test_run_auto_search_only_writes_request_file_for_handoff(tmp_path: Path) -> None:
@@ -706,8 +801,9 @@ def test_run_auto_resume_requires_state_port() -> None:
     assert result.stderr == "career-jobs run auto --resume requires a resume state port."
 
 
-def test_jobs_extraction_stage_screening_only_reuses_existing_record_without_fetch(tmp_path: Path) -> None:
+def test_jobs_extraction_stage_screening_only_reuses_complete_record_jd(tmp_path: Path) -> None:
     repository = JDRecordRepository(tmp_path / "records")
+    complete_jd = "# Backend Engineer\n\n## 자격 요건\n\n- Java 3년 이상\n- Spring Boot 경험\n"
     repository.create(
         JobRecord(
             platform="wanted",
@@ -716,7 +812,7 @@ def test_jobs_extraction_stage_screening_only_reuses_existing_record_without_fet
             position="Backend",
             source_url="https://www.wanted.co.kr/wd/123456",
         ),
-        jd_markdown="# JD\n",
+        jd_markdown=complete_jd,
     )
     http_client = FakeHttpClient()
     stage = JobsExtractionStage(repository=repository, http_client=http_client)
@@ -729,15 +825,13 @@ def test_jobs_extraction_stage_screening_only_reuses_existing_record_without_fet
 
     assert batch.item_ids == ("wanted:123456",)
     assert batch.metadata["reused_existing_records"] is True
-    assert batch.metadata["items"] == [
-        {"job_key": "wanted:123456", "company": "Acme", "position": "Backend"}
-    ]
-    assert http_client.requested_text == []
+    assert batch.records[0].jd_markdown == complete_jd
     assert batch.records[0].record.company == "Acme"
 
 
 def test_jobs_extraction_stage_logs_each_url_at_debug(tmp_path: Path, caplog) -> None:
     repository = JDRecordRepository(tmp_path / "records")
+    complete_jd = "# Backend Engineer\n\n## 자격 요건\n\n- Java 3년 이상\n"
     repository.create(
         JobRecord(
             platform="wanted",
@@ -746,7 +840,7 @@ def test_jobs_extraction_stage_logs_each_url_at_debug(tmp_path: Path, caplog) ->
             position="Backend",
             source_url="https://www.wanted.co.kr/wd/123456",
         ),
-        jd_markdown="# JD\n",
+        jd_markdown=complete_jd,
     )
     stage = JobsExtractionStage(repository=repository, http_client=FakeHttpClient())
     caplog.set_level(logging.DEBUG, logger="careerkit.jobs.application.automation")
@@ -923,6 +1017,15 @@ def test_jobs_extraction_stage_wanted_separates_intro_and_normalizes_explicit_bu
         ("검색 경험", RequirementKind.PREFERRED),
         ("협업 경험", RequirementKind.PREFERRED),
     ]
+    assert batch.company_contexts["wanted:123456"] == CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:123456",
+        company_name="GoldenCo",
+        company_id=None,
+        source_url=url,
+        facts={},
+        fact_sources={},
+    )
 
 
 def test_jobs_extraction_stage_remember_separates_intro_and_keeps_plain_requirements_ambiguous(tmp_path: Path) -> None:
@@ -964,6 +1067,15 @@ def test_jobs_extraction_stage_remember_separates_intro_and_keeps_plain_requirem
         RequirementKind.PREFERRED,
     ]
     assert manifest.ambiguous_qualifications is True
+    assert batch.company_contexts["remember:123"] == CompanyEnrichmentContext(
+        platform="remember",
+        item_id="remember:123",
+        company_name="Remember Co",
+        company_id=None,
+        source_url=url,
+        facts={},
+        fact_sources={},
+    )
 
 
 def test_remember_extraction_preserves_all_operator_visible_fields(tmp_path: Path) -> None:
@@ -1028,315 +1140,6 @@ def test_jobs_extraction_stage_groupby_separates_company_context_and_task_sectio
     assert manifest.ambiguous_qualifications is False
 
 
-def test_saramin_extraction_renders_detail_field_manifest_rows(tmp_path: Path) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616301"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616301",
-                    detail_requirements="<ul><li>Python 백엔드 개발 경험</li><li>SQL 활용 능력</li></ul>",
-                    detail_preferred="<p>테스트 코드 작성 경험</p><p>Docker 운영 경험</p>",
-                    jd_body="회사 소개\n안정적인 SaaS 운영",
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    markdown = batch.records[0].jd_markdown
-    assert _section_body(markdown, "자격 요건") == "- Python 백엔드 개발 경험\n- SQL 활용 능력"
-    assert _section_body(markdown, "우대사항") == "- 테스트 코드 작성 경험\n- Docker 운영 경험"
-
-    manifest = extract_requirement_manifest(markdown)
-
-    assert [(item.text, item.kind) for item in manifest.parents] == [
-        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
-        ("SQL 활용 능력", RequirementKind.REQUIRED),
-        ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
-        ("Docker 운영 경험", RequirementKind.PREFERRED),
-    ]
-
-
-def test_saramin_extraction_canonicalizes_mixed_detail_requirement_lines(tmp_path: Path) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616307"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616307",
-                    detail_requirements="<ul><li>Python 백엔드 개발 경험</li></ul><p>SQL 활용 능력</p><br>문제 해결 능력",
-                    jd_body="회사 소개\n안정적인 SaaS 운영",
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    markdown = batch.records[0].jd_markdown
-    assert _section_body(markdown, "자격 요건") == (
-        "- Python 백엔드 개발 경험\n- SQL 활용 능력\n- 문제 해결 능력"
-    )
-
-    manifest = extract_requirement_manifest(markdown)
-
-    assert [(item.text, item.kind) for item in manifest.parents] == [
-        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
-        ("SQL 활용 능력", RequirementKind.REQUIRED),
-        ("문제 해결 능력", RequirementKind.REQUIRED),
-    ]
-
-
-@pytest.mark.parametrize(
-    (
-        "detail_requirements",
-        "detail_preferred",
-        "jd_body",
-        "expected_requirements",
-        "expected_preferred",
-        "expected_manifest",
-    ),
-    [
-        (
-            "",
-            "<p>Docker 운영 경험</p>",
-            "자격요건\nPython 백엔드 개발 경험\nSQL 활용 능력",
-            "- Python 백엔드 개발 경험\n- SQL 활용 능력",
-            "- Docker 운영 경험",
-            [
-                ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
-                ("SQL 활용 능력", RequirementKind.REQUIRED),
-                ("Docker 운영 경험", RequirementKind.PREFERRED),
-            ],
-        ),
-        (
-            "<ul><li>Python 백엔드 개발 경험</li></ul>",
-            "",
-            "우대사항\n테스트 코드 작성 경험\nDocker 운영 경험",
-            "- Python 백엔드 개발 경험",
-            "- 테스트 코드 작성 경험\n- Docker 운영 경험",
-            [
-                ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
-                ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
-                ("Docker 운영 경험", RequirementKind.PREFERRED),
-            ],
-        ),
-    ],
-)
-def test_saramin_extraction_uses_body_sections_per_missing_field(
-    tmp_path: Path,
-    detail_requirements: str,
-    detail_preferred: str,
-    jd_body: str,
-    expected_requirements: str,
-    expected_preferred: str,
-    expected_manifest: list[tuple[str, RequirementKind]],
-) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616302"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616302",
-                    detail_requirements=detail_requirements,
-                    detail_preferred=detail_preferred,
-                    jd_body=jd_body,
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    markdown = batch.records[0].jd_markdown
-    assert _section_body(markdown, "자격 요건") == expected_requirements
-    assert _section_body(markdown, "우대사항") == expected_preferred
-
-    manifest = extract_requirement_manifest(markdown)
-
-    assert [(item.text, item.kind) for item in manifest.parents] == expected_manifest
-
-
-@pytest.mark.parametrize(
-    ("detail_requirements", "detail_preferred", "jd_body", "expected_manifest"),
-    [
-        (
-            "<ul><li>상세 자격 우선</li></ul>",
-            "",
-            "자격요건\n본문 자격 대체 금지\n우대사항\n본문 우대 허용",
-            [
-                ("상세 자격 우선", RequirementKind.REQUIRED),
-                ("본문 우대 허용", RequirementKind.PREFERRED),
-            ],
-        ),
-        (
-            "",
-            "<p>상세 우대 우선</p>",
-            "자격요건\n본문 자격 허용\n우대사항\n본문 우대 대체 금지",
-            [
-                ("본문 자격 허용", RequirementKind.REQUIRED),
-                ("상세 우대 우선", RequirementKind.PREFERRED),
-            ],
-        ),
-    ],
-)
-def test_saramin_extraction_applies_field_precedence_per_section(
-    tmp_path: Path,
-    detail_requirements: str,
-    detail_preferred: str,
-    jd_body: str,
-    expected_manifest: list[tuple[str, RequirementKind]],
-) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616303"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616303",
-                    detail_requirements=detail_requirements,
-                    detail_preferred=detail_preferred,
-                    jd_body=jd_body,
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    manifest = extract_requirement_manifest(batch.records[0].jd_markdown)
-
-    assert [(item.text, item.kind) for item in manifest.parents] == expected_manifest
-
-
-def test_saramin_extraction_preserves_intro_content_with_semantic_boundaries(tmp_path: Path) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616304"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616304",
-                    detail_requirements="",
-                    detail_preferred="",
-                    jd_body=textwrap.dedent("""\
-                        회사 소개
-                        안정적인 SaaS 운영과 검색 API 제공 경험을 바탕으로 팀 협업과 서비스 안정성을 함께 높이는 포지션입니다.
-                        자격요건
-                        Python 백엔드 개발 경험
-                        SQL 활용 능력
-                        우대사항
-                        테스트 코드 작성 경험
-                        복리후생
-                        원격 근무 가능
-                    """),
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    markdown = batch.records[0].jd_markdown
-    assert _section_body(markdown, "포지션 소개") == (
-        "회사 소개\n안정적인 SaaS 운영과 검색 API 제공 경험을 바탕으로 팀 협업과 서비스 안정성을 함께 높이는 포지션입니다.\n자격요건\nPython 백엔드 개발 경험\nSQL 활용 능력\n우대사항\n"
-        "테스트 코드 작성 경험\n복리후생\n원격 근무 가능"
-    )
-    assert _section_body(markdown, "자격 요건") == "- Python 백엔드 개발 경험\n- SQL 활용 능력"
-    assert _section_body(markdown, "우대사항") == "- 테스트 코드 작성 경험"
-
-    manifest = extract_requirement_manifest(markdown)
-
-    assert [(item.text, item.kind) for item in manifest.parents] == [
-        ("Python 백엔드 개발 경험", RequirementKind.REQUIRED),
-        ("SQL 활용 능력", RequirementKind.REQUIRED),
-        ("테스트 코드 작성 경험", RequirementKind.PREFERRED),
-    ]
-
-
-def test_saramin_extraction_handles_missing_requirement_sources(tmp_path: Path) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616305"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616305",
-                    detail_requirements="",
-                    detail_preferred="",
-                    jd_body="주요업무\n백엔드 API 개발",
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    markdown = batch.records[0].jd_markdown
-    assert _section_body(markdown, "자격 요건") == "정보 없음"
-    assert _section_body(markdown, "우대사항") == "정보 없음"
-
-    manifest = extract_requirement_manifest(markdown)
-
-    assert manifest.parents == ()
-    assert manifest.ambiguous_qualifications is False
-
-
-def test_saramin_extraction_flows_through_extract_with_manifest_boundaries(tmp_path: Path) -> None:
-    repository = JDRecordRepository(tmp_path / "records")
-    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=54616306"
-    stage = JobsExtractionStage(
-        repository=repository,
-        http_client=FakeHttpClient(
-            text_by_url=_saramin_text_by_url(
-                url,
-                _saramin_detail_html(
-                    "54616306",
-                    detail_requirements="<ul><li>상세 자격 우선</li></ul>",
-                    detail_preferred="",
-                    jd_body=textwrap.dedent("""\
-                        회사 소개
-                        검색 플랫폼 운영
-                        우대사항
-                        본문 우대 보강
-                        자격요건
-                        본문 자격 대체 금지
-                    """),
-                ),
-            )
-        ),
-    )
-
-    batch = stage.extract([url], dry_run=True, screening_only=False)
-
-    markdown = batch.records[0].jd_markdown
-    assert "회사 소개\n검색 플랫폼 운영" in _section_body(markdown, "포지션 소개")
-
-    manifest = extract_requirement_manifest(markdown)
-
-    assert [(item.text, item.kind) for item in manifest.parents] == [
-        ("상세 자격 우선", RequirementKind.REQUIRED),
-        ("본문 우대 보강", RequirementKind.PREFERRED),
-    ]
-
-
 def test_groupby_extraction_preserves_startup_metadata(tmp_path: Path) -> None:
     repository = JDRecordRepository(tmp_path / "records")
     url = "https://groupby.kr/positions/456"
@@ -1380,6 +1183,25 @@ def test_groupby_extraction_preserves_startup_metadata(tmp_path: Path) -> None:
         "4~8년",
     ):
         assert expected in markdown
+    assert batch.company_contexts["groupby:456"] == CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:456",
+        company_name="Group Co",
+        company_id="456",
+        source_url=url,
+        facts={
+            "industry": "SaaS, Data",
+            "employee_current": 40,
+            "investment_round": "Series A",
+            "is_startup": True,
+        },
+        fact_sources={
+            "industry": (url,),
+            "employee_current": (url,),
+            "investment_round": (url,),
+            "is_startup": (url,),
+        },
+    )
 
 
 def test_run_auto_keeps_only_failed_urls_for_resume_after_partial_batch() -> None:
@@ -1474,6 +1296,7 @@ def test_screening_stage_prescreens_closed_and_recent_prior_application(tmp_path
         JobRecord("wanted", "1", "Closed Co", "Backend"),
         jd_markdown="# JD\n\n채용 마감\n",
     )
+    prior_timestamp = datetime.now().isoformat()
     repository.create(
         JobRecord(
             "wanted",
@@ -1481,7 +1304,14 @@ def test_screening_stage_prescreens_closed_and_recent_prior_application(tmp_path
             "Prior Co",
             "Backend",
             application_status=ApplicationStatus.APPLIED,
-            application_status_updated_at=datetime.now().isoformat(),
+            application_status_updated_at=prior_timestamp,
+            application_history=(
+                ApplicationEvent(
+                    status=ApplicationStatus.APPLIED,
+                    occurred_at=prior_timestamp,
+                    note=None,
+                ),
+            ),
         ),
         jd_markdown="# Prior\n",
     )
@@ -1500,8 +1330,97 @@ def test_screening_stage_prescreens_closed_and_recent_prior_application(tmp_path
     assert result.item_ids == ()
     assert result.metadata["prescreen_reasons"] == {"closed": 1, "prior_application": 1}
     assert repository.get(JobKey("wanted", "1")).record.posting_status is PostingStatus.CLOSED
-    assert repository.get(JobKey("remember", "3")).record.application_status is ApplicationStatus.REJECTED
-    assert repository.get(JobKey("remember", "3")).record.screening_verdict is ScreeningVerdict.NOT_RECOMMENDED
+    current_record = repository.get(JobKey("remember", "3")).record
+    assert current_record.application_status is ApplicationStatus.REJECTED
+    assert current_record.screening_verdict is ScreeningVerdict.NOT_RECOMMENDED
+    assert len(current_record.application_history) == 1
+    assert current_record.application_history[0].status is ApplicationStatus.REJECTED
+    assert current_record.application_history[0].note is None
+
+
+def test_screening_stage_enriches_before_prescreen_branching(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    closed = repository.create(
+        JobRecord("wanted", "1", "Closed Co", "Backend"),
+        jd_markdown="# JD\n\n채용 마감\n",
+    )
+    prior = repository.create(
+        JobRecord("remember", "3", "Prior Co", "Backend"),
+        jd_markdown="# Current\n",
+    )
+    seen: list[str] = []
+
+    def fake_enrich(self, context, *, dry_run=False, timeout=1.0):
+        del self, dry_run, timeout
+        seen.append(context.item_id)
+        return CompanyInfoEnrichmentResult(
+            status="warning",
+            attempted=True,
+            persisted=False,
+            completeness=None,
+            warning_code="missing",
+            file_path=None,
+        )
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        fake_enrich,
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("closed", "prior"),
+            ("wanted:1", "remember:3"),
+            (closed, prior),
+            {},
+            company_contexts={
+                "wanted:1": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:1",
+                    company_name="Closed Co",
+                    company_id=None,
+                    source_url="https://www.wanted.co.kr/wd/1",
+                    facts={},
+                    fact_sources={},
+                ),
+                "remember:3": CompanyEnrichmentContext(
+                    platform="remember",
+                    item_id="remember:3",
+                    company_name="Prior Co",
+                    company_id="3",
+                    source_url="https://career.rememberapp.co.kr/job/posting/3",
+                    facts={"industry": "IT"},
+                    fact_sources={"industry": ("https://career.rememberapp.co.kr/job/company/3",)},
+                ),
+            },
+        ),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert seen == ["wanted:1", "remember:3"]
+    assert result.item_ids == ()
+    assert result.metadata["company_info_results"] == {
+        "remember:3": {
+            "attempted": True,
+            "completeness": None,
+            "persisted": False,
+            "status": "warning",
+            "warning_code": "missing",
+        },
+        "wanted:1": {
+            "attempted": True,
+            "completeness": None,
+            "persisted": False,
+            "status": "warning",
+            "warning_code": "missing",
+        },
+    }
+    assert result.metadata["company_info_warnings"] == {
+        "remember:3": _COMPANY_INFO_MISSING,
+        "wanted:1": _COMPANY_INFO_MISSING,
+    }
 
 
 def test_screening_stage_logs_each_record_at_debug(tmp_path: Path, caplog) -> None:
@@ -1528,11 +1447,13 @@ def _screening_result(**overrides):
         "verdict": "지원 추천",
         "provider": "fake",
         "used_fallback": False,
+        "fallback_reason": None,
         "verdict_capped": False,
         "downgraded": False,
         "evidence_violations": {},
         "provider_attempts": {},
         "context_warning": None,
+        "published": False,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -1646,6 +1567,63 @@ def test_screening_stage_passes_matching_company_info_file(tmp_path: Path, monke
     assert captured["company_file"] == company_file
 
 
+def test_screening_stage_enriches_missing_company_info_before_screening(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "1", "Ready Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    captured = {}
+
+    def fake_run_screening(**kwargs):
+        captured["company_file"] = kwargs["company_file"]
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("wanted:1",),
+            (record,),
+            {},
+            company_contexts={
+                "wanted:1": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:1",
+                    company_name="Ready Co",
+                    company_id=None,
+                    source_url="https://www.wanted.co.kr/wd/1",
+                    facts={
+                        "founded_year": 2020,
+                        "employee_current": 40,
+                    },
+                    fact_sources={
+                        "founded_year": ("https://www.wanted.co.kr/wd/1",),
+                        "employee_current": ("https://www.wanted.co.kr/wd/1",),
+                    },
+                )
+            },
+        ),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("wanted:1",)
+    assert captured["company_file"] == tmp_path / "private/company_info/ready-co.md"
+    assert result.metadata["company_info_results"] == {
+        "wanted:1": {
+            "attempted": True,
+            "completeness": 100.0,
+            "persisted": True,
+            "status": "ready",
+            "warning_code": None,
+        }
+    }
+    assert result.metadata["company_info_warnings"] == {}
+
+
 def test_screening_stage_continues_after_one_invalid_llm_result(tmp_path: Path, monkeypatch) -> None:
     workspace = _make_workspace(tmp_path)
     _write_valid_company_info(tmp_path, "acme", "Acme")
@@ -1698,6 +1676,15 @@ def test_screening_stage_proceeds_when_company_info_is_missing(tmp_path: Path, m
     assert result.metadata["company_info_warnings"] == {
         "wanted:1": _COMPANY_INFO_MISSING,
     }
+    assert result.metadata["company_info_results"] == {
+        "wanted:1": {
+            "attempted": False,
+            "completeness": None,
+            "persisted": False,
+            "status": "warning",
+            "warning_code": "missing",
+        }
+    }
     assert captured["company_file"] is None
 
 
@@ -1729,7 +1716,478 @@ def test_screening_stage_warns_on_incomplete_company_info(tmp_path: Path, monkey
     assert result.metadata["company_info_warnings"] == {
         "wanted:1": _COMPANY_INFO_INCOMPLETE,
     }
+    assert result.metadata["company_info_results"] == {
+        "wanted:1": {
+            "attempted": False,
+            "completeness": 0.0,
+            "persisted": False,
+            "status": "warning",
+            "warning_code": "below_threshold",
+        }
+    }
     assert captured["company_file"] == bad_file
+
+
+def test_screening_stage_rescreen_fetch_failure_keeps_existing_record_and_warning_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    _complete_jd = "# Backend\n\n## 자격 요건\n\n- Java 3년 이상\n"
+    repository.create(
+        JobRecord("wanted", "123456", "GoldenCo", "Backend"),
+        jd_markdown=_complete_jd,
+    )
+    url = "https://www.wanted.co.kr/wd/123456"
+    stage = JobsExtractionStage(repository=repository, http_client=FakeHttpClient())
+
+    batch = stage.extract([url], dry_run=True, screening_only=True)
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        batch,
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert batch.company_contexts == {}
+    assert "자격 요건" in batch.records[0].jd_markdown
+    assert "자격 요건" in repository.get(JobKey("wanted", "123456")).jd_markdown
+    assert result.item_ids == ("wanted:123456",)
+    assert result.metadata["company_info_warnings"] == {
+        "wanted:123456": _COMPANY_INFO_MISSING,
+    }
+    assert result.metadata["company_info_results"] == {
+        "wanted:123456": {
+            "attempted": True,
+            "completeness": None,
+            "persisted": False,
+            "status": "warning",
+            "warning_code": "missing",
+        }
+    }
+
+
+def test_screening_stage_rescreen_fetch_failure_keeps_incomplete_file_and_attempted_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    company_dir = tmp_path / "private/company_info"
+    company_dir.mkdir(parents=True, exist_ok=True)
+    company_file = company_dir / "goldenco.md"
+    company_file.write_text(
+        "# GoldenCo\n\n"
+        "## 기업 정보\n\n"
+        "| 항목 | 내용 |\n|------|------|\n"
+        "| 설립 | 2020년 |\n\n"
+        "---\n\n"
+        "*출처:*\n- https://old.example.com\n",
+        encoding="utf-8",
+    )
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    _complete_jd = "# Backend\n\n## 자격 요건\n\n- Java 3년 이상\n"
+    repository.create(
+        JobRecord("wanted", "123456", "GoldenCo", "Backend"),
+        jd_markdown=_complete_jd,
+    )
+    url = "https://www.wanted.co.kr/wd/123456"
+    stage = JobsExtractionStage(repository=repository, http_client=FakeHttpClient())
+
+    batch = stage.extract([url], dry_run=True, screening_only=True)
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        batch,
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert batch.company_contexts == {}
+    assert "자격 요건" in batch.records[0].jd_markdown
+    assert "자격 요건" in repository.get(JobKey("wanted", "123456")).jd_markdown
+    assert company_file.read_text(encoding="utf-8").startswith("# GoldenCo\n\n## 기업 정보")
+    assert result.item_ids == ("wanted:123456",)
+    assert result.metadata["company_info_warnings"] == {
+        "wanted:123456": _COMPANY_INFO_INCOMPLETE,
+    }
+    assert result.metadata["company_info_results"] == {
+        "wanted:123456": {
+            "attempted": True,
+            "completeness": 50.0,
+            "persisted": False,
+            "status": "warning",
+            "warning_code": "below_threshold",
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("enrichment_result", "enrichment_error"),
+    [
+        (
+            CompanyInfoEnrichmentResult(
+                status="error",
+                attempted=False,
+                persisted=False,
+                completeness=None,
+                warning_code=None,
+                file_path=None,
+            ),
+            None,
+        ),
+        (None, TimeoutError("company info writer lock timeout")),
+        (None, OSError("company info storage failure")),
+    ],
+)
+def test_screening_stage_turns_enrichment_failures_into_item_failures(
+    tmp_path: Path,
+    monkeypatch,
+    enrichment_result: CompanyInfoEnrichmentResult | None,
+    enrichment_error: Exception | None,
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "1", "Broken Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+
+    def fake_enrich(self, context, *, dry_run=False, timeout=1.0):
+        del self, context, dry_run, timeout
+        if enrichment_error is not None:
+            raise enrichment_error
+        assert enrichment_result is not None
+        return enrichment_result
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        fake_enrich,
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("wanted:1",),
+            (record,),
+            {},
+            company_contexts={
+                "wanted:1": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:1",
+                    company_name="Broken Co",
+                    company_id=None,
+                    source_url="https://www.wanted.co.kr/wd/1",
+                    facts={},
+                    fact_sources={},
+                )
+            },
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ()
+    assert result.metadata["failure_count"] == 1
+    assert result.metadata["failures"] == [
+        {
+            "job_key": "wanted:1",
+            "error_code": "company_info_failed",
+            "error": "company info unavailable",
+        }
+    ]
+    assert result.metadata["company_info_warnings"] == {}
+
+
+def test_screening_stage_sanitizes_private_company_info_failure_details(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "1", "Secret Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+
+    def fake_enrich(self, context, *, dry_run=False, timeout=1.0):
+        del self, context, dry_run, timeout
+        raise OSError("secret token sk-live-123 /Users/test/private/company_info/secret.md")
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        fake_enrich,
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("wanted:1",),
+            (record,),
+            {},
+            company_contexts={
+                "wanted:1": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:1",
+                    company_name="Secret Co",
+                    company_id=None,
+                    source_url="https://www.wanted.co.kr/wd/1",
+                    facts={},
+                    fact_sources={},
+                )
+            },
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["failures"] == [
+        {
+            "job_key": "wanted:1",
+            "error_code": "company_info_failed",
+            "error": "company info unavailable",
+        }
+    ]
+    assert "sk-live-123" not in json.dumps(result.metadata, ensure_ascii=False)
+    assert "/Users/test/private/company_info/secret.md" not in json.dumps(
+        result.metadata, ensure_ascii=False
+    )
+
+
+def test_screening_stage_logs_stable_company_info_failure_code(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "1", "Secret Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+
+    def fake_enrich(self, context, *, dry_run=False, timeout=1.0):
+        del self, context, dry_run, timeout
+        raise OSError("secret token sk-live-123 /Users/test/private/company_info/secret.md")
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        fake_enrich,
+    )
+    caplog.set_level(logging.WARNING, logger="careerkit.jobs.application.automation")
+
+    JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("wanted:1",),
+            (record,),
+            {},
+            company_contexts={
+                "wanted:1": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:1",
+                    company_name="Secret Co",
+                    company_id=None,
+                    source_url="https://www.wanted.co.kr/wd/1",
+                    facts={},
+                    fact_sources={},
+                )
+            },
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert any(_COMPANY_INFO_FAILURE_CODE in message for message in caplog.messages)
+    assert all("sk-live-123" not in message for message in caplog.messages)
+    assert all("/Users/test/private/company_info/secret.md" not in message for message in caplog.messages)
+    assert all("wanted:1" not in message for message in caplog.messages)
+
+
+def test_screening_stage_logs_stable_company_info_failure_code_for_invalid_result(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "1", "Invalid Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        lambda *args, **kwargs: CompanyInfoEnrichmentResult(
+            status="error",
+            attempted=False,
+            persisted=False,
+            completeness=None,
+            warning_code=None,
+            file_path=None,
+        ),
+    )
+    caplog.set_level(logging.WARNING, logger="careerkit.jobs.application.automation")
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("wanted:1",),
+            (record,),
+            {},
+            company_contexts={
+                "wanted:1": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:1",
+                    company_name="Invalid Co",
+                    company_id=None,
+                    source_url="https://www.wanted.co.kr/wd/1",
+                    facts={},
+                    fact_sources={},
+                )
+            },
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["failures"] == [
+        {
+            "job_key": "wanted:1",
+            "error_code": "company_info_failed",
+            "error": "company info unavailable",
+        }
+    ]
+    assert any(_COMPANY_INFO_FAILURE_CODE in message for message in caplog.messages)
+    assert all("wanted:1" not in message for message in caplog.messages)
+    assert all("Invalid Co" not in message for message in caplog.messages)
+
+
+def test_screening_stage_groupby_search_parse_failure_does_not_abort_batch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    first = repository.create(JobRecord("groupby", "1", "Alpha", "Backend"), jd_markdown="# One\n")
+    second = repository.create(JobRecord("groupby", "2", "Beta", "Backend"), jd_markdown="# Two\n")
+    calls: list[str] = []
+
+    def fake_search(name: str, **kwargs):
+        calls.append(name)
+        if name == "Alpha":
+            raise ValueError("bad nested search row")
+        return None
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        fake_search,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("u1", "u2"),
+            ("groupby:1", "groupby:2"),
+            (first, second),
+            {},
+            company_contexts={
+                "groupby:1": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:1",
+                    company_name="Alpha",
+                    company_id="1",
+                    source_url="https://groupby.kr/positions/1",
+                    facts={"industry": "IT", "location": "서울"},
+                    fact_sources={"industry": ("https://groupby.kr/positions/1",)},
+                ),
+                "groupby:2": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:2",
+                    company_name="Beta",
+                    company_id="2",
+                    source_url="https://groupby.kr/positions/2",
+                    facts={"industry": "IT", "location": "서울"},
+                    fact_sources={"industry": ("https://groupby.kr/positions/2",)},
+                ),
+            },
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert calls == ["Alpha", "Beta"]
+    assert result.item_ids == ("groupby:1", "groupby:2")
+    assert result.metadata["failure_count"] == 0
+    assert result.metadata["company_info_warnings"] == {
+        "groupby:1": _COMPANY_INFO_INCOMPLETE,
+        "groupby:2": _COMPANY_INFO_INCOMPLETE,
+    }
+
+
+def test_screening_stage_dry_run_enrichment_does_not_write_company_file(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("groupby", "456", "Dry Run Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("groupby:456",),
+            (record,),
+            {},
+            company_contexts={
+                "groupby:456": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:456",
+                    company_name="Dry Run Co",
+                    company_id="456",
+                    source_url="https://groupby.kr/positions/456",
+                    facts={
+                        "founded_year": 2020,
+                        "employee_current": 40,
+                        "employee_joined_1y": 8,
+                        "employee_left_1y": 2,
+                        "investment_round": "Series A",
+                        "investment_total": 120.0,
+                        "is_startup": True,
+                    },
+                    fact_sources={
+                        "founded_year": ("https://groupby.kr/positions/456",),
+                        "employee_current": ("https://groupby.kr/positions/456",),
+                        "employee_joined_1y": ("https://groupby.kr/positions/456",),
+                        "employee_left_1y": ("https://groupby.kr/positions/456",),
+                        "investment_round": ("https://groupby.kr/positions/456",),
+                        "investment_total": ("https://groupby.kr/positions/456",),
+                        "is_startup": ("https://groupby.kr/positions/456",),
+                    },
+                )
+            },
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("groupby:456",)
+    assert result.metadata["company_info_results"] == {
+        "groupby:456": {
+            "attempted": True,
+            "completeness": 100.0,
+            "persisted": False,
+            "status": "ready",
+            "warning_code": None,
+        }
+    }
+    assert not (tmp_path / "private/company_info/dry-run-co.md").exists()
 
 
 def test_screening_stage_blocks_on_validation_errors(tmp_path: Path, monkeypatch) -> None:
@@ -2194,6 +2652,266 @@ def test_screening_metadata_preserves_existing_keys(tmp_path: Path, monkeypatch)
         assert key in metadata
 
 
+def test_screening_metadata_records_per_item_provider_telemetry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    metadata = _screened_batch(
+        tmp_path,
+        monkeypatch,
+        [
+            _screening_result(
+                verdict="지원 추천",
+                provider="claude",
+                provider_attempts={"claude": ("ok",)},
+                verdict_capped=False,
+                downgraded=False,
+                context_warning="claude: context near limit",
+                published=True,
+            ),
+            _screening_result(
+                verdict="지원 보류",
+                provider="fallback",
+                used_fallback=True,
+                fallback_reason="ollama: network unavailable",
+                provider_attempts={"claude": ("not logged in",), "ollama": ("network unavailable",)},
+                verdict_capped=True,
+                downgraded=True,
+                context_warning="ollama: prompt near limit",
+                published=True,
+            ),
+        ],
+    )
+
+    assert metadata["items"] == [
+        {
+            "job_key": "wanted:900",
+            "provider": "claude",
+            "verdict": "지원 추천",
+            "verdict_capped": False,
+            "downgraded": False,
+            "published": True,
+            "used_fallback": False,
+            "fallback_reason": None,
+            "provider_attempts": {"claude": ["ok"]},
+            "context_warning": "claude: context near limit",
+        },
+        {
+            "job_key": "wanted:901",
+            "provider": "fallback",
+            "verdict": "지원 보류",
+            "verdict_capped": True,
+            "downgraded": True,
+            "published": True,
+            "used_fallback": True,
+            "fallback_reason": "ollama: network unavailable",
+            "provider_attempts": {
+                "claude": ["not logged in"],
+                "ollama": ["network unavailable"],
+            },
+            "context_warning": "ollama: prompt near limit",
+        },
+    ]
+    assert metadata["providers"] == {"claude": 1, "fallback": 1}
+    assert metadata["fallback_count"] == 1
+    assert metadata["context_warnings"] == 2
+
+
+def test_screening_metadata_uses_legacy_defaults_and_excludes_failures_from_items(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    _write_valid_company_info(tmp_path, "acme", "Acme Inc.")
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "900", "Acme Inc.", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    pending = [
+        SimpleNamespace(
+            verdict="지원 추천",
+            provider="claude",
+            used_fallback=False,
+            verdict_capped=False,
+            downgraded=False,
+            evidence_violations={},
+            context_warning=None,
+        ),
+        ValueError("screening failed"),
+    ]
+
+    def fake_run_screening(**kwargs):
+        result = pending.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening", fake_run_screening
+    )
+    batch = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url", "bad-url"),
+            ("wanted:900", "wanted:901"),
+            (
+                record,
+                StoredJobRecord(
+                    record=JobRecord("wanted", "901", "Broken Co", "Backend"),
+                    jd_markdown="# JD\n",
+                ),
+            ),
+            {},
+        ),
+        dry_run=True,
+        llm_timeout=1,
+    )
+
+    assert batch.metadata["items"] == [
+        {
+            "job_key": "wanted:900",
+            "provider": "claude",
+            "verdict": "지원 추천",
+            "verdict_capped": False,
+            "downgraded": False,
+            "published": False,
+            "used_fallback": False,
+            "fallback_reason": None,
+            "provider_attempts": {},
+            "context_warning": None,
+        }
+    ]
+    assert batch.metadata["failures"] == [{"job_key": "wanted:901", "error": "screening failed"}]
+    assert batch.metadata["company_info_warnings"] == {"wanted:901": _COMPANY_INFO_MISSING}
+
+
+def test_render_human_keeps_screening_items_out_of_bounded_summary() -> None:
+    payload = {
+        "stage": "screen",
+        "screening": {
+            "providers": {"claude": 1},
+            "items": [
+                {
+                    "job_key": "wanted:1",
+                    "provider": "claude",
+                    "verdict": "지원 추천",
+                }
+            ],
+        },
+    }
+
+    output = _render_json(payload, False)
+
+    assert "screening={'providers': {'claude': 1}}" in output
+    assert "wanted:1" not in output
+    assert "items" not in next(line for line in output.splitlines() if line.startswith("screening="))
+
+
+def test_atomic_write_json_keeps_owner_only_permissions(tmp_path: Path) -> None:
+    path = tmp_path / "result.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o600)
+
+    from careerkit.jobs.application.automation import _atomic_write_json
+
+    _atomic_write_json(path, {"ok": True})
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_screening_metadata_sanitizes_private_provider_telemetry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    noisy_reason = (
+        "API_SECRET=abcd1234\n"
+        "/Users/test/private/file.md?token=super-secret-value&sig=abc\n"
+        + ("x" * 400)
+    )
+    metadata = _screened_batch(
+        tmp_path,
+        monkeypatch,
+        [
+            _screening_result(
+                provider="fallback",
+                used_fallback=True,
+                fallback_reason=noisy_reason,
+                provider_attempts={"ollama": (noisy_reason,)},
+            )
+        ],
+    )
+
+    item = metadata["items"][0]
+    attempt = item["provider_attempts"]["ollama"][0]
+
+    assert "\n" not in item["fallback_reason"]
+    assert "/Users/test/private" not in item["fallback_reason"]
+    assert "super-secret-value" not in item["fallback_reason"]
+    assert "?" not in item["fallback_reason"]
+    assert len(item["fallback_reason"]) <= 243
+    assert "\n" not in attempt
+    assert "/Users/test/private" not in attempt
+    assert "super-secret-value" not in attempt
+    assert "?" not in attempt
+    assert len(attempt) <= 243
+
+
+def test_screening_metadata_redacts_lowercase_secret_assignments(
+    tmp_path: Path, monkeypatch
+) -> None:
+    noisy_reason = (
+        "token=abcd1234 secret=efgh5678 api_key=ijkl9012 access_key=mnop3456"
+    )
+    metadata = _screened_batch(
+        tmp_path,
+        monkeypatch,
+        [
+            _screening_result(
+                provider="fallback",
+                used_fallback=True,
+                fallback_reason=noisy_reason,
+                provider_attempts={"ollama": (noisy_reason,)},
+            )
+        ],
+    )
+
+    item = metadata["items"][0]
+    attempt = item["provider_attempts"]["ollama"][0]
+
+    assert item["fallback_reason"] == (
+        "token=[redacted] secret=[redacted] api_key=[redacted] access_key=[redacted]"
+    )
+    assert attempt == item["fallback_reason"]
+
+
+def test_screening_metadata_redacts_delimited_absolute_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    noisy_reason = (
+        "cwd=/Users/test/private/project path=/Users/test/private/file.md?token=secret123"
+    )
+    metadata = _screened_batch(
+        tmp_path,
+        monkeypatch,
+        [
+            _screening_result(
+                provider="fallback",
+                used_fallback=True,
+                fallback_reason=noisy_reason,
+                provider_attempts={
+                    "ollama": (
+                        "detail(cwd=/Users/test/private/project) "
+                        "[path=/Users/test/private/file.md?token=secret123]",
+                    )
+                },
+            )
+        ],
+    )
+
+    item = metadata["items"][0]
+    attempt = item["provider_attempts"]["ollama"][0]
+
+    assert item["fallback_reason"] == "cwd=[path] path=[path]"
+    assert attempt == "detail(cwd=[path]) [path=[path]]"
+
+
 def test_screening_metadata_keeps_the_context_warning_message(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2218,3 +2936,1115 @@ def test_screening_metadata_deduplicates_identical_context_warnings(
 
     assert metadata["context_warnings"] == 2
     assert metadata["context_warning_messages"] == [warning]
+
+
+def test_jobs_extraction_stage_saramin_deduplicates_exact_cross_source_items_only(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url={
+                detail_url: _saramin_detail_html(
+                    job_id="123",
+                    body_html=(
+                        "<h2>담당업무</h2><ul><li>API 개발</li></ul>"
+                        "<h2>지원자격</h2><ul><li>Python 경험</li><li>Python 경험</li></ul>"
+                        "<h2>우대조건</h2><p>AWS 경험</p>"
+                    ),
+                    detail_pairs=(
+                        ("담당업무", "API 개발<br>장애 대응"),
+                        ("자격요건", "Python 경험<br>Python 경험 3년 이상"),
+                        ("우대사항", "AWS 경험<br>테스트 자동화"),
+                    ),
+                )
+            }
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "주요 업무") == "- API 개발\n- 장애 대응"
+    assert _section_body(markdown, "자격 요건") == "- Python 경험\n- Python 경험\n- Python 경험 3년 이상"
+    assert _section_body(markdown, "우대사항") == "- AWS 경험\n- 테스트 자동화"
+
+
+def test_jobs_extraction_stage_saramin_plain_text_headings_build_manifest(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url={
+                detail_url: _saramin_detail_html(
+                    job_id="123",
+                    body_html=(
+                        "<div>모집분야</div>"
+                        "<div>📋 주요업무</div><div>• API 개발</div>"
+                        "<div>📋 자격요건</div><div>• Python 경험</div>"
+                        "<div>🏠 근무조건</div><div>• 정규직</div>"
+                    ),
+                    detail_pairs=(),
+                )
+            }
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "주요 업무") == "- API 개발"
+    assert _section_body(markdown, "자격 요건") == "- Python 경험"
+    manifest = extract_requirement_manifest(markdown)
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("API 개발", RequirementKind.MAIN_DUTY),
+        ("Python 경험", RequirementKind.REQUIRED),
+    ]
+
+
+def test_jobs_extraction_stage_saramin_cross_source_dedup_ignores_bullet_formatting_only(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url={
+                detail_url: _saramin_detail_html(
+                    job_id="123",
+                    body_html="<h2>자격요건</h2><p>Python 경험</p>",
+                    detail_pairs=(("자격요건", "Python 경험"),),
+                )
+            }
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "자격 요건") == "Python 경험"
+
+def test_jobs_extraction_stage_saramin_uses_detail_fallback_and_keeps_mixed_requirement_prose_ambiguous(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url={
+                detail_url: _saramin_detail_html(
+                    job_id="123",
+                    body_html=(
+                        "<h2>주요업무</h2><ul><li>서비스 운영</li></ul>"
+                        "<h2>자격요건</h2><li>SQL</li><p>문서화 역량</p>"
+                    ),
+                    detail_pairs=(("우대사항", "커뮤니케이션"),),
+                )
+            }
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "우대사항") == "- 커뮤니케이션"
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [item.text for item in manifest.leaves if item.kind is RequirementKind.REQUIRED] == ["SQL"]
+    assert manifest.ambiguous_qualifications is True
+
+
+def test_jobs_extraction_stage_saramin_builds_manifest_in_source_order_and_without_main_duty_removes_only_duties(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url={
+                detail_url: _saramin_detail_html(
+                    job_id="123",
+                    body_html=(
+                        "<h2>담당업무</h2><ul><li>서비스 개발</li><li>장애 대응</li></ul>"
+                        "<h2>지원자격</h2><ul><li>Python</li></ul><p>협업 역량</p>"
+                        "<h2>우대조건</h2><p>AWS</p>"
+                        "<h2>기타</h2><p>팀 소개</p>"
+                    ),
+                    detail_pairs=(("자격요건", "FastAPI"),),
+                )
+            }
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "포지션 소개") == "팀 소개"
+    manifest = extract_requirement_manifest(markdown)
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("서비스 개발", RequirementKind.MAIN_DUTY),
+        ("장애 대응", RequirementKind.MAIN_DUTY),
+        ("Python", RequirementKind.REQUIRED),
+        ("FastAPI", RequirementKind.REQUIRED),
+        ("AWS", RequirementKind.PREFERRED),
+    ]
+    assert without_main_duty(manifest).parents == tuple(item for item in manifest.parents if item.kind is not RequirementKind.MAIN_DUTY)
+
+
+
+def test_jobs_extraction_stage_saramin_does_not_use_long_recognized_only_body_as_introduction(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(
+            text_by_url={
+                detail_url: _saramin_detail_html(
+                    job_id="123",
+                    body_html=(
+                        "<h2>자격요건</h2><ul>"
+                        "<li>Python 경험 5년 이상 및 대규모 서비스 유지보수 경험</li>"
+                        "<li>FastAPI 기반 API 설계 및 운영 경험과 성능 최적화 경험</li>"
+                        "<li>테스트 자동화와 장애 대응 경험 및 운영 문서 작성 경험</li>"
+                        "</ul>"
+                        "<h2>우대사항</h2><ul>"
+                        "<li>AWS 운영 경험과 모니터링 도구 활용 경험</li>"
+                        "<li>대용량 트래픽 처리 경험과 협업 프로세스 개선 경험</li>"
+                        "</ul>"
+                    ),
+                    detail_pairs=(),
+                )
+            }
+        ),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    markdown = batch.records[0].jd_markdown
+    assert _section_body(markdown, "포지션 소개") == "정보 없음"
+    assert _section_body(markdown, "자격 요건") == (
+        "- Python 경험 5년 이상 및 대규모 서비스 유지보수 경험\n"
+        "- FastAPI 기반 API 설계 및 운영 경험과 성능 최적화 경험\n"
+        "- 테스트 자동화와 장애 대응 경험 및 운영 문서 작성 경험"
+    )
+
+
+def test_jobs_extraction_stage_saramin_builds_company_context_from_detail_identifier(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    url = "https://www.saramin.co.kr/zf_user/jobs/relay/view?rec_idx=123"
+    detail_url = "https://m.saramin.co.kr/job-search/view?rec_idx=123"
+    detail_html = (
+        _saramin_detail_html(
+            job_id="123",
+            body_html="<h2>자격요건</h2><p>Python</p>",
+            detail_pairs=(),
+        )
+        + '<a href="/job-search/company-info-view?csn=Q1NOPLUS123==">company</a>'
+    )
+    stage = JobsExtractionStage(
+        repository=repository,
+        http_client=FakeHttpClient(text_by_url={detail_url: detail_html}),
+    )
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    assert batch.company_contexts["saramin:123"] == CompanyEnrichmentContext(
+        platform="saramin",
+        item_id="saramin:123",
+        company_name="테스트회사",
+        company_id="Q1NOPLUS123==",
+        source_url=detail_url,
+        facts={},
+        fact_sources={},
+    )
+
+
+# -- enrichment context fetch --
+
+
+def test_enrichment_fetch_wanted_populates_salary_and_employees(monkeypatch):
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name="테스트랩스",
+        industry="IT",
+        founded_year=2018,
+        location="서울 강남구",
+        employee_count=24,
+        avg_salary_manwon=4800,
+        hired_1y=15,
+        left_1y=13,
+        total_sales_eok=38.3,
+        sales_year="2023",
+        tags=(),
+        description="",
+        homepage="",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: fake_info,
+    )
+
+    ctx = CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:123456",
+        company_name="테스트랩스",
+        company_id="12345",
+        source_url="https://www.wanted.co.kr/wd/123456",
+        facts={},
+        fact_sources={},
+    )
+    assert ctx.item_id == "wanted:123456"
+    assert ctx.source_url == "https://www.wanted.co.kr/wd/123456"
+    result = _enrichment_context_with_fetched_facts(ctx)
+    assert result.facts["avg_salary"] == 4800
+    assert result.facts["employee_current"] == 24
+    assert result.facts["employee_joined_1y"] == 15
+    assert result.facts["employee_left_1y"] == 13
+    assert result.facts["founded_year"] == 2018
+    assert "https://www.wanted.co.kr/company/12345" in result.fact_sources["avg_salary"]
+
+
+def test_enrichment_fetch_wanted_returns_unchanged_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: (_ for _ in ()).throw(ValueError("not found")),
+    )
+    ctx = CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:999",
+        company_name="없는회사",
+        company_id="999",
+        source_url="https://www.wanted.co.kr/wd/999",
+        facts={},
+        fact_sources={},
+    )
+    result = _enrichment_context_with_fetched_facts(ctx)
+    assert result.facts == {}
+
+
+def test_enrichment_fetch_wanted_returns_unchanged_on_unsafe_detail(monkeypatch):
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name="테스트랩스",
+        industry="IT|보안",
+        founded_year=2018,
+        location="서울 강남구",
+        employee_count=24,
+        avg_salary_manwon=4800,
+        hired_1y=15,
+        left_1y=13,
+        total_sales_eok=38.3,
+        sales_year="2023",
+        tags=(),
+        description="",
+        homepage="",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: fake_info,
+    )
+    ctx = CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:999",
+        company_name="테스트랩스",
+        company_id="12345",
+        source_url="https://www.wanted.co.kr/wd/999",
+        facts={},
+        fact_sources={},
+    )
+
+    result = _enrichment_context_with_fetched_facts(ctx)
+
+    assert result == ctx
+
+
+def test_enrichment_fetch_wanted_returns_unchanged_on_invalid_metrics(monkeypatch):
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name="테스트랩스",
+        industry="IT",
+        founded_year=1799,
+        location="서울 강남구",
+        employee_count=24,
+        avg_salary_manwon=4800,
+        hired_1y=15,
+        left_1y=13,
+        total_sales_eok=38.3,
+        sales_year="2023",
+        tags=(),
+        description="",
+        homepage="",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: fake_info,
+    )
+    ctx = CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:999",
+        company_name="테스트랩스",
+        company_id="12345",
+        source_url="https://www.wanted.co.kr/wd/999",
+        facts={},
+        fact_sources={},
+    )
+
+    result = _enrichment_context_with_fetched_facts(ctx)
+
+    assert result == ctx
+
+
+def test_enrichment_fetch_groupby_keeps_original_without_wanted_discovery(monkeypatch):
+    called = []
+
+    def record_search(name, **kwargs):
+        called.append((name, kwargs))
+        return None
+
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        record_search,
+        raising=False,
+    )
+    ctx = CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id="12345",
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "investment_round": "Series A",
+            "is_startup": True,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+    result = _enrichment_context_with_fetched_facts(ctx)
+    assert result == CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id=None,
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "investment_round": "Series A",
+            "is_startup": True,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+    assert called == [("테스트스타트업", {"verify_industry": "헬스케어", "verify_location": "서울"})]
+
+
+def test_enrichment_fetch_groupby_discovers_wanted_company_and_merges_only_missing_facts(
+    monkeypatch,
+):
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name="테스트스타트업",
+        industry="헬스케어",
+        founded_year=2018,
+        location="서울 강남구",
+        employee_count=24,
+        avg_salary_manwon=4800,
+        hired_1y=15,
+        left_1y=13,
+        total_sales_eok=38.3,
+        sales_year="2023",
+        tags=(),
+        description="",
+        homepage="",
+    )
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda name, **kwargs: calls.append(
+            (name, kwargs.get("verify_industry", ""), kwargs.get("verify_location", ""))
+        )
+        or 12345,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: fake_info,
+    )
+
+    ctx = CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id="12345",
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "investment_round": "Series A",
+            "is_startup": True,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+
+    result = _enrichment_context_with_fetched_facts(ctx)
+
+    assert calls == [("테스트스타트업", "헬스케어", "서울")]
+    assert result.company_id is None
+    assert result.source_url == "https://groupby.kr/positions/12345"
+    assert result.facts["employee_current"] == 30
+    assert result.facts["industry"] == "헬스케어"
+    assert result.facts["location"] == "서울"
+    assert result.facts["investment_round"] == "Series A"
+    assert result.facts["founded_year"] == 2018
+    assert result.facts["avg_salary"] == 4800
+    assert result.facts["employee_joined_1y"] == 15
+    assert result.facts["employee_left_1y"] == 13
+    assert result.facts["revenue"] == 38.3
+    assert result.fact_sources["avg_salary"] == ("https://www.wanted.co.kr/company/12345",)
+    assert result.fact_sources["revenue"] == ("https://www.wanted.co.kr/company/12345",)
+
+
+def test_enrichment_fetch_groupby_returns_sanitized_context_on_detail_mismatch(monkeypatch):
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name="다른회사",
+        industry="헬스케어",
+        founded_year=2018,
+        location="서울 강남구",
+        employee_count=24,
+        avg_salary_manwon=4800,
+        hired_1y=15,
+        left_1y=13,
+        total_sales_eok=38.3,
+        sales_year="2023",
+        tags=(),
+        description="",
+        homepage="",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda name, **kwargs: 12345,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: fake_info,
+    )
+
+    ctx = CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id="12345",
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+
+    result = _enrichment_context_with_fetched_facts(ctx)
+
+    assert result == CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id=None,
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+
+
+def test_enrichment_fetch_groupby_returns_sanitized_context_on_invalid_metrics(monkeypatch):
+    from careerkit.jobs.adapters.platforms import wanted as wanted_mod
+
+    fake_info = wanted_mod.WantedCompanyInfo(
+        company_id=12345,
+        name="테스트스타트업",
+        industry="헬스케어",
+        founded_year=1799,
+        location="서울 강남구",
+        employee_count=24,
+        avg_salary_manwon=1_000_001,
+        hired_1y=15,
+        left_1y=13,
+        total_sales_eok=38.3,
+        sales_year="2023",
+        tags=(),
+        description="",
+        homepage="",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda name, **kwargs: 12345,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: fake_info,
+    )
+
+    ctx = CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id="12345",
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+
+    result = _enrichment_context_with_fetched_facts(ctx)
+
+    assert result == CompanyEnrichmentContext(
+        platform="groupby",
+        item_id="groupby:12345",
+        company_name="테스트스타트업",
+        company_id=None,
+        source_url="https://groupby.kr/positions/12345",
+        facts={
+            "employee_current": 30,
+            "industry": "헬스케어",
+            "location": "서울",
+        },
+        fact_sources={"employee_current": ("https://groupby.kr/positions/12345",)},
+    )
+
+
+def test_screening_stage_groupby_ready_file_skips_wanted_discovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    _write_valid_company_info(tmp_path, "ready-groupby", "Ready GroupBy")
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("groupby", "1", "Ready GroupBy", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    search_calls: list[str] = []
+    fetch_calls: list[str] = []
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda *args, **kwargs: search_calls.append("search"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda *args, **kwargs: fetch_calls.append("fetch"),
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("url",),
+            ("groupby:1",),
+            (record,),
+            {},
+            company_contexts={
+                "groupby:1": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:1",
+                    company_name="Ready GroupBy",
+                    company_id="1",
+                    source_url="https://groupby.kr/positions/1",
+                    facts={"industry": "AI", "location": "서울"},
+                    fact_sources={"industry": ("https://groupby.kr/positions/1",)},
+                )
+            },
+        ),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("groupby:1",)
+    assert search_calls == []
+    assert fetch_calls == []
+
+
+def test_screening_stage_groupby_persists_ready_file_after_corroborated_enrichment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from careerkit.jobs.adapters.platforms.wanted import WantedCompanyInfo
+
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("groupby", "10", "Proof Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda *args, **kwargs: 12345,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda *args, **kwargs: WantedCompanyInfo(
+            company_id=12345,
+            name="Proof Co",
+            industry="IT",
+            founded_year=2020,
+            location="서울 강남구",
+            employee_count=30,
+            avg_salary_manwon=4800,
+            hired_1y=5,
+            left_1y=1,
+            total_sales_eok=38.3,
+            sales_year="2024",
+            tags=(),
+            description="",
+            homepage="",
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_screening(**kwargs):
+        captured["company_file"] = kwargs["company_file"]
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("u1",),
+            ("groupby:10",),
+            (record,),
+            {},
+            company_contexts={
+                "groupby:10": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:10",
+                    company_name="Proof Co",
+                    company_id="10",
+                    source_url="https://groupby.kr/positions/10",
+                    facts={"industry": "IT", "location": "서울"},
+                    fact_sources={"industry": ("https://groupby.kr/positions/10",)},
+                )
+            },
+        ),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    file_path = tmp_path / "private/company_info/proof-co.md"
+    saved = file_path.read_text(encoding="utf-8")
+    lookup = CompanyInfoService(workspace=workspace).inspect("Proof Co")
+
+    assert result.item_ids == ("groupby:10",)
+    assert captured["company_file"] == file_path
+    assert result.metadata["company_info_results"]["groupby:10"]["status"] == "ready"
+    assert "https://groupby.kr/positions/10" in saved
+    assert "https://www.wanted.co.kr/company/12345" in saved
+    assert lookup.status == "ready"
+    assert lookup.digest is not None
+
+
+def test_screening_stage_groupby_miss_preserves_incomplete_file_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    company_dir = tmp_path / "private/company_info"
+    company_dir.mkdir(parents=True, exist_ok=True)
+    company_file = company_dir / "proof-co.md"
+    original = (
+        "# Proof Co\n\n"
+        "## 기업 정보\n\n"
+        "| 항목 | 내용 |\n|------|------|\n"
+        "| 설립 | 2020년 |\n\n"
+        "---\n\n"
+        "*출처:*\n- https://groupby.kr/positions/10\n"
+    )
+    company_file.write_text(original, encoding="utf-8")
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("groupby", "10", "Proof Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("u1",),
+            ("groupby:10",),
+            (record,),
+            {},
+            company_contexts={
+                "groupby:10": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:10",
+                    company_name="Proof Co",
+                    company_id="10",
+                    source_url="https://groupby.kr/positions/10",
+                    facts={"industry": "IT", "location": "서울"},
+                    fact_sources={"industry": ("https://groupby.kr/positions/10",)},
+                )
+            },
+        ),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("groupby:10",)
+    assert result.metadata["company_info_warnings"] == {
+        "groupby:10": _COMPANY_INFO_INCOMPLETE,
+    }
+    assert result.metadata["company_info_results"]["groupby:10"]["attempted"] is True
+    saved = company_file.read_text(encoding="utf-8")
+    assert "https://www.wanted.co.kr/company/" not in saved
+    assert "https://groupby.kr/positions/10" in saved
+
+
+def test_screening_stage_groupby_incomplete_rerun_discovers_ready_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from careerkit.jobs.adapters.platforms.wanted import WantedCompanyInfo
+
+    workspace = _make_workspace(tmp_path)
+    company_dir = tmp_path / "private/company_info"
+    company_dir.mkdir(parents=True, exist_ok=True)
+    company_file = company_dir / "proof-co.md"
+    company_file.write_text(
+        "# Proof Co\n\n"
+        "## 기업 정보\n\n"
+        "| 항목 | 내용 |\n|------|------|\n"
+        "| 설립 | 2020년 |\n\n"
+        "---\n\n"
+        "*출처:*\n- https://groupby.kr/positions/10\n",
+        encoding="utf-8",
+    )
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("groupby", "10", "Proof Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_search_company_id",
+        lambda *args, **kwargs: 12345,
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda *args, **kwargs: WantedCompanyInfo(
+            company_id=12345,
+            name="Proof Co",
+            industry="IT",
+            founded_year=2020,
+            location="서울 강남구",
+            employee_count=30,
+            avg_salary_manwon=4800,
+            hired_1y=5,
+            left_1y=1,
+            total_sales_eok=38.3,
+            sales_year="2024",
+            tags=(),
+            description="",
+            homepage="",
+        ),
+    )
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(
+            ("u1",),
+            ("groupby:10",),
+            (record,),
+            {},
+            company_contexts={
+                "groupby:10": CompanyEnrichmentContext(
+                    platform="groupby",
+                    item_id="groupby:10",
+                    company_name="Proof Co",
+                    company_id="10",
+                    source_url="https://groupby.kr/positions/10",
+                    facts={"industry": "IT", "location": "서울"},
+                    fact_sources={"industry": ("https://groupby.kr/positions/10",)},
+                )
+            },
+        ),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("groupby:10",)
+    assert result.metadata["company_info_warnings"] == {}
+    assert result.metadata["company_info_results"]["groupby:10"]["status"] == "ready"
+    assert company_file.read_text(encoding="utf-8").count("## 매출 정보") == 1
+
+
+def test_screening_stage_sync_failure_can_leave_valid_new_file_and_next_run_compensates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from careerkit.jobs.application import company_info as company_info_mod
+
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "10", "Retry Co", "Backend"),
+        jd_markdown="# JD\n",
+    )
+    sync_state = {"raised": False}
+
+    original_fsync_directory = company_info_mod._fsync_directory
+
+    def fail_once(path: Path) -> None:
+        if not sync_state["raised"]:
+            sync_state["raised"] = True
+            raise OSError("sync failed")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(company_info_mod, "_fsync_directory", fail_once)
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.run_screening",
+        lambda **kwargs: _screening_result(),
+    )
+
+    extraction = ExtractionBatch(
+        ("u1",),
+        ("wanted:10",),
+        (record,),
+        {},
+        company_contexts={
+            "wanted:10": CompanyEnrichmentContext(
+                platform="wanted",
+                item_id="wanted:10",
+                company_name="Retry Co",
+                company_id=None,
+                source_url="https://www.wanted.co.kr/wd/10",
+                facts={"founded_year": 2020, "employee_current": 30},
+                fact_sources={
+                    "founded_year": ("https://www.wanted.co.kr/wd/10",),
+                    "employee_current": ("https://www.wanted.co.kr/wd/10",),
+                },
+            )
+        },
+    )
+
+    failed = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        extraction,
+        dry_run=False,
+        llm_timeout=1,
+    )
+    file_path = tmp_path / "private/company_info/retry-co.md"
+    assert failed.item_ids == ()
+    assert failed.metadata["failures"] == [
+        {
+            "job_key": "wanted:10",
+            "error_code": "company_info_failed",
+            "error": "company info unavailable",
+        }
+    ]
+    assert CompanyInfoService(workspace=workspace).inspect("Retry Co").status == "ready"
+    assert file_path.exists()
+
+    retried = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        extraction,
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert retried.item_ids == ("wanted:10",)
+    assert retried.metadata["company_info_results"]["wanted:10"]["attempted"] is False
+
+
+def test_enrichment_fetch_wanted_skips_when_facts_already_present(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: called.append(cid),
+    )
+    ctx = CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:999",
+        company_name="이미보강됨",
+        company_id="999",
+        source_url="https://www.wanted.co.kr/wd/999",
+        facts={"industry": "IT"},
+        fact_sources={"industry": ("https://example.com",)},
+    )
+    result = _enrichment_context_with_fetched_facts(ctx)
+    assert result.facts == {"industry": "IT"}
+    assert called == []
+
+
+def test_enrichment_fetch_wanted_skips_when_no_company_id(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.wanted_company_http",
+        lambda cid, **kw: called.append(cid),
+    )
+    ctx = CompanyEnrichmentContext(
+        platform="wanted",
+        item_id="wanted:999",
+        company_name="아이디없음",
+        company_id=None,
+        source_url="https://www.wanted.co.kr/wd/999",
+        facts={},
+        fact_sources={},
+    )
+    result = _enrichment_context_with_fetched_facts(ctx)
+    assert result.facts == {}
+    assert called == []
+
+
+# -- legacy JD re-extraction --
+
+
+from careerkit.jobs.application.automation import _has_assessable_requirements
+
+
+def test_has_assessable_requirements_returns_true_for_complete_jd():
+    jd = (
+        "# 시니어 백엔드\n\n"
+        "## 자격 요건\n\n"
+        "- Python 5년 이상\n"
+        "- AWS 운영 경험\n"
+    )
+    assert _has_assessable_requirements(jd) is True
+
+
+def test_has_assessable_requirements_returns_false_for_stub_jd():
+    jd = "# 포지션명\n\n- **URL**: https://example.com\n- **사유**: 경력 미달\n"
+    assert _has_assessable_requirements(jd) is False
+
+
+def test_has_assessable_requirements_returns_false_for_empty():
+    assert _has_assessable_requirements("") is False
+
+
+def test_resolve_existing_re_extracts_stub_jd(tmp_path: Path, monkeypatch):
+    from careerkit.jobs.domain.model import JobRecord
+
+    repo = JDRecordRepository(tmp_path / "records")
+    stub_jd = "# 테스트 포지션\n\n- **URL**: https://www.wanted.co.kr/wd/999999\n- **사유**: stub\n"
+    repo.create(
+        JobRecord(platform="wanted", job_id="999999", company="테스트회사", position="테스트", source_url="https://www.wanted.co.kr/wd/999999"),
+        jd_markdown=stub_jd,
+    )
+
+    class FakeHttp:
+        def request_text(self, url, **kw):
+            return _make_wanted_next_data_html(
+                company_name="테스트회사",
+                position="시니어 백엔드",
+                requirements="- Python 5년 이상\n- AWS 운영 경험",
+            )
+        def request_json(self, url, **kw):
+            raise NotImplementedError
+
+    stage = JobsExtractionStage(repository=repo, http_client=FakeHttp())
+    result = stage._resolve_existing("https://www.wanted.co.kr/wd/999999")
+    assert _has_assessable_requirements(result.jd_markdown) is True
+    assert "Python" in result.jd_markdown
+
+
+def test_resolve_existing_keeps_complete_jd(tmp_path: Path):
+    from careerkit.jobs.domain.model import JobRecord
+
+    repo = JDRecordRepository(tmp_path / "records")
+    complete_jd = (
+        "# 백엔드 엔지니어\n\n"
+        "## 자격 요건\n\n"
+        "- Java 3년 이상\n"
+        "- Spring Boot 경험\n"
+    )
+    repo.create(
+        JobRecord(platform="wanted", job_id="888888", company="좋은회사", position="백엔드", source_url="https://www.wanted.co.kr/wd/888888"),
+        jd_markdown=complete_jd,
+    )
+
+    class FakeHttp:
+        def request_text(self, url, **kw):
+            raise AssertionError("should not re-extract")
+        def request_json(self, url, **kw):
+            raise NotImplementedError
+
+    stage = JobsExtractionStage(repository=repo, http_client=FakeHttp())
+    result = stage._resolve_existing("https://www.wanted.co.kr/wd/888888")
+    assert result.jd_markdown == complete_jd
+
+
+def test_resolve_existing_returns_original_on_extract_failure(tmp_path: Path):
+    from careerkit.jobs.domain.model import JobRecord
+
+    repo = JDRecordRepository(tmp_path / "records")
+    stub_jd = "# 스텁\n\n- **사유**: legacy\n"
+    repo.create(
+        JobRecord(platform="wanted", job_id="777777", company="실패회사", position="스텁", source_url="https://www.wanted.co.kr/wd/777777"),
+        jd_markdown=stub_jd,
+    )
+
+    class FakeHttp:
+        def request_text(self, url, **kw):
+            raise OSError("network down")
+        def request_json(self, url, **kw):
+            raise NotImplementedError
+
+    stage = JobsExtractionStage(repository=repo, http_client=FakeHttp())
+    result = stage._resolve_existing("https://www.wanted.co.kr/wd/777777")
+    assert result.jd_markdown == stub_jd
+
+
+def _make_wanted_next_data_html(
+    *, company_name: str, position: str, requirements: str
+) -> str:
+    payload = {
+        "props": {
+            "pageProps": {
+                "initialData": {
+                    "id": 999999,
+                    "position": position,
+                    "company": {
+                        "company_id": 1,
+                        "company_name": company_name,
+                    },
+                    "address": {"full_location": "서울"},
+                    "intro": "",
+                    "main_tasks": "- 서비스 개발",
+                    "requirements": requirements,
+                    "preferred_points": "",
+                    "benefits": "",
+                    "career": {"annual_from": 5, "annual_to": 100},
+                    "status": "active",
+                    "employment_type": "regular",
+                },
+            },
+        },
+    }
+    return f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
