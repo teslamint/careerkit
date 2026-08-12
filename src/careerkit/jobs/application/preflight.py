@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 import shutil
 import tempfile
@@ -28,6 +29,7 @@ class StoragePreflightResult:
     isolated_output_root: Path
     findings: tuple[PreflightFinding, ...]
     status_counts: dict[str, int]
+    application_timestamp_categories: dict[str, int] = field(default_factory=dict)
 
 
 class WorkspacePreflightService:
@@ -51,6 +53,7 @@ class WorkspacePreflightService:
         findings: list[PreflightFinding] = []
         checked_keys: list[str] = []
         status_counts: dict[str, int] = {}
+        application_timestamp_categories: dict[str, int] = {}
         screening_count = 0
         keys = tuple(self.repository.iter_keys())
         if self.temp_root is not None:
@@ -94,6 +97,12 @@ class WorkspacePreflightService:
                     )
                 )
                 continue
+            timestamp_category = _categorize_application_timestamp(
+                validated.record.application_status_updated_at
+            )
+            application_timestamp_categories[timestamp_category] = (
+                application_timestamp_categories.get(timestamp_category, 0) + 1
+            )
             verdict = validated.record.screening_verdict.value if validated.record.screening_verdict else "unscreened"
             for label in (
                 f"screening:{verdict}",
@@ -132,7 +141,22 @@ class WorkspacePreflightService:
             isolated_output_root=output_root,
             findings=tuple(findings),
             status_counts=dict(sorted(status_counts.items())),
+            application_timestamp_categories=dict(
+                sorted(application_timestamp_categories.items())
+            ),
         )
 
     def cleanup_isolated_output(self, output_root: Path) -> None:
         shutil.rmtree(output_root, ignore_errors=True)
+
+
+def _categorize_application_timestamp(value: str | None) -> str:
+    if value is None:
+        return "absent"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return "invalid"
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return "naive"
+    return "aware"

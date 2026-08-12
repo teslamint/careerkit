@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -50,8 +51,108 @@ def _run_host(workspace_root: Path, messages: list[dict]) -> list[dict]:
     return every framed response/push read from stdout before the process
     exits (stdin is closed after writing, ending the main loop)."""
     stdin_bytes = b"".join(_frame(msg) for msg in messages)
+    env = {"CAREER_WORKSPACE": str(workspace_root)}
     proc = subprocess.run(
         [sys.executable, str(_HOST_PATH)],
+        input=stdin_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", errors="replace")
+    return _unframe_all(proc.stdout)
+
+
+def _run_host_with_fixture_worker(workspace_root: Path, messages: list[dict], tmp_path: Path) -> list[dict]:
+    driver = tmp_path / "host_driver.py"
+    driver.write_text(
+        dedent(
+            f"""
+            import importlib.util
+            import io
+            import json
+            import struct
+            import sys
+            from pathlib import Path
+            from types import SimpleNamespace
+
+            from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
+            from careerkit.jobs.domain.model import JobKey, JobRecord, ScreeningVerdict
+
+            host_path = Path({str(_HOST_PATH)!r})
+            spec = importlib.util.spec_from_file_location("careerkit_host_test_driver", host_path)
+            assert spec is not None and spec.loader is not None
+            host = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(host)
+
+            workspace_root = Path(sys.argv[1])
+            repository = JDRecordRepository(workspace_root / "private" / "jd" / "records")
+
+            class FixtureExtractionStage:
+                def extract(self, urls, *, dry_run, screening_only):
+                    url = urls[0]
+                    key = JobKey(host.get_platform_from_url(url), host.extract_job_id(url))
+                    stored = repository.find(key)
+                    if stored is None:
+                        record = JobRecord(
+                            platform=key.platform,
+                            job_id=key.job_id,
+                            company="Fixture Corp",
+                            position="Backend Engineer",
+                            source_url=url,
+                        )
+                        repository.create(record, jd_markdown="# JD")
+                        stored = repository.get(key)
+                    return SimpleNamespace(
+                        records=[stored],
+                        metadata={{"failures": []}},
+                        company_contexts={{f"{{key.platform}}:{{key.job_id}}": object()}},
+                    )
+
+            class FixtureScreeningStage:
+                def screen(self, extraction, *, dry_run, llm_timeout):
+                    key = extraction.records[0].record.key
+                    repository.update_screening_result(
+                        key,
+                        screening_markdown="# Screening body",
+                        screening_verdict=ScreeningVerdict.RECOMMENDED,
+                    )
+                    item_id = f"{{key.platform}}:{{key.job_id}}"
+                    return SimpleNamespace(
+                        metadata={{
+                            "failures": [],
+                            "company_info_results": {{
+                                item_id: {{
+                                    "status": "ready",
+                                    "attempted": True,
+                                    "persisted": True,
+                                    "completeness": 100.0,
+                                    "warning_code": None,
+                                }}
+                            }},
+                        }}
+                    )
+
+            raw = sys.stdin.buffer.read()
+            stdin = io.BytesIO(raw)
+            stdout = io.BytesIO()
+            host.serve_with_worker(
+                stdin,
+                stdout,
+                repository,
+                extraction_stage=FixtureExtractionStage(),
+                screening_stage=FixtureScreeningStage(),
+                company_info_service=None,
+            )
+            sys.stdout.buffer.write(stdout.getvalue())
+            """
+        ),
+        encoding="utf-8",
+    )
+    stdin_bytes = b"".join(_frame(msg) for msg in messages)
+    proc = subprocess.run(
+        [sys.executable, str(driver), str(workspace_root)],
         input=stdin_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -120,6 +221,44 @@ def test_collect_duplicate_returns_existing(workspace_root: Path, repository: JD
     # `response.data` as a full record dict, same shape as `lookup`.
     assert responses[0]["status"] == "duplicate"
     assert responses[0]["data"] == record.to_dict()
+
+
+def test_collect_eof_drains_worker_and_preserves_message_order(workspace_root: Path, tmp_path: Path):
+    responses = _run_host_with_fixture_worker(
+        workspace_root,
+        [{"action": "collect", "url": "https://www.wanted.co.kr/wd/777888"}],
+        tmp_path,
+    )
+
+    assert responses[0]["status"] == "accepted"
+    tracking_id = responses[0]["tracking_id"]
+    assert responses[1] == {
+        "type": "screening_progress",
+        "tracking_id": tracking_id,
+        "stage": "company_info",
+        "state": "checking",
+    }
+    assert responses[2] == {
+        "type": "screening_progress",
+        "tracking_id": tracking_id,
+        "stage": "company_info",
+        "state": "enriching",
+    }
+    assert responses[3] == {
+        "type": "screening_progress",
+        "tracking_id": tracking_id,
+        "stage": "screening",
+        "state": "running",
+    }
+    assert responses[4]["type"] == "screening_complete"
+    assert responses[4]["tracking_id"] == tracking_id
+    assert responses[4]["data"]["company_info"] == {
+        "status": "ready",
+        "attempted": True,
+        "persisted": True,
+        "completeness": 100.0,
+        "warning_code": None,
+    }
 
 
 def test_get_detail_returns_screening(workspace_root: Path, repository: JDRecordRepository):

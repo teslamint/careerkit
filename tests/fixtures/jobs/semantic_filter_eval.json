@@ -1,0 +1,64 @@
+{
+  "schema": "semantic-filter-eval/v1",
+  "dataset_version": "2026-08-10",
+  "source_queue_digests": [
+    "synthetic-fixture-queue-v1"
+  ],
+  "human_confirmation": {
+    "confirmed_by": "synthetic-fixture",
+    "confirmed_at": "2026-08-10T03:00:00Z"
+  },
+  "lock_timestamp": "2026-08-10T03:15:00Z",
+  "lock_digest": "a51f4556415de2a5e6b44292d9344f5037234f8c3bff39f3889356ee56de8e41",
+  "evidence_tier": "synthetic",
+  "cases": [
+    {
+      "case_id": "fixture-case-backend",
+      "family_id": "fixture-backend",
+      "title": "[시니어] 백엔드 엔지니어",
+      "label": "backend",
+      "split": "calibration",
+      "slices": [
+        "korean",
+        "generic_software",
+        "bracket_prefixed",
+        "seniority_marked"
+      ],
+      "quick_filter_outcome": "eligible",
+      "quick_filter_config_digest": "quick-filter-v1"
+    },
+    {
+      "case_id": "fixture-case-ambiguous",
+      "family_id": "fixture-ambiguous",
+      "title": "백엔드 ML Engineer",
+      "label": "ambiguous",
+      "split": "holdout",
+      "slices": [
+        "korean",
+        "english",
+        "mixed",
+        "ai_ml"
+      ],
+      "quick_filter_outcome": "eligible",
+      "quick_filter_config_digest": "quick-filter-v1"
+    },
+    {
+      "case_id": "fixture-case-nonbackend",
+      "family_id": "fixture-nonbackend",
+      "title": "Senior Frontend QA Data DevOps Embedded Engineer",
+      "label": "non_backend",
+      "split": "holdout",
+      "slices": [
+        "english",
+        "frontend",
+        "qa_product",
+        "data",
+        "devops_sre",
+        "hardware_embedded",
+        "seniority_marked"
+      ],
+      "quick_filter_outcome": "eligible",
+      "quick_filter_config_digest": "quick-filter-v1"
+    }
+  ]
+}

@@ -11,6 +11,7 @@ Canonical vocabulary for this repository. One term per concept; add sparingly.
 - **Canonical record** — the single authoritative JD record keyed by `(platform, job_id)`, accessed only through `JDRecordRepository`. *Avoid: "JD file", direct paths under `private/jd/records/`.*
 - **Content revision** — the stored JD/screening document snapshot inside a canonical record. The store is **latest-only**: publishing a new revision deletes the previous one; it is not an append-only history.
 - **Screening verdict** — the record's metadata judgment (`recommended` / `hold` / `not_recommended`). Lives independently of the screening document text and can disagree with it after metadata-only updates.
+- **Application event** — one append-only application-status observation with an occurrence time and optional note. The latest event projects the current application status; corrections add events instead of editing history.
 
 ## Screening providers
 

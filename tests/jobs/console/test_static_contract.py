@@ -21,6 +21,12 @@ def test_console_markup_exposes_two_step_search_detail_and_accessible_status() -
     assert 'id="refresh-index"' in html
     assert 'id="posting-filter"' in html
     assert 'name="posting_status"' in html
+    assert 'id="application-status-form"' in html
+    assert 'id="application-status-input"' in html
+    assert 'id="application-note-input"' in html
+    assert 'id="application-occurred-at-input"' in html
+    assert 'id="application-history"' in html
+    assert 'id="application-form-status"' in html
 
 
 def test_console_renders_untrusted_markdown_as_text_and_handles_missing_screening() -> None:
@@ -30,6 +36,9 @@ def test_console_renders_untrusted_markdown_as_text_and_handles_missing_screenin
     assert "스크리닝 결과가 아직 없습니다" in script
     assert "detailHeading.focus()" in script
     assert "resultsHeading.focus()" in script
+    assert "applicationHistory" in script
+    assert "applicationFormStatus" in script
+    assert '#application-status-form' in script
     assert 'parameters.set("refresh", "1")' in script
     assert "dataset.verdict" in script
 
@@ -38,6 +47,8 @@ def test_console_has_responsive_layout_contract() -> None:
     styles = read("styles.css")
     assert "grid-template-columns" in styles
     assert "@media" in styles
+    assert ".application-history" in styles
+    assert ".application-status-form" in styles
 
 
 def test_console_platform_filter_covers_all_canonical_source_types() -> None:

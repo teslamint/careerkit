@@ -9,6 +9,7 @@ import queue
 import struct
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -189,10 +190,11 @@ def test_handle_get_detail_omits_jd_markdown_when_over_size_limit():
 def test_dispatch_unknown_action_returns_error():
     repository = MagicMock()
 
-    response = host.dispatch({"action": "not_a_real_action"}, repository)
+    response, work_item = host.dispatch({"action": "not_a_real_action"}, repository)
 
     assert response["status"] == "error"
     assert "not_a_real_action" in response["message"]
+    assert work_item is None
 
 
 def test_read_message_rejects_oversized_message():
@@ -315,6 +317,85 @@ def test_serve_stops_cleanly_on_empty_stdin():
     assert stdout.getvalue() == b""
 
 
+def test_serve_writes_accepted_response_before_enqueuing_collect_work():
+    payload = json.dumps({"action": "collect", "url": "https://www.wanted.co.kr/wd/123456"}).encode("utf-8")
+    stdin = io.BytesIO(struct.pack("<I", len(payload)) + payload)
+    stdout = io.BytesIO()
+    repository = MagicMock()
+    repository.find.return_value = None
+
+    class _QueueThatPushesOnPut:
+        def __init__(self, stream: io.BytesIO) -> None:
+            self.stream = stream
+            self.items: list[tuple[str, str, bool]] = []
+
+        def put(self, item: tuple[str, str, bool]) -> None:
+            self.items.append(item)
+            host.write_message(
+                self.stream,
+                {
+                    "type": "screening_progress",
+                    "tracking_id": item[1],
+                    "stage": "company_info",
+                    "state": "checking",
+                },
+            )
+
+        def join(self) -> None:
+            return None
+
+    work_queue = _QueueThatPushesOnPut(stdout)
+
+    host.serve(stdin, stdout, repository, work_queue=work_queue)
+
+    stdout.seek(0)
+    accepted = host.read_message(stdout)
+    progress = host.read_message(stdout)
+    assert accepted["status"] == "accepted"
+    assert progress["type"] == "screening_progress"
+    assert accepted["tracking_id"] == progress["tracking_id"]
+
+
+def test_serve_writes_accepted_response_before_enqueuing_rescreen_work():
+    payload = json.dumps({"action": "rescreen", "url": "https://www.wanted.co.kr/wd/123456"}).encode("utf-8")
+    stdin = io.BytesIO(struct.pack("<I", len(payload)) + payload)
+    stdout = io.BytesIO()
+    repository = MagicMock()
+    repository.find.return_value = StoredJobRecord(record=_make_record(), jd_markdown="# JD", screening_markdown="# S")
+
+    class _QueueThatPushesOnPut:
+        def __init__(self, stream: io.BytesIO) -> None:
+            self.stream = stream
+            self.items: list[tuple[str, str, bool]] = []
+
+        def put(self, item: tuple[str, str, bool]) -> None:
+            self.items.append(item)
+            host.write_message(
+                self.stream,
+                {
+                    "type": "screening_progress",
+                    "tracking_id": item[1],
+                    "stage": "company_info",
+                    "state": "checking",
+                },
+            )
+
+        def join(self) -> None:
+            return None
+
+    work_queue = _QueueThatPushesOnPut(stdout)
+
+    host.serve(stdin, stdout, repository, work_queue=work_queue)
+
+    stdout.seek(0)
+    accepted = host.read_message(stdout)
+    progress = host.read_message(stdout)
+    assert accepted["status"] == "accepted"
+    assert accepted["action"] == "rescreen"
+    assert progress["type"] == "screening_progress"
+    assert accepted["tracking_id"] == progress["tracking_id"]
+
+
 def test_handle_collect_duplicate_returns_existing_record():
     record = _make_record(screening_verdict=ScreeningVerdict.RECOMMENDED)
     repository = MagicMock()
@@ -368,22 +449,40 @@ def test_handle_collect_unrecognized_url_returns_error():
 def test_dispatch_collect_without_queue_returns_error():
     repository = MagicMock()
 
-    response = host.dispatch({"action": "collect", "url": "https://www.wanted.co.kr/wd/123456"}, repository)
+    response, work_item = host.dispatch({"action": "collect", "url": "https://www.wanted.co.kr/wd/123456"}, repository)
 
     assert response["status"] == "error"
+    assert work_item is None
     repository.find.assert_not_called()
 
 
-def test_run_screening_worker_writes_screening_complete_on_success():
+def test_run_screening_worker_writes_ordered_progress_and_sanitized_completion_on_success():
     record = _make_record(screening_verdict=ScreeningVerdict.RECOMMENDED, verdict_capped=False)
     stored = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown="# S")
 
     extraction_batch = MagicMock()
     extraction_batch.records = [stored]
+    extraction_batch.company_contexts = {"wanted:123456": object()}
     extraction_stage = MagicMock()
     extraction_stage.extract.return_value = extraction_batch
 
+    screening_result = MagicMock()
+    screening_result.metadata = {
+        "failures": [],
+        "company_info_results": {
+            "wanted:123456": {
+                "status": "ready",
+                "attempted": True,
+                "persisted": True,
+                "completeness": 100.0,
+                "warning_code": None,
+                "file_path": "/Users/private/company_info/acme.md",
+                "source_url": "https://example.com/private",
+            }
+        },
+    }
     screening_stage = MagicMock()
+    screening_stage.screen.return_value = screening_result
 
     repository = MagicMock()
     repository.find.return_value = stored
@@ -411,11 +510,39 @@ def test_run_screening_worker_writes_screening_complete_on_success():
     screening_stage.screen.assert_called_once_with(extraction_batch, dry_run=False, llm_timeout=180)
 
     stdout.seek(0)
+    checking = host.read_message(stdout)
+    enriching = host.read_message(stdout)
+    running = host.read_message(stdout)
     push = host.read_message(stdout)
+    assert checking == {
+        "type": "screening_progress",
+        "tracking_id": "track-1",
+        "stage": "company_info",
+        "state": "checking",
+    }
+    assert enriching == {
+        "type": "screening_progress",
+        "tracking_id": "track-1",
+        "stage": "company_info",
+        "state": "enriching",
+    }
+    assert running == {
+        "type": "screening_progress",
+        "tracking_id": "track-1",
+        "stage": "screening",
+        "state": "running",
+    }
     # data is a full record dict (same shape as lookup/get_detail) plus
     # verdict_label, since badge.js renders it via renderFromRecord(data).
     expected_data = record.to_dict()
     expected_data["verdict_label"] = "지원 추천"
+    expected_data["company_info"] = {
+        "status": "ready",
+        "attempted": True,
+        "persisted": True,
+        "completeness": 100.0,
+        "warning_code": None,
+    }
     assert push == {
         "type": "screening_complete",
         "tracking_id": "track-1",
@@ -426,7 +553,9 @@ def test_run_screening_worker_writes_screening_complete_on_success():
 def test_run_screening_worker_writes_screening_failed_on_extraction_failure():
     extraction_batch = MagicMock()
     extraction_batch.records = []
-    extraction_batch.metadata = {"failures": [{"item_id": "wanted:123456", "error": "boom"}]}
+    extraction_batch.metadata = {
+        "failures": [{"item_id": "wanted:123456", "error": "/Users/teslamint/private/acme.md exploded"}]
+    }
     extraction_stage = MagicMock()
     extraction_stage.extract.return_value = extraction_batch
 
@@ -452,7 +581,11 @@ def test_run_screening_worker_writes_screening_failed_on_extraction_failure():
     stdout.seek(0)
     push = host.read_message(stdout)
     # message is top-level: service-worker.js's onScreeningFailed reads `message.message`.
-    assert push == {"type": "screening_failed", "tracking_id": "track-2", "message": "boom"}
+    assert push == {
+        "type": "screening_failed",
+        "tracking_id": "track-2",
+        "message": "job extraction failed",
+    }
 
 
 def test_run_screening_worker_sends_failed_when_screening_has_failures():
@@ -468,7 +601,14 @@ def test_run_screening_worker_sends_failed_when_screening_has_failures():
 
     screening_result = MagicMock()
     screening_result.metadata = {
-        "failures": [{"job_key": "wanted:123456", "error": "company info file missing"}],
+        "failures": [
+            {
+                "job_key": "wanted:123456",
+                "error_code": "company_info_failed",
+                "error": "/Users/teslamint/private/company_info/acme.md lock timeout: secret token",
+            }
+        ],
+        "company_info_results": {},
     }
     screening_stage = MagicMock()
     screening_stage.screen.return_value = screening_result
@@ -492,11 +632,13 @@ def test_run_screening_worker_sends_failed_when_screening_has_failures():
             pass
 
     stdout.seek(0)
+    host.read_message(stdout)
+    host.read_message(stdout)
     push = host.read_message(stdout)
     assert push == {
         "type": "screening_failed",
         "tracking_id": "track-3",
-        "message": "company info file missing",
+        "message": "company info unavailable",
     }
 
 
@@ -653,11 +795,13 @@ def test_run_screening_worker_sends_failed_when_verdict_is_null():
             pass
 
     stdout.seek(0)
+    host.read_message(stdout)
+    host.read_message(stdout)
     push = host.read_message(stdout)
     assert push == {
         "type": "screening_failed",
         "tracking_id": "track-4",
-        "message": "screening produced no verdict",
+        "message": "screening failed",
     }
 
 
@@ -733,9 +877,10 @@ def test_handle_rescreen_rejects_duplicate_in_flight():
 def test_dispatch_rescreen_without_queue_returns_error():
     repository = MagicMock()
 
-    response = host.dispatch({"action": "rescreen", "url": "https://www.wanted.co.kr/wd/123456"}, repository)
+    response, work_item = host.dispatch({"action": "rescreen", "url": "https://www.wanted.co.kr/wd/123456"}, repository)
 
     assert response["status"] == "error"
+    assert work_item is None
     repository.find.assert_not_called()
 
 
@@ -792,14 +937,23 @@ def test_handle_get_detail_returns_is_fallback_false_when_no_screening():
 
 
 class _FakeCompanyInfoService:
-    def __init__(self, mapping: dict[str, str] | None = None) -> None:
-        self._mapping = mapping or {}
+    def __init__(self, lookup_by_company: dict[str, object] | None = None) -> None:
+        self._lookup_by_company = lookup_by_company or {}
 
-    def find_matching_file(self, company: str) -> "Path | None":
-        val = self._mapping.get(company)
-        if val is None:
-            return None
-        return Path(val)
+    def inspect(self, company: str) -> object:
+        return self._lookup_by_company.get(company, _company_lookup(status="missing"))
+
+
+def _company_lookup(
+    *,
+    status: str,
+    markdown_path: Path | None = None,
+    completeness: float | None = None,
+) -> object:
+    validation = None
+    if markdown_path is not None:
+        validation = SimpleNamespace(file_path=markdown_path, completeness_score=completeness)
+    return SimpleNamespace(status=status, file_path=markdown_path, validation=validation)
 
 
 def test_handle_get_company_info_returns_markdown(tmp_path: Path):
@@ -808,7 +962,9 @@ def test_handle_get_company_info_returns_markdown(tmp_path: Path):
     record = _make_record()
     repository = MagicMock()
     repository.get.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
-    service = _FakeCompanyInfoService({"Acme": str(info_file)})
+    service = _FakeCompanyInfoService(
+        {"Acme": _company_lookup(status="ready", markdown_path=info_file, completeness=100.0)}
+    )
 
     response = host.handle_get_company_info(
         {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
@@ -816,7 +972,12 @@ def test_handle_get_company_info_returns_markdown(tmp_path: Path):
     )
 
     assert response["status"] == "ok"
-    assert response["data"]["company_info_markdown"] == info_file.read_text(encoding="utf-8")
+    assert response["data"] == {
+        "status": "ready",
+        "warning_code": None,
+        "completeness": 100.0,
+        "company_info_markdown": info_file.read_text(encoding="utf-8"),
+    }
 
 
 def test_handle_get_company_info_no_file():
@@ -830,26 +991,69 @@ def test_handle_get_company_info_no_file():
         repository, service,
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {
+        "status": "ok",
+        "data": {
+            "status": "warning",
+            "warning_code": "missing",
+            "completeness": None,
+            "company_info_markdown": None,
+        },
+    }
 
 
-def test_handle_get_company_info_read_error(tmp_path: Path):
+def test_handle_get_company_info_incomplete_file_returns_warning_with_markdown(tmp_path: Path):
+    info_file = tmp_path / "acme.md"
+    info_file.write_text("# Acme Corp\n\n## 기업 정보\n\n| 항목 | 내용 |\n|--|--|\n| 설립 | 2020 |", encoding="utf-8")
+    record = _make_record()
+    repository = MagicMock()
+    repository.get.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
+    service = _FakeCompanyInfoService(
+        {"Acme": _company_lookup(status="incomplete", markdown_path=info_file, completeness=50.0)}
+    )
+
+    response = host.handle_get_company_info(
+        {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
+        repository, service,
+    )
+
+    assert response["status"] == "ok"
+    assert response["data"] == {
+        "status": "warning",
+        "warning_code": "below_threshold",
+        "completeness": 50.0,
+        "company_info_markdown": info_file.read_text(encoding="utf-8"),
+    }
+
+
+def test_handle_get_company_info_invalid_file_returns_safe_error(tmp_path: Path):
     missing = tmp_path / "does-not-exist.md"
-
-    class _ServiceWithMissingPath:
-        def find_matching_file(self, company: str) -> Path | None:
-            return missing
-
     record = _make_record()
     repository = MagicMock()
     repository.get.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
 
     response = host.handle_get_company_info(
         {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
-        repository, _ServiceWithMissingPath(),
+        repository,
+        _FakeCompanyInfoService({"Acme": _company_lookup(status="invalid", markdown_path=missing)}),
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {"status": "error", "message": "company info unavailable"}
+
+
+def test_handle_get_company_info_unsafe_file_returns_safe_error(tmp_path: Path):
+    unsafe_path = tmp_path / "unsafe.md"
+    record = _make_record()
+    repository = MagicMock()
+    repository.get.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
+
+    response = host.handle_get_company_info(
+        {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
+        repository,
+        _FakeCompanyInfoService({"Acme": _company_lookup(status="unsafe", markdown_path=unsafe_path)}),
+    )
+
+    assert response == {"status": "error", "message": "company info unavailable"}
 
 
 def test_handle_get_company_info_unresolvable_key():
@@ -861,7 +1065,7 @@ def test_handle_get_company_info_unresolvable_key():
         repository, service,
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {"status": "error", "message": "company info unavailable"}
     repository.get.assert_not_called()
 
 
@@ -875,7 +1079,7 @@ def test_handle_get_company_info_record_not_found():
         repository, service,
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {"status": "error", "message": "company info unavailable"}
 
 
 def test_handle_get_company_info_empty_company():
@@ -893,7 +1097,7 @@ def test_handle_get_company_info_empty_company():
         repository, service,
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {"status": "error", "message": "company info unavailable"}
 
 
 def test_handle_get_company_info_oversized_response(tmp_path: Path):
@@ -902,14 +1106,16 @@ def test_handle_get_company_info_oversized_response(tmp_path: Path):
     record = _make_record()
     repository = MagicMock()
     repository.get.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
-    service = _FakeCompanyInfoService({"Acme": str(info_file)})
+    service = _FakeCompanyInfoService(
+        {"Acme": _company_lookup(status="ready", markdown_path=info_file, completeness=100.0)}
+    )
 
     response = host.handle_get_company_info(
         {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
         repository, service,
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {"status": "error", "message": "company info unavailable"}
 
 
 def test_dispatch_routes_get_company_info(tmp_path: Path):
@@ -918,9 +1124,11 @@ def test_dispatch_routes_get_company_info(tmp_path: Path):
     record = _make_record()
     repository = MagicMock()
     repository.get.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
-    service = _FakeCompanyInfoService({"Acme": str(info_file)})
+    service = _FakeCompanyInfoService(
+        {"Acme": _company_lookup(status="ready", markdown_path=info_file, completeness=100.0)}
+    )
 
-    response = host.dispatch(
+    response, work_item = host.dispatch(
         {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
         repository,
         company_info_service=service,
@@ -928,14 +1136,16 @@ def test_dispatch_routes_get_company_info(tmp_path: Path):
 
     assert response["status"] == "ok"
     assert response["data"]["company_info_markdown"] == "# Acme"
+    assert work_item is None
 
 
 def test_dispatch_get_company_info_without_service():
     repository = MagicMock()
 
-    response = host.dispatch(
+    response, work_item = host.dispatch(
         {"action": "get_company_info", "url": "https://www.wanted.co.kr/wd/123456"},
         repository,
     )
 
-    assert response == {"status": "ok", "data": None}
+    assert response == {"status": "error", "message": "company info unavailable"}
+    assert work_item is None

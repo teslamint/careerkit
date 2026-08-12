@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import datetime
 import json
 import math
 import sys
@@ -66,9 +65,14 @@ class MaintenanceOps(Protocol):
     def write_stale_screening_report(
         self, *, days: int = 30, output_path: Path | None = None
     ) -> Any: ...
+    def semantic_eval_capture(self, *, output_path: Path, seed: int | None = None) -> Any: ...
+    def semantic_eval_run(self, *, dataset_path: Path, output_path: Path) -> Any: ...
+    def semantic_eval_compare(self, *, dataset_path: Path, incumbent_path: Path, candidate_path: Path, output_path: Path | None = None) -> Any: ...
 
 
 class PipelineOps(Protocol):
+    repository: JDRecordRepository
+
     def ingest_url(self, url: str) -> IngestResult: ...
     def ingest_file(self, path: Path) -> list[IngestResult]: ...
     def show_record(self, key: JobKey) -> Any: ...
@@ -79,6 +83,7 @@ class PipelineOps(Protocol):
         application_status: ApplicationStatus | None = None,
         posting_status: PostingStatus | None = None,
         application_status_updated_at: str | None = None,
+        application_note: str | None = None,
     ) -> Any: ...
     def set_record_verdict(self, key: JobKey, verdict: ScreeningVerdict) -> Any: ...
     def queue_status(self) -> Any: ...
@@ -140,9 +145,17 @@ def build_parser() -> argparse.ArgumentParser:
     company_validate.add_argument("--file")
     company_validate.add_argument("--fix", action="store_true")
     company_validate.set_defaults(handler=_handle_company_validate)
+    company_apply = company_subparsers.add_parser("apply", help="Apply validated company info markdown")
+    company_apply.add_argument("--company-name", required=True)
+    company_apply.add_argument("--input", type=Path, required=True)
+    company_apply.add_argument("--expected-digest")
+    company_apply.add_argument("--timeout", type=float, default=1.0)
+    company_apply.add_argument("--json", action="store_true")
+    company_apply.set_defaults(handler=_handle_company_apply)
     company_fetch = company_subparsers.add_parser("fetch", help="Fetch company info from platform API")
-    company_fetch.add_argument("--platform", required=True, choices=["remember"])
+    company_fetch.add_argument("--platform", required=True, choices=["remember", "saramin", "wanted"])
     company_fetch.add_argument("--id", required=True, dest="company_id")
+    company_fetch.add_argument("--json", action="store_true")
     company_fetch.set_defaults(handler=_handle_company_fetch)
 
     search = subparsers.add_parser("search", help="Search job postings with packaged adapters")
@@ -185,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_status.add_argument("--application-status", choices=[item.value for item in ApplicationStatus])
     record_status.add_argument("--posting-status", choices=[item.value for item in PostingStatus])
     record_status.add_argument("--application-status-updated-at")
+    record_status.add_argument("--application-note")
     record_status.add_argument("--json", action="store_true")
     record_status.set_defaults(handler=_handle_record_set_status)
     record_verdict = record_subparsers.add_parser("set-verdict", help="Update screening verdict metadata")
@@ -291,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     screening_lint_parser.add_argument("--hook", action="store_true")
     screening_lint_parser.add_argument("--file", action="append", default=[])
     screening_lint_parser.add_argument("--all", action="store_true")
+    screening_lint_parser.add_argument("--json", action="store_true")
     screening_lint_parser.set_defaults(handler=_handle_screening_lint)
     screening_validate = screening_subparsers.add_parser("validate", help="Validate one screening markdown file")
     screening_validate.add_argument("path", type=Path)
@@ -303,6 +318,27 @@ def build_parser() -> argparse.ArgumentParser:
     screening_run.add_argument("--dry-run", action="store_true")
     screening_run.add_argument("--json", action="store_true")
     screening_run.set_defaults(handler=_handle_screening_run)
+
+    semantic_eval = subparsers.add_parser('semantic-eval', help='Capture, run, or compare semantic eval artifacts')
+    semantic_eval.set_defaults(handler=_handle_missing_operation)
+    semantic_eval_subparsers = semantic_eval.add_subparsers(dest='semantic_eval_command')
+    semantic_eval_capture = semantic_eval_subparsers.add_parser('capture', help='Capture an unlabeled semantic eval queue')
+    semantic_eval_capture.add_argument('--output', type=Path, required=True)
+    semantic_eval_capture.add_argument('--seed', type=int)
+    semantic_eval_capture.add_argument('--json', action='store_true')
+    semantic_eval_capture.set_defaults(handler=_handle_semantic_eval_capture)
+    semantic_eval_run = semantic_eval_subparsers.add_parser('run', help='Run semantic eval on a labeled dataset')
+    semantic_eval_run.add_argument('--dataset', type=Path, required=True)
+    semantic_eval_run.add_argument('--output', type=Path, required=True)
+    semantic_eval_run.add_argument('--json', action='store_true')
+    semantic_eval_run.set_defaults(handler=_handle_semantic_eval_run)
+    semantic_eval_compare = semantic_eval_subparsers.add_parser('compare', help='Compare incumbent and candidate semantic eval reports')
+    semantic_eval_compare.add_argument('--dataset', type=Path, required=True)
+    semantic_eval_compare.add_argument('--incumbent', type=Path, required=True)
+    semantic_eval_compare.add_argument('--candidate', type=Path, required=True)
+    semantic_eval_compare.add_argument('--output', type=Path)
+    semantic_eval_compare.add_argument('--json', action='store_true')
+    semantic_eval_compare.set_defaults(handler=_handle_semantic_eval_compare)
 
     console = subparsers.add_parser("console", help="Serve the local JD review console")
     console.set_defaults(handler=_handle_missing_operation)
@@ -685,27 +721,97 @@ def _handle_company_validate(args: argparse.Namespace, workspace: WorkspacePaths
     return 0 if summary.error_files == 0 else 2
 
 
+def _handle_company_apply(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    del services
+    try:
+        markdown = args.input.read_text(encoding="utf-8")
+        result = CompanyInfoService(workspace=workspace).apply_candidate(
+            company_name=args.company_name,
+            markdown=markdown,
+            expected_digest=args.expected_digest,
+            timeout=args.timeout,
+        )
+    except (FileNotFoundError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        payload = _base_payload("company apply", workspace)
+        payload.update(
+            {
+                "status": result.status,
+                "persisted": True,
+                "completeness": (
+                    None if result.validation is None else round(result.validation.completeness_score, 1)
+                ),
+                "file_path": (
+                    None
+                    if result.file_path is None
+                    else str(result.file_path.relative_to(workspace.root))
+                ),
+            }
+        )
+        _print_json(payload)
+    else:
+        completeness = None if result.validation is None else f"{result.validation.completeness_score:.0f}%"
+        print(f"company apply complete: status={result.status} completeness={completeness}")
+    return 0
+
+
 def _handle_company_fetch(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     del workspace, services
     from dataclasses import asdict
 
     if args.platform == "remember":
+        from careerkit.jobs.adapters.platforms.remember import format_company_markdown as remember_markdown
         from careerkit.jobs.adapters.platforms.remember import remember_company_http
 
-        fetcher = remember_company_http
+        try:
+            info = remember_company_http(args.company_id)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            result = asdict(info)
+            result["employee_stats"] = list(result["employee_stats"])
+            result["tags"] = list(result["tags"])
+            _print_json(result)
+        else:
+            print(remember_markdown(info))
+    elif args.platform == "saramin":
+        from careerkit.jobs.adapters.platforms.saramin import format_company_markdown, saramin_company_http
+
+        try:
+            info = saramin_company_http(args.company_id)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            _print_json(asdict(info))
+        else:
+            print(format_company_markdown(info))
+    elif args.platform == "wanted":
+        from careerkit.jobs.adapters.platforms.wanted import format_wanted_company_markdown, wanted_company_http
+
+        try:
+            company_id = _positive_int(args.company_id)
+        except (TypeError, ValueError, argparse.ArgumentTypeError):
+            print("error: Wanted company id must be a positive integer", file=sys.stderr)
+            return 1
+
+        try:
+            info = wanted_company_http(company_id)
+        except (ValueError, OSError, RuntimeError):
+            print("error: failed to fetch Wanted company info", file=sys.stderr)
+            return 1
+        if args.json:
+            result = asdict(info)
+            result["tags"] = list(result["tags"])
+            _print_json(result)
+        else:
+            print(format_wanted_company_markdown(info))
     else:
         print(f"error: unsupported platform: {args.platform}", file=sys.stderr)
         return 1
-
-    try:
-        info = fetcher(args.company_id)
-    except (ValueError, OSError, RuntimeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    result = asdict(info)
-    result["employee_stats"] = list(result["employee_stats"])
-    result["tags"] = list(result["tags"])
-    _print_json(result)
     return 0
 
 
@@ -753,6 +859,14 @@ def _handle_record_show(args: argparse.Namespace, workspace: WorkspacePaths, ser
         "application_status": stored.record.application_status.value,
         "posting_status": stored.record.posting_status.value,
         "application_status_updated_at": stored.record.application_status_updated_at,
+        "application_history": [
+            {
+                "status": event.status.value,
+                "occurred_at": event.occurred_at,
+                "note": event.note,
+            }
+            for event in stored.record.application_history
+        ],
         "schema_version": stored.record.schema_version,
     }
     if args.json:
@@ -760,23 +874,34 @@ def _handle_record_show(args: argparse.Namespace, workspace: WorkspacePaths, ser
         base.update(payload)
         _print_json(base)
     else:
+        history = payload.pop("application_history")
         for key_name, value in payload.items():
             print(f"{key_name}={value}")
+        for index, event in enumerate(history, start=1):
+            line = (
+                f"application_history[{index}]="
+                f"{event['occurred_at']} {event['status']}"
+            )
+            if event["note"] is not None:
+                line = f"{line} note={event['note']}"
+            print(line)
     return 0
 
 
 def _handle_record_set_status(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     key = _parse_job_key(args.job_key)
+    if args.application_status is None and args.application_status_updated_at is not None:
+        raise ValueError("application status is required when application_status_updated_at is set")
+    if args.application_status is None and args.application_note is not None:
+        raise ValueError("application status is required when application_note is set")
     if args.application_status is None and args.posting_status is None:
         raise ValueError("set-status requires --application-status and/or --posting-status")
-    application_status_updated_at = args.application_status_updated_at
-    if args.application_status is not None and application_status_updated_at is None:
-        application_status_updated_at = datetime.now().isoformat()
     updated = services.pipeline.set_record_status(
         key,
         application_status=ApplicationStatus(args.application_status) if args.application_status else None,
         posting_status=PostingStatus(args.posting_status) if args.posting_status else None,
-        application_status_updated_at=application_status_updated_at,
+        application_status_updated_at=args.application_status_updated_at,
+        application_note=args.application_note,
     )
     if args.json:
         payload = _base_payload("record set-status", workspace)
@@ -786,6 +911,14 @@ def _handle_record_set_status(args: argparse.Namespace, workspace: WorkspacePath
                 "application_status": updated.record.application_status.value,
                 "posting_status": updated.record.posting_status.value,
                 "application_status_updated_at": updated.record.application_status_updated_at,
+                "application_history": [
+                    {
+                        "status": event.status.value,
+                        "occurred_at": event.occurred_at,
+                        "note": event.note,
+                    }
+                    for event in updated.record.application_history
+                ],
             }
         )
         _print_json(payload)
@@ -1163,6 +1296,9 @@ def _handle_storage_preflight(args: argparse.Namespace, workspace: WorkspacePath
                     "screening_count": result.screening_count,
                     "schema_version": result.schema_version,
                     "status_counts": result.status_counts,
+                    "application_timestamp_categories": (
+                        result.application_timestamp_categories
+                    ),
                     "finding_codes": [item.code for item in result.findings],
                 }
             )
@@ -1303,24 +1439,46 @@ def _handle_screening_lint(args: argparse.Namespace, workspace: WorkspacePaths, 
     records_root = workspace.jobs_records_dir
     repository = JDRecordRepository(records_root)
     if args.hook:
-        keys = screening_lint.hook_keys_from_stdin(sys.stdin, records_root=records_root)
+        payload = screening_lint.hook_payload_from_stdin(sys.stdin)
+        paths = (
+            screening_lint.hook_target_paths(payload=payload, records_root=records_root)
+            if payload is not None
+            else []
+        )
+        findings = [finding for path in paths for finding in screening_lint.lint_path(path, repository)]
+        report = screening_lint.LintReport(findings=tuple(findings), keys_checked=len(paths))
     elif args.file:
-        keys = [
-            key
+        paths = [
+            ((workspace.root / Path(raw)) if not Path(raw).is_absolute() else Path(raw)).resolve()
             for raw in args.file
-            if (
-                key := screening_lint.key_from_screening_path(
-                    (workspace.root / Path(raw)) if not Path(raw).is_absolute() else Path(raw),
-                    records_root,
-                )
-            ) is not None
         ]
+        findings = [finding for path in paths for finding in screening_lint.lint_path(path, repository)]
+        report = screening_lint.LintReport(findings=tuple(findings), keys_checked=len(paths))
     elif args.all:
         keys = list(repository.iter_keys())
+        report = screening_lint.run(keys, repository)
     else:
         print("career-jobs screening lint requires --hook, --file, or --all", file=sys.stderr)
         return 2
-    report = screening_lint.run(keys, repository)
+    if args.json:
+        payload = _base_payload("screening lint", workspace)
+        payload.update(
+            {
+                "keys_checked": report.keys_checked,
+                "summary": report.summary(),
+                "findings": [
+                    {
+                        "level": finding.level,
+                        "check": finding.check,
+                        "file": finding.file,
+                        "detail": finding.detail,
+                    }
+                    for finding in report.findings
+                ],
+            }
+        )
+        _print_json(payload)
+        return report.exit_code
     return screening_lint.render_report(report, stdout=sys.stdout, stderr=sys.stderr)
 
 
@@ -1352,6 +1510,7 @@ def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, s
                 "dry_run": args.dry_run,
                 "provider": result.provider,
                 "used_fallback": result.used_fallback,
+                "fallback_reason": result.fallback_reason,
                 "verdict": result.verdict,
                 "screening_path": str(result.screening_path),
             }
@@ -1365,11 +1524,107 @@ def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, s
     return 0
 
 
+def _semantic_eval_error_code(exc: Exception) -> str:
+    message = str(exc)
+    mappings = (
+        ('tracked git path', 'unsafe_output_path'),
+        ('inside an allowed root', 'unsafe_output_path'),
+        ('must stay inside an allowed root', 'unsafe_output_path'),
+        ('target already exists', 'output_exists'),
+        ('capture output path', 'unsafe_output_path'),
+        ('private eval root', 'unsafe_output_path'),
+        ('synthetic temp root', 'unsafe_output_path'),
+        ('approved temp root', 'unsafe_output_path'),
+        ('missing git sha', 'missing_git_sha'),
+        ('dirty tracked state', 'dirty_tracked_state'),
+        ('unsupported schema', 'invalid_input'),
+    )
+    for needle, code in mappings:
+        if needle in message:
+            return code
+    return 'invalid_input'
+
+def _handle_semantic_eval_capture(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    try:
+        result = services.maintenance.semantic_eval_capture(output_path=args.output, seed=args.seed)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if args.json:
+            payload = _base_payload('semantic-eval capture', workspace)
+            payload.update({'status': 'error', 'error_code': _semantic_eval_error_code(exc)})
+            _print_json(payload)
+            return 2
+        raise
+    if args.json:
+        payload = _base_payload('semantic-eval capture', workspace)
+        payload.update(dict(result.aggregate))
+        payload['status'] = result.status
+        payload['error_code'] = result.error_code
+        payload['output_path'] = services.maintenance.relative_path(result.output_path)
+        _print_json(payload)
+    else:
+        print(f"status={result.status} output_path={services.maintenance.relative_path(result.output_path)}")
+    return 0
+
+
+def _handle_semantic_eval_run(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    try:
+        result = services.maintenance.semantic_eval_run(dataset_path=args.dataset, output_path=args.output)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if args.json:
+            payload = _base_payload('semantic-eval run', workspace)
+            payload.update({'status': 'error', 'error_code': _semantic_eval_error_code(exc)})
+            _print_json(payload)
+            return 2
+        raise
+    if args.json:
+        payload = _base_payload('semantic-eval run', workspace)
+        payload.update(dict(result.aggregate))
+        payload['status'] = result.status
+        payload['error_code'] = result.error_code
+        payload['output_path'] = services.maintenance.relative_path(result.output_path)
+        _print_json(payload)
+    else:
+        print(f"status={result.status} output_path={services.maintenance.relative_path(result.output_path)}")
+    return 0 if result.status == 'pass' else 2
+
+
+def _handle_semantic_eval_compare(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    try:
+        result = services.maintenance.semantic_eval_compare(
+            dataset_path=args.dataset,
+            incumbent_path=args.incumbent,
+            candidate_path=args.candidate,
+            output_path=args.output,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        if args.json:
+            payload = _base_payload('semantic-eval compare', workspace)
+            payload.update({'status': 'error', 'error_code': _semantic_eval_error_code(exc)})
+            _print_json(payload)
+            return 2
+        raise
+    if args.json:
+        payload = _base_payload('semantic-eval compare', workspace)
+        payload.update(dict(result.aggregate))
+        payload['status'] = result.status
+        payload['error_code'] = result.error_code
+        if result.output_path is not None:
+            payload['output_path'] = services.maintenance.relative_path(result.output_path)
+        _print_json(payload)
+    else:
+        line = f"status={result.status}"
+        if result.output_path is not None:
+            line += f" output_path={services.maintenance.relative_path(result.output_path)}"
+        print(line)
+    return 0 if result.status == 'pass' else 2
+
+
 def _handle_console_serve(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     database_path = services.maintenance.derived_dir / "search.sqlite3"
     server = create_server(
         records_root=workspace.jobs_records_dir,
         database_path=database_path,
+        pipeline_service=services.pipeline,
         host=args.host,
         port=args.port,
     )

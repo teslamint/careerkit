@@ -37,6 +37,29 @@ def test_queue_status_and_record_operations_use_canonical_storage(tmp_path: Path
     assert updated.record.application_status_updated_at == '2026-07-14'
 
 
+def test_set_record_status_passes_note_through_repository_boundary(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / 'jd' / 'records')
+    repository.create(
+        JobRecord('wanted', '123', 'Acme', 'Backend'),
+        jd_markdown='# JD',
+    )
+    service = JobsPipelineService(
+        workspace_root=tmp_path,
+        repository=repository,
+        runtime_dir=tmp_path / 'jd' / 'runtime',
+    )
+
+    updated = service.set_record_status(
+        JobKey('wanted', '123'),
+        application_status=ApplicationStatus.APPLIED,
+        application_status_updated_at='2026-07-14T09:00:00+09:00',
+        application_note='지원서 제출',
+    )
+
+    assert updated.record.application_history[-1].note == '지원서 제출'
+    assert updated.record.application_status is ApplicationStatus.APPLIED
+
+
 def test_queue_status_accepts_legacy_object_shape(tmp_path: Path) -> None:
     repository = JDRecordRepository(tmp_path / 'jd' / 'records')
     runtime_dir = tmp_path / 'jd' / 'runtime'

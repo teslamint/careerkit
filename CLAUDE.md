@@ -4,6 +4,15 @@ Resume builder & job search automation system. Markdown source → PDF/HTML/TXT 
 
 > **Full documentation**: [Getting Started](docs/getting-started.md) · [Customization](docs/customization.md) · [AI Workflow](docs/ai-workflow.md)
 
+## Repository Boundary
+
+Code development happens in the public `careerkit` repository. The private
+workspace repository holds the resume sources, the job-search data under
+`private/`, and the lifecycle record (`docs/plans/`, `docs/retros/`,
+`docs/specs/`, `docs/deviations/`, `docs/research/`, `docs/superpowers/`,
+`ROADMAP.md`, `LESSONS.md`, `.release-loop/`). Neither side commits the other's
+material. See [AGENTS.md](AGENTS.md) for the same rule in the shared guide.
+
 ## Skills Quick Reference
 
 | Skill | Purpose | Output |
@@ -34,6 +43,8 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs run auto --no-classify             # p
 
 | Env | Default | Purpose |
 |-----|---------|---------|
+| `CLAUDE_SCREENING_MODEL` | (unset) | Override the Claude CLI model for screening (e.g. `haiku`); ignored when `CLAUDE_SCREENING_CMD` is set |
+| `CODEX_SCREENING_MODEL` | (unset) | Override the Codex CLI model for screening (e.g. `gpt-4.1-mini`); ignored when `CODEX_SCREENING_CMD` is set |
 | `OLLAMA_SCREENING_MODEL` | `gpt-oss:20b` | Ollama model for screening fallback; set `off` to disable the local path (unless `LOCAL_LLM_BASE_URL` is set) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server base URL |
 | `OLLAMA_NUM_CTX` | `32768` | Ollama context window (`num_ctx`); must be positive, rejected at resolve time otherwise |

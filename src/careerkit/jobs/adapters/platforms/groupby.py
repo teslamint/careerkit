@@ -92,6 +92,71 @@ class GroupByAdapter:
         return SearchCandidate(platform=self.name, job_id=raw_id, raw_id=raw_id, title=(item.get("title") or item.get("name") or "").strip(), company=(company.get("name") or item.get("companyName") or "").strip(), experience=str(experience).strip(), url=f"{base_url}/positions/{raw_id}")
 
 
+@dataclass(frozen=True)
+class GroupByCompanyInfo:
+    name: str
+    brief_intro: str
+    member_count: int | None
+    dev_count: int | None
+    funding_round: str
+    service_areas: tuple[str, ...]
+    location: str
+
+
+def _safe_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def groupby_company_from_position(payload: dict) -> GroupByCompanyInfo:
+    startup = payload.get("startup") or payload.get("data", {}).get("startup") or {}
+    data = payload.get("data") or payload
+
+    def _value(field: str) -> object:
+        v = startup.get(field)
+        return v if v not in (None, "", []) else data.get(field)
+
+    name = (startup.get("name") or "").strip()
+    brief_intro = (str(_value("briefIntro") or "")).strip()
+    member_count = _value("memberCount")
+    dev_count = _value("devCount")
+    funding_round = (str(_value("fundingRound") or "")).strip()
+
+    service_areas_raw = _value("serviceAreas")
+    areas: list[str] = []
+    if isinstance(service_areas_raw, list):
+        for item in service_areas_raw:
+            raw = item.get("name", "") if isinstance(item, dict) else item
+            text = str(raw or "").strip()
+            if text:
+                areas.append(text)
+
+    loc = (data.get("address") or "").strip()
+    if not loc:
+        loc_obj = data.get("location") or {}
+        loc = (loc_obj.get("name", "") if isinstance(loc_obj, dict) else "").strip()
+    if not loc:
+        loc = (startup.get("location") or "").strip()
+
+    return GroupByCompanyInfo(
+        name=name,
+        brief_intro=brief_intro,
+        member_count=_safe_int(member_count),
+        dev_count=_safe_int(dev_count),
+        funding_round=funding_round,
+        service_areas=tuple(areas),
+        location=loc,
+    )
+
+
 def format_groupby_experience(item: dict) -> str:
     career_type = str(item.get("careerType") or "").strip()
     if career_type in {"무관", "인턴"}:

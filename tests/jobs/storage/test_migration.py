@@ -5,7 +5,7 @@ from pathlib import Path
 
 from careerkit.jobs.application.storage_migration import MigrationPaths, StorageMigrator
 from careerkit.jobs.application.pipeline import JobsPipelineService
-from careerkit.jobs.domain.model import ApplicationStatus, JobKey, ScreeningVerdict
+from careerkit.jobs.domain.model import ApplicationEvent, ApplicationStatus, JobKey, SCHEMA_VERSION, ScreeningVerdict
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
 
 
@@ -126,3 +126,52 @@ def test_activate_publishes_stage_atomically_and_writes_runtime_report(tmp_path:
     assert stored.record.application_status is ApplicationStatus.APPLIED
     assert stored.record.application_status_updated_at == "2026-07-01"
     assert (paths.active_root / "runtime" / "migration-report.json").exists()
+
+
+
+
+def test_preflight_writes_canonical_schema_v2_with_synthesized_history(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write(
+        paths.legacy_private / "job_postings/applied/73-acme-backend.md",
+        "---\nstatus: applied\nstatus_updated: 2026-07-01T09:00:00+09:00\n---\n" + _jd("https://www.wanted.co.kr/wd/73"),
+    )
+
+    report = StorageMigrator(paths).preflight()
+    stored = JDRecordRepository(paths.stage_root / "records").get(JobKey("wanted", "73"))
+
+    assert report.ready is True
+    assert stored.record.schema_version == SCHEMA_VERSION
+    assert stored.record.application_history == (
+        ApplicationEvent(
+            status=ApplicationStatus.APPLIED,
+            occurred_at="2026-07-01T09:00:00+09:00",
+            note=None,
+        ),
+    )
+    record_json = json.loads(
+        (paths.stage_root / "records" / "wanted" / "73" / "record.json").read_text(encoding="utf-8")
+    )
+    assert record_json["record"]["schema_version"] == 2
+    assert record_json["record"]["application_history"] == [
+        {
+            "status": "applied",
+            "occurred_at": "2026-07-01T09:00:00+09:00",
+            "note": None,
+        }
+    ]
+
+
+
+def test_migration_report_keeps_schema_version_1(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write(
+        paths.legacy_private / "job_postings/74-acme-backend.md",
+        _jd("https://www.wanted.co.kr/wd/74"),
+    )
+
+    report = StorageMigrator(paths).preflight()
+    report_payload = json.loads(paths.report_path.read_text(encoding="utf-8"))
+
+    assert report.ready is True
+    assert report_payload["schema_version"] == 1

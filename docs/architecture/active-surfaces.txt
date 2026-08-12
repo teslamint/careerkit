@@ -87,6 +87,7 @@ src/careerkit/jobs/adapters/platforms/thevc.py
 src/careerkit/jobs/adapters/platforms/wanted.py
 src/careerkit/jobs/adapters/screening/__init__.py
 src/careerkit/jobs/adapters/screening/cli_provider.py
+src/careerkit/jobs/adapters/semantic_eval_files.py
 src/careerkit/jobs/adapters/semantic_filter.py
 src/careerkit/jobs/adapters/status_probes.py
 src/careerkit/jobs/adapters/storage/__init__.py
@@ -94,6 +95,7 @@ src/careerkit/jobs/adapters/storage/file_records.py
 src/careerkit/jobs/adapters/storage/sqlite_index.py
 src/careerkit/jobs/application/__init__.py
 src/careerkit/jobs/application/automation.py
+src/careerkit/jobs/application/company_enrichment.py
 src/careerkit/jobs/application/company_info.py
 src/careerkit/jobs/application/config.py
 src/careerkit/jobs/application/evidence_checks.py
@@ -105,6 +107,7 @@ src/careerkit/jobs/application/screening.py
 src/careerkit/jobs/application/screening_assessment.py
 src/careerkit/jobs/application/screening_lint.py
 src/careerkit/jobs/application/search.py
+src/careerkit/jobs/application/semantic_eval.py
 src/careerkit/jobs/application/status.py
 src/careerkit/jobs/application/storage_migration.py
 src/careerkit/jobs/application/title_filter.py
@@ -169,9 +172,11 @@ tests/contract/test_clean_candidate_export.py
 tests/contract/test_cli_installation.py
 tests/contract/test_distribution_contents.py
 tests/contract/test_final_proof_harness.py
+tests/contract/test_merge_readiness_documentation.py
 tests/contract/test_privacy_sentinel.py
 tests/contract/test_workspace_resolution.py
 tests/contract/verify_render_baseline.py
+tests/docs/test_merge_readiness_documentation.py
 tests/ext/__init__.py
 tests/ext/conftest.py
 tests/ext/fixtures/url_patterns.json
@@ -181,7 +186,9 @@ tests/ext/test_integration.py
 tests/ext/test_md_parser.cjs
 tests/ext/test_native_host.py
 tests/ext/test_panel.cjs
+tests/ext/test_service_worker.cjs
 tests/ext/test_url_patterns.py
+tests/fixtures/jobs/semantic_filter_eval.json
 tests/fixtures/resume/example-render-baseline/README.md
 tests/fixtures/resume/example-render-baseline/manifest.json
 tests/fixtures/resume/example-render-baseline/pages/career-description-example/page-1.ppm
@@ -198,6 +205,7 @@ tests/fixtures/resume/pdf-baseline/page-1.ppm
 tests/fixtures/workspace/basic/.career-workspace
 tests/fixtures/workspace/basic/private/jd/config/search_config.yaml
 tests/jobs/application/test_automation.py
+tests/jobs/application/test_company_enrichment.py
 tests/jobs/application/test_company_info.py
 tests/jobs/application/test_evidence_checks.py
 tests/jobs/application/test_maintenance.py
@@ -212,9 +220,11 @@ tests/jobs/fixtures/screening_contract/candidate.md
 tests/jobs/fixtures/screening_contract/company.md
 tests/jobs/fixtures/screening_contract/jd.md
 tests/jobs/fixtures/screening_contract/rules.md
+tests/jobs/platforms/test_groupby_company.py
 tests/jobs/platforms/test_platform_adapters.py
 tests/jobs/platforms/test_remember_company.py
 tests/jobs/platforms/test_saramin.py
+tests/jobs/platforms/test_wanted_company.py
 tests/jobs/storage/test_activation.py
 tests/jobs/storage/test_cutover.py
 tests/jobs/storage/test_index.py
@@ -233,6 +243,7 @@ tests/jobs/test_screening_lint.py
 tests/jobs/test_screening_lint_hook.py
 tests/jobs/test_search_config.py
 tests/jobs/test_search_service.py
+tests/jobs/test_semantic_eval.py
 tests/jobs/test_semantic_filter.py
 tests/jobs/test_status.py
 tests/jobs/test_status_probes.py

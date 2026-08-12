@@ -119,6 +119,43 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs queue status --json
 - 자동 파이프라인의 스크리닝은 LLM 호출(Claude CLI 우선, 실패 시 Codex CLI fallback)로 수행됩니다.
 - LLM 실패 시 기본 판정은 `지원 보류`로 처리됩니다.
 
+## 지원 진행 상태 기록
+
+CLI와 로컬 콘솔 모두 지원 진행 상태와 이력을 기록하고 조회할 수 있습니다.
+
+```bash
+# 현재 지원 상태와 이력 조회
+UV_CACHE_DIR=.uv-cache uv run career-jobs record show wanted:<job-id> --json
+
+# 지원 이벤트 추가
+UV_CACHE_DIR=.uv-cache uv run career-jobs record set-status wanted:<job-id> \
+  --application-status applied \
+  --application-note "지원서 제출"
+
+# 같은 상태를 다시 기록
+UV_CACHE_DIR=.uv-cache uv run career-jobs record set-status wanted:<job-id> \
+  --application-status interview \
+  --application-note "2차 기술 면접"
+
+# 명시 시각으로 정정 이벤트 추가
+UV_CACHE_DIR=.uv-cache uv run career-jobs record set-status wanted:<job-id> \
+  --application-status rejected \
+  --application-status-updated-at <iso-8601> \
+  --application-note "최종 결과 수신"
+```
+
+`record show --json`은 현재 상태 필드와 함께 `application_history`를 반환합니다.
+`storage preflight --json`은 지원 상태 타임스탬프를 개별 키 없이 집계만 출력합니다.
+
+로컬 콘솔도 같은 파이프라인을 사용합니다.
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run career-jobs console serve --host 127.0.0.1 --port 8765
+```
+
+콘솔의 상태 저장은 `PATCH /api/jobs/<platform>/<job-id>/application-status`만 허용합니다.
+쓰기 요청은 루프백 Host와 정확히 일치하는 `Origin` 헤더가 필요합니다.
+
 ## 스크리닝 기준 설정
 
 `.claude/skills/jd-screening/SKILL.md`에서 개인 기준을 설정합니다:
@@ -200,8 +237,9 @@ resume/
 UV_CACHE_DIR=.uv-cache uv run career-jobs console serve --host 127.0.0.1 --port 8765
 ```
 
-콘솔은 `127.0.0.1`에만 바인딩되는 읽기 전용 도구이며 Markdown을 실행
-가능한 HTML로 렌더링하지 않습니다.
+콘솔은 `127.0.0.1`에만 바인딩됩니다.
+현재 브랜치 시점에는 조회 중심 도구입니다.
+Markdown은 실행 가능한 HTML로 렌더링하지 않습니다.
 
 주요 `careerkit.jobs` 변경 지점:
 

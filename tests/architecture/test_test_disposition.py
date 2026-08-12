@@ -20,7 +20,7 @@ FINAL_FAMILIES = (
 
 def test_top_level_tests_are_classified_into_current_stage_buckets() -> None:
     root = ROOT / "tests"
-    allowed = {"architecture", "contract", "ext", "jobs", "resume"}
+    allowed = {"architecture", "contract", "docs", "ext", "jobs", "resume"}
     observed = {
         path.relative_to(root).parts[0]
         for path in root.rglob("test_*.py")

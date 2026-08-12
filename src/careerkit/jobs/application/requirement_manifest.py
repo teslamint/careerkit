@@ -47,6 +47,7 @@ class _ParentDraft:
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 BRACKET_HEADING_RE = re.compile(r"^\[([^\]]+)\]\s*$")
 BULLET_RE = re.compile(r"^(?P<indent>\s*)[-*+•◦]\s+(?P<text>.*\S)\s*$")
+NUMBERED_RE = re.compile(r"^(?P<indent>\s*)\d+[.)]\s+(?P<text>.*\S)\s*$")
 DELIMITER_RE = re.compile(r",|·|;|/")
 ATOMIC_SLASH_RE = re.compile(r"\bCI/CD\b", re.IGNORECASE)
 DECISIVE_RE = re.compile(r"(?:\bmust\b|\brequired\b|\bmandatory\b|필수|반드시)", re.IGNORECASE)
@@ -68,6 +69,17 @@ SECTION_KINDS = {
     "필수역량": RequirementKind.REQUIRED,
     "keyresponsibilities": RequirementKind.MAIN_DUTY,
     "업무내용": RequirementKind.MAIN_DUTY,
+    # Wanted-style decorative bracket labels
+    "이런분과함께하고싶습니다": RequirementKind.REQUIRED,
+    "이런분과함께하고싶어요": RequirementKind.REQUIRED,
+    "이런분을찾고있어요": RequirementKind.REQUIRED,
+    "이런분을찾아요": RequirementKind.REQUIRED,
+    "이런일을하게됩니다": RequirementKind.MAIN_DUTY,
+    "이런일을해요": RequirementKind.MAIN_DUTY,
+    "이런분이면더좋습니다": RequirementKind.PREFERRED,
+    "이런분이면더좋습니다우대사항": RequirementKind.PREFERRED,
+    "이런분이면더좋아요": RequirementKind.PREFERRED,
+    "이런분이면더좋아요우대사항": RequirementKind.PREFERRED,
 }
 SECTION_HEADINGS = {
     RequirementKind.REQUIRED: "자격요건",
@@ -191,7 +203,7 @@ def extract_requirement_manifest(jd_markdown: str) -> RequirementManifest:
         if current_kind is None:
             continue
 
-        bullet_match = BULLET_RE.match(line)
+        bullet_match = BULLET_RE.match(line) or NUMBERED_RE.match(line)
         if bullet_match:
             text = bullet_match.group("text").strip()
             indent = len(bullet_match.group("indent"))

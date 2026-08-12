@@ -36,7 +36,9 @@
     detected: null, // {platform, jobId} from detectJobPosting, or null
     rescreenMode: false, // true while rescreen polling is active
     beforeScreening: null, // screening_markdown captured before rescreen
-    lastData: null // last successful get_detail data for re-rendering on failure
+    lastData: null, // last successful get_detail data for re-rendering on failure
+    companyInfoResult: null,
+    progressStageText: null
   };
 
   var pollTimer = null;
@@ -113,6 +115,65 @@
   function setStageText(text) {
     var stageEl = document.getElementById("progress-stage");
     if (stageEl) stageEl.textContent = text;
+  }
+
+  function applyProgressStageText(text) {
+    if (!text) return;
+    state.progressStageText = text;
+    setStageText(text);
+  }
+
+  function stageTextForProgress(message) {
+    if (!message) return null;
+    if (message.stage === "company_info" && message.state === "checking") return "회사정보 확인 중...";
+    if (message.stage === "company_info" && message.state === "enriching") return "회사정보 보강 중...";
+    if (message.stage === "screening" && message.state === "running") return "스크리닝 중...";
+    return null;
+  }
+
+  function buildCompanyInfoNoticeData(result) {
+    if (!result || !result.status) return null;
+    if (result.status === "ready") {
+      return {
+        tone: "ready",
+        title: "회사 정보 준비 완료",
+        body: "완성도 " + result.completeness + "%",
+        showCompleteness: true,
+        shouldRefresh: result.persisted === true
+      };
+    }
+    if (result.status === "warning" && result.warning_code === "below_threshold") {
+      return {
+        tone: "warning",
+        title: "회사 정보 보강 필요",
+        body: "완성도 " + result.completeness + "%",
+        showCompleteness: true,
+        shouldRefresh: false
+      };
+    }
+    if (result.status === "warning" && result.warning_code === "missing") {
+      return {
+        tone: "warning",
+        title: "회사 정보가 아직 없습니다",
+        body: "플랫폼 정보만으로 스크리닝을 계속했습니다.",
+        showCompleteness: false,
+        shouldRefresh: false
+      };
+    }
+    return null;
+  }
+
+  function shouldIgnoreMessageForUrl(currentUrl, messageUrl) {
+    return typeof currentUrl !== "string" || typeof messageUrl !== "string" || messageUrl !== currentUrl;
+  }
+
+  function buildCompanyInfoNotice(result) {
+    var noticeData = buildCompanyInfoNoticeData(result);
+    if (!noticeData) return null;
+    var notice = el("div", "company-info-notice company-info-notice-" + noticeData.tone);
+    notice.appendChild(el("p", "company-info-notice-title", noticeData.title));
+    notice.appendChild(el("p", "company-info-notice-body", noticeData.body));
+    return notice;
   }
 
   function shouldOfferRescreen(record, isFallback) {
@@ -231,6 +292,7 @@
   function onRescreenClick() {
     state.rescreenMode = true;
     state.beforeScreening = state.lastData ? state.lastData.screening_markdown : null;
+    state.progressStageText = null;
     renderCollecting("재스크리닝 중...");
     chrome.runtime.sendMessage({ action: "rescreen", url: state.url }, function (response) {
       if (chrome.runtime.lastError) {
@@ -319,6 +381,11 @@
       content.appendChild(buildCappedNotice());
     }
 
+    var companyInfoNotice = buildCompanyInfoNotice(state.companyInfoResult);
+    if (companyInfoNotice) {
+      content.appendChild(companyInfoNotice);
+    }
+
     if (rescreenType === "prominent") {
       content.appendChild(buildRescreenButton("prominent"));
     }
@@ -379,7 +446,9 @@
     companyPanel.hidden = true;
     companyPanel.appendChild(el("p", "state-body", "회사 정보를 불러올 수 없습니다."));
     content.appendChild(companyPanel);
-    fetchCompanyInfo();
+    if (!state.companyInfoResult || state.companyInfoResult.status !== "warning" || state.companyInfoResult.warning_code === "below_threshold") {
+      fetchCompanyInfo();
+    }
   }
 
   function applyCompanyInfo(markdown) {
@@ -409,7 +478,7 @@
     var requestUrl = state.url;
     chrome.runtime.sendMessage({ action: "get_company_info", url: requestUrl }, function (response) {
       if (chrome.runtime.lastError) return;
-      if (requestUrl !== state.url) return;
+      if (shouldIgnoreMessageForUrl(state.url, requestUrl)) return;
       if (!response || response.status === "error" || !response.data) return;
       applyCompanyInfo(response.data.company_info_markdown);
     });
@@ -456,17 +525,19 @@
         if (changed) {
           stopPolling();
           state.rescreenMode = false;
+          state.progressStageText = null;
           renderDetail(data.record, data.screening_markdown, data.jd_markdown, data.is_fallback);
           return;
         }
-        setStageText("재스크리닝 중...");
+        if (!state.progressStageText) setStageText("재스크리닝 중...");
       } else {
         if (data.record.screening_verdict) {
           stopPolling();
+          state.progressStageText = null;
           renderDetail(data.record, data.screening_markdown, data.jd_markdown, data.is_fallback);
           return;
         }
-        setStageText("스크리닝 중...");
+        if (!state.progressStageText) setStageText("스크리닝 중...");
       }
     });
   }
@@ -496,6 +567,7 @@
   }
 
   function onCollectClick() {
+    state.progressStageText = null;
     renderCollecting("추출 중...");
     chrome.runtime.sendMessage({ action: "collect", url: state.url }, function (response) {
       if (chrome.runtime.lastError) {
@@ -520,6 +592,8 @@
     state.rescreenMode = false;
     state.beforeScreening = null;
     state.lastData = null;
+    state.companyInfoResult = null;
+    state.progressStageText = null;
     clearContent();
     content.appendChild(el("p", "state-body", "불러오는 중..."));
 
@@ -535,19 +609,35 @@
         renderNotJobSite();
         return;
       }
-      fetchDetail();
+      chrome.runtime.sendMessage({ action: "get_pending_status", url: state.url }, function (resp) {
+        if (chrome.runtime.lastError) { fetchDetail(); return; }
+        if (resp && resp.pending) {
+          renderCollecting("스크리닝 중...");
+          startPolling();
+        } else {
+          fetchDetail();
+        }
+      });
     });
   }
 
   chrome.runtime.onMessage.addListener(function (message) {
     if (!message || !state.detected) return;
-    if (message.url && message.url !== state.url) return;
+    if (shouldIgnoreMessageForUrl(state.url, message.url)) return;
 
-    if (message.action === "screening_complete") {
+    if (message.action === "screening_progress") {
+      var stageText = stageTextForProgress(message);
+      if (stageText) applyProgressStageText(stageText);
+    } else if (message.action === "screening_complete") {
+      var companyInfoResult = message.data && message.data.company_info ? message.data.company_info : null;
+      if (!buildCompanyInfoNoticeData(companyInfoResult)) return;
       state.rescreenMode = false;
+      state.progressStageText = null;
+      state.companyInfoResult = companyInfoResult;
       fetchDetail();
     } else if (message.action === "screening_failed") {
       stopPolling();
+      state.progressStageText = null;
       if (state.rescreenMode && state.lastData) {
         state.rescreenMode = false;
         renderDetail(state.lastData.record, state.lastData.screening_markdown, state.lastData.jd_markdown, state.lastData.is_fallback);
@@ -568,4 +658,32 @@
   });
 
   init();
+
+  if (typeof globalThis !== "undefined") {
+    globalThis.stageTextForProgress = stageTextForProgress;
+    globalThis.buildCompanyInfoNoticeData = buildCompanyInfoNoticeData;
+    globalThis.shouldIgnoreMessageForUrl = shouldIgnoreMessageForUrl;
+  }
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      shouldOfferRescreen: shouldOfferRescreen,
+      buildTabBar: buildTabBar,
+      stageTextForProgress: stageTextForProgress,
+      buildCompanyInfoNoticeData: buildCompanyInfoNoticeData,
+      shouldIgnoreMessageForUrl: shouldIgnoreMessageForUrl,
+      __setState: function (nextState) {
+        Object.keys(nextState || {}).forEach(function (key) {
+          state[key] = nextState[key];
+        });
+      },
+      __getState: function () {
+        return state;
+      },
+      __renderCollecting: renderCollecting,
+      __pollOnce: pollOnce,
+      __getContentRoot: function () {
+        return content;
+      }
+    };
+  }
 })();

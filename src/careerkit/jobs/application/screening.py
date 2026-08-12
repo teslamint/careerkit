@@ -65,6 +65,16 @@ _MIN_CONTENT_LINES = 5
 _FALLBACK_MARKER = "| 생성 방식 | 자동 fallback |"
 _FALLBACK_MATCH_HEADER = "| 항목 | 판단 |"
 _FALLBACK_MATCH_ROWS = ("| 후보자 이력 대조 |", "| JD 필수요건 대조 |")
+_FALLBACK_ATTEMPT_MARKERS = (
+    "| 생성 방식 | 자동 fallback |",
+    "| 항목 | 판단 |",
+    "| 후보자 이력 대조 |",
+    "| JD 필수요건 대조 |",
+    "LLM 스크리닝 실행이 완료되지 않아 자동 판정은 보류로 기록한다.",
+    "- 자동 분석 경로에서 LLM 응답을 얻지 못했다.",
+    "| 후보자 이력 대조 |",
+    "| JD 필수요건 대조 |",
+)
 _FILLER_PREFIXES = ("|---", "|-", "| ---", "| -")
 _PROMPT_PACKAGE = "careerkit.jobs.resources.prompts"
 _SCREENING_RULES_PATH = Path("private/jd/config/jd-screening-rules.md")
@@ -77,7 +87,6 @@ _VERDICT_LINE_RE = re.compile(
     r").+$",
     re.MULTILINE,
 )
-
 LOCAL_PROVIDER_LABELS = frozenset({"ollama", "local"})
 STRONG_PROVIDER_LABELS = frozenset({"claude", "codex"})
 REQUIRED_MISSING_THRESHOLD = 2
@@ -93,6 +102,7 @@ class ScreeningResult:
     provider: str
     used_fallback: bool
     raw_output: str
+    fallback_reason: str | None = None
     verdict_capped: bool = False
     downgraded: bool = False
     evidence_violations: dict[str, int] = field(default_factory=dict)
@@ -196,6 +206,9 @@ def validate_screening_structure(markdown: str) -> tuple[bool, str]:
     if missing:
         return False, f"필수 섹션 누락: {', '.join(missing)}"
 
+    if is_fallback_document(markdown):
+        return True, ""
+
     for pattern in _CONVERSATIONAL_PATTERNS:
         if pattern in markdown:
             return False, f"대화형 패턴 탐지: '{pattern}'"
@@ -208,27 +221,164 @@ def validate_screening_structure(markdown: str) -> tuple[bool, str]:
     if candidate_label is not None:
         return False, f"기본 정보에 후보자 개인정보 행 포함: {candidate_label}"
 
-    # R4 exempts the fallback document: its table is the 2-column `| 항목 | 판단 |`
-    # shape and no check, gate, or cap applies to it. Inside run_screening the
-    # fallback path never reaches here, but `screening validate` reads a file with
-    # no such context — so the skip is explicit rather than implied by the caller.
-    # The exemption demands the whole document shape, not one marker row: the input
-    # is model-controlled, and a single recognisable line would be trivial to emit.
-    if not is_fallback_document(markdown):
-        _, table_error = parse_match_table(markdown)
-        if table_error:
-            return False, table_error
+    if _looks_like_fallback_attempt(markdown):
+        return False, "fallback 문서 계약 위반"
+
+    _, table_error = parse_match_table(markdown)
+    if table_error:
+        return False, table_error
 
     return True, ""
 
 
 def is_fallback_document(markdown: str) -> bool:
     """Whether this is the document build_fallback_output writes, whole and not in part."""
-    return (
-        _FALLBACK_MARKER in markdown
-        and _FALLBACK_MATCH_HEADER in markdown
-        and all(row in markdown for row in _FALLBACK_MATCH_ROWS)
+    parsed = _parse_fallback_document(markdown)
+    if parsed is None:
+        return False
+    return markdown == _render_fallback_document(
+        file_id=parsed["file_id"],
+        company=parsed["company"],
+        position=parsed["position"],
+        source_url=parsed["source_url"],
+        reason=parsed["reason"],
     )
+
+
+def _looks_like_fallback_attempt(markdown: str) -> bool:
+    return any(marker in markdown for marker in _FALLBACK_ATTEMPT_MARKERS)
+
+
+def _split_table_row(line: str) -> list[str]:
+    parts = re.split(r"(?<!\\)\|", line)
+    if parts and not parts[0].strip():
+        parts = parts[1:]
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return [part.strip() for part in parts]
+
+
+def _parse_two_column_row(line: str, *, label: str) -> str | None:
+    if not line.startswith("|"):
+        return None
+    cells = _split_table_row(line)
+    if len(cells) != 2 or cells[0] != label:
+        return None
+    value = cells[1].replace("\\|", "|")
+    if value != "확인 필요" and not value:
+        return None
+    return value
+
+
+def _render_fallback_document(
+    *,
+    file_id: str,
+    company: str,
+    position: str,
+    source_url: str,
+    reason: str,
+) -> str:
+    return f"""## 기본 정보
+
+| 항목 | 내용 |
+|------|------|
+| 파일 | {_table_cell(file_id)} |
+| 회사명 | {_table_cell(company)} |
+| 포지션 | {_table_cell(position)} |
+| 출처 | {_table_cell(source_url)} |
+{_FALLBACK_MARKER}
+
+## 스크리닝 결과
+
+LLM 스크리닝 실행이 완료되지 않아 자동 판정은 보류로 기록한다. 채용 적합성은 수동 재스크리닝 전까지 확정하지 않는다.
+
+## 이력/경험 매칭
+
+| 항목 | 판단 |
+|------|------|
+| 후보자 이력 대조 | LLM 분석 실패로 이력 근거 대조가 수행되지 않았다. |
+| JD 필수요건 대조 | 수동 재스크리닝 필요. |
+
+## 최종 판정
+
+### 최종 판정: 지원 보류
+
+## 핵심 근거
+
+- 자동 분석 경로에서 LLM 응답을 얻지 못했다.
+- 실패 사유: {_table_cell(reason, '알 수 없음')}
+- 이 문서는 원시 실행 로그를 저장하지 않고 수동 재스크리닝을 위한 보류 상태만 기록한다.
+"""
+
+
+def _parse_fallback_document(markdown: str) -> dict[str, str] | None:
+    lines = markdown.splitlines()
+    expected_prefix = [
+        "## 기본 정보",
+        "",
+        "| 항목 | 내용 |",
+        "|------|------|",
+    ]
+    if lines[:4] != expected_prefix:
+        return None
+    if len(lines) != 30:
+        return None
+
+    file_id = _parse_two_column_row(lines[4], label="파일")
+    company = _parse_two_column_row(lines[5], label="회사명")
+    position = _parse_two_column_row(lines[6], label="포지션")
+    source_url = _parse_two_column_row(lines[7], label="출처")
+    marker = _parse_two_column_row(lines[8], label="생성 방식")
+    if None in {file_id, company, position, source_url, marker}:
+        return None
+    assert file_id is not None
+    assert company is not None
+    assert position is not None
+    assert source_url is not None
+    if marker != "자동 fallback":
+        return None
+
+    exact_lines = {
+        9: "",
+        10: "## 스크리닝 결과",
+        11: "",
+        12: "LLM 스크리닝 실행이 완료되지 않아 자동 판정은 보류로 기록한다. 채용 적합성은 수동 재스크리닝 전까지 확정하지 않는다.",
+        13: "",
+        14: "## 이력/경험 매칭",
+        15: "",
+        16: "| 항목 | 판단 |",
+        17: "|------|------|",
+        18: "| 후보자 이력 대조 | LLM 분석 실패로 이력 근거 대조가 수행되지 않았다. |",
+        19: "| JD 필수요건 대조 | 수동 재스크리닝 필요. |",
+        20: "",
+        21: "## 최종 판정",
+        22: "",
+        23: "### 최종 판정: 지원 보류",
+        24: "",
+        25: "## 핵심 근거",
+        26: "",
+        27: "- 자동 분석 경로에서 LLM 응답을 얻지 못했다.",
+    }
+    for index, expected in exact_lines.items():
+        if lines[index] != expected:
+            return None
+
+    if not lines[28].startswith("- 실패 사유: "):
+        return None
+    if lines[29] != "- 이 문서는 원시 실행 로그를 저장하지 않고 수동 재스크리닝을 위한 보류 상태만 기록한다.":
+        return None
+    reason = lines[28].removeprefix("- 실패 사유: ")
+    if not reason or re.search(r"(?<!\\)\|", reason):
+        return None
+    reason = reason.replace("\\|", "|")
+
+    return {
+        "file_id": file_id,
+        "company": company,
+        "position": position,
+        "source_url": source_url,
+        "reason": reason,
+    }
 
 
 def _basic_info_candidate_label(markdown: str) -> Optional[str]:
@@ -254,6 +404,14 @@ def rewrite_verdict_line(markdown: str, verdict: str) -> str:
     if count == 0:
         raise ValueError("최종 판정 줄을 찾을 수 없음")
     return updated
+
+
+def _inject_ambiguous_placeholder_row(markdown: str) -> str:
+    header = "| 요건 | 구분 | 대조 | 근거 |\n|------|------|------|------|\n"
+    placeholder = "| 서술형 자격요건 | 필수 | 부분 | 서술형 자격요건은 수동 확인 필요 |"
+    if header not in markdown or placeholder in markdown:
+        return markdown
+    return markdown.replace(header, header + placeholder + "\n", 1)
 
 
 def _table_cell(value: Optional[str], default: str = "확인 필요") -> str:
@@ -392,6 +550,8 @@ def run_screening(
     candidate_context_text = candidate_context or "후보자 이력/경험 근거는 호출자가 제공하지 않았음"
     manifest = extract_requirement_manifest(jd_content)
     filtered = without_main_duty(manifest)
+    if not any(item.assessable for item in filtered.leaves):
+        raise ValueError("screening-no-assessable-requirements")
 
     prompt = build_prompt(
         workspace=workspace,
@@ -410,6 +570,7 @@ def run_screening(
     provider = "fallback"
     used_fallback = False
     raw_output = ""
+    fallback_reason: str | None = None
     verdict = _HOLD_VERDICT
     normalized_output = ""
     verdict_capped = False
@@ -426,6 +587,7 @@ def run_screening(
         )
     except Exception as exc:
         used_fallback = True
+        fallback_reason = "provider-exhausted"
         reason = summarize_llm_error(exc)
     else:
         try:
@@ -438,20 +600,31 @@ def run_screening(
                     local_timeout=effective_local_llm_timeout,
                 )
                 assessment = parse_screening_assessment(raw_output, filtered)
+            except AssessmentContractError as retry_error:
+                used_fallback = True
+                fallback_reason = "assessment-contract-exhausted"
+                reason = summarize_llm_error(retry_error)
             except Exception as retry_error:
                 used_fallback = True
+                fallback_reason = "provider-exhausted"
                 reason = summarize_llm_error(retry_error)
 
     if used_fallback:
         used_fallback = True
+        provider = "fallback"
         verdict = _HOLD_VERDICT
         verdict_capped = False
         downgraded = False
         evidence_violations = {}
         raw_output = f"LLM 스크리닝 실패: {reason}"
         normalized_output = build_fallback_output(jd, jd_content, reason)
+        valid, reason = validate_screening_structure(normalized_output)
+        if not valid:
+            raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
         normalized_output = render_screening_markdown(jd, jd_content, filtered, assessment)
+        if filtered.ambiguous_qualifications and not filtered.parents:
+            normalized_output = _inject_ambiguous_placeholder_row(normalized_output)
         rows, table_error = parse_match_table(normalized_output)
         if table_error:
             raise RuntimeError(f"매칭 표 파싱 실패: {table_error}")
@@ -542,6 +715,7 @@ def run_screening(
         provider=provider,
         used_fallback=used_fallback,
         raw_output=raw_output,
+        fallback_reason=fallback_reason,
         verdict_capped=verdict_capped,
         downgraded=downgraded,
         evidence_violations=evidence_violations,

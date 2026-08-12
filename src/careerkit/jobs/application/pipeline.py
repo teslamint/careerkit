@@ -158,12 +158,14 @@ class JobsPipelineService:
         application_status: ApplicationStatus | None = None,
         posting_status: PostingStatus | None = None,
         application_status_updated_at: str | None = None,
+        application_note: str | None = None,
     ) -> StoredJobRecord:
         return self.repository.update_status(
             key,
             application_status=application_status,
             posting_status=posting_status,
             application_status_updated_at=application_status_updated_at,
+            application_note=application_note,
         )
 
     def set_record_verdict(self, key: JobKey, verdict: ScreeningVerdict) -> StoredJobRecord:

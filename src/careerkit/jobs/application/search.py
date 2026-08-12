@@ -1,14 +1,46 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import re
 import time
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol, TypeAlias, cast
 
+from careerkit.jobs.application.semantic_eval import SemanticCaptureSink
 from careerkit.jobs.application.title_filter import normalize_job_queries, quick_filter_title
 from careerkit.jobs.domain.filters import is_rejected_company_name
 
 _UNREALISTIC_MAX = 50
+
+StopReason: TypeAlias = Literal[
+    "api_end",
+    "repeated_page",
+    "no_new_items",
+    "malformed_response",
+    "malformed_page",
+    "safety_page_limit",
+    "safety_time_limit",
+    "request_error",
+]
+_STOP_REASON_VALUES = frozenset(
+    {
+        "api_end",
+        "repeated_page",
+        "no_new_items",
+        "malformed_response",
+        "malformed_page",
+        "safety_page_limit",
+        "safety_time_limit",
+        "request_error",
+    }
+)
+
+
+def _normalize_stop_reason(value: str | None) -> StopReason | None:
+    if value not in _STOP_REASON_VALUES:
+        return None
+    return cast(StopReason, value)
 
 
 @dataclass(frozen=True)
@@ -32,6 +64,7 @@ class PaginatedItems:
     total_count: int | None = None
     pages_fetched: int = 0
     complete: bool = True
+    stop_reason: StopReason | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +73,7 @@ class PlatformSearchBatch:
     total_count: int | None = None
     pages_fetched: int = 0
     complete: bool = True
+    stop_reason: StopReason | None = None
 
 
 @dataclass(frozen=True)
@@ -123,15 +157,48 @@ def filter_experience(exp_str: str | None, config: Mapping[str, Any], *, min_yea
     return False
 
 
+def _quick_filter_config_digest(quick_filters: Mapping[str, Any]) -> str:
+    material = json.dumps(
+        _canonicalize_quick_filter_value(dict(quick_filters)),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _canonicalize_quick_filter_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonicalize_quick_filter_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, tuple):
+        return [_canonicalize_quick_filter_value(item) for item in value]
+    if isinstance(value, list):
+        return [_canonicalize_quick_filter_value(item) for item in value]
+    return value
+
+
 class SearchService:
-    def __init__(self, *, adapters: Mapping[str, SearchAdapter], semantic_filter: SemanticFilter | None, semantic_capability: dict[str, Any] | None = None, existing_record_checker=None) -> None:
+    def __init__(
+        self,
+        *,
+        adapters: Mapping[str, SearchAdapter],
+        semantic_filter: SemanticFilter | None,
+        semantic_capability: dict[str, Any] | None = None,
+        existing_record_checker=None,
+        semantic_capture_sink: SemanticCaptureSink | None = None,
+    ) -> None:
         self.adapters = dict(adapters)
         self.semantic_filter = semantic_filter
         self.semantic_capability = semantic_capability or {"available": True, "reason": None}
         self.existing_record_checker = existing_record_checker or (lambda platform, raw_id: False)
+        self.semantic_capture_sink = semantic_capture_sink
 
     def run(self, config, state: SearchState) -> SearchResult:
         queries = normalize_job_queries(list(config.search_queries))
+        quick_filter_digest = _quick_filter_config_digest(config.quick_filters)
         diagnostics: list[str] = []
         semantic_capability = dict(self.semantic_capability)
         if config.semantic_enabled and not semantic_capability.get("available", True):
@@ -154,15 +221,34 @@ class SearchService:
                 try:
                     batch = adapter.search(query, config=config, state=state)
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                    if self.semantic_capture_sink is not None:
+                        self.semantic_capture_sink.record_source_outcome(
+                            platform_name,
+                            complete=False,
+                            stop_reason='request_error',
+                            pages_fetched=0,
+                        )
+                        self.semantic_capture_sink.mark_incomplete('platform_failure')
                     diagnostics.append(f"{platform_name} search failed: {exc}")
                     break
                 request_delay = float(config.execution.get("request_delay", 0.0))
                 if request_delay > 0:
                     time.sleep(request_delay)
-                if not batch.complete:
-                    diagnostics.append(
-                        f"{platform_name} search incomplete after {batch.pages_fetched} pages"
+                if self.semantic_capture_sink is not None:
+                    self.semantic_capture_sink.record_source_outcome(
+                        platform_name,
+                        complete=batch.complete,
+                        stop_reason=batch.stop_reason,
+                        pages_fetched=batch.pages_fetched,
                     )
+                if not batch.complete:
+                    if self.semantic_capture_sink is not None:
+                        self.semantic_capture_sink.mark_incomplete('search_incomplete')
+                    message = f"{platform_name} search incomplete after {batch.pages_fetched} pages"
+                    stop_reason = _normalize_stop_reason(batch.stop_reason)
+                    if stop_reason:
+                        message += f": {stop_reason}"
+                    diagnostics.append(message)
                 items = list(batch.items if isinstance(batch, PaginatedItems) else batch.candidates)
                 for candidate in items:
                     total_found += 1
@@ -171,6 +257,12 @@ class SearchService:
                         filtered_out += 1
                         continue
                     if self.semantic_filter is not None:
+                        if self.semantic_capture_sink is not None:
+                            self.semantic_capture_sink.capture(
+                                candidate.title,
+                                quick_filter_outcome='eligible',
+                                quick_filter_config_digest=quick_filter_digest,
+                            )
                         classification = self.semantic_filter.classify(candidate.title)
                         runtime_diagnostic = getattr(self.semantic_filter, "diagnostic", None)
                         if runtime_diagnostic:
@@ -180,6 +272,8 @@ class SearchService:
                                 "available": False,
                                 "reason": runtime_diagnostic,
                             }
+                            if self.semantic_capture_sink is not None:
+                                self.semantic_capture_sink.mark_incomplete('semantic_unavailable')
                         if classification == "pass":
                             filtered_out += 1
                             continue

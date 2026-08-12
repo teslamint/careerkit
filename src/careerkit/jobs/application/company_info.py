@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+import hashlib
+import os
 from pathlib import Path
+import tempfile
+import time
 import re
-from typing import Optional
+from typing import Callable, Optional
+
+import fcntl
 
 from careerkit.jobs.domain.naming import normalize_company_name, slugify_company
 from careerkit.workspace import WorkspacePaths
@@ -52,6 +58,14 @@ class ValidationResult:
     issues: tuple[ValidationIssue, ...] = ()
     risk_flags: tuple[RiskFlag, ...] = ()
     completeness_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class CompanyInfoLookup:
+    status: str
+    file_path: Path | None
+    validation: ValidationResult | None
+    digest: str | None
 
 
 @dataclass(frozen=True)
@@ -408,6 +422,69 @@ class CompanyInfoService:
                 return path
         return None
 
+    def inspect(self, company_name: str) -> CompanyInfoLookup:
+        match = self._find_lookup_candidate(company_name)
+        if match is None:
+            return CompanyInfoLookup(status="missing", file_path=None, validation=None, digest=None)
+        path, status = match
+        if status == "unsafe":
+            return CompanyInfoLookup(status="unsafe", file_path=None, validation=None, digest=None)
+        try:
+            content = path.read_text(encoding="utf-8")
+            parsed = parse_company_file(path)
+        except OSError:
+            return CompanyInfoLookup(status="invalid", file_path=path, validation=None, digest=None)
+        if not parsed.name.strip():
+            return CompanyInfoLookup(status="invalid", file_path=path, validation=None, digest=_digest_text(content))
+        validation = validate_company(parsed, path)
+        lookup_status = "ready" if validation.completeness_score >= 70 else "incomplete"
+        return CompanyInfoLookup(
+            status=lookup_status,
+            file_path=path,
+            validation=validation,
+            digest=_digest_text(content),
+        )
+
+    def apply_candidate(
+        self,
+        *,
+        company_name: str,
+        markdown: str,
+        expected_digest: str | None = None,
+        timeout: float = 1.0,
+        before_validate: Callable[[Path], object] | None = None,
+    ) -> CompanyInfoLookup:
+        initial = self.inspect(company_name)
+        if initial.status == "unsafe":
+            raise ValueError("company info file must stay inside private/company_info")
+        self.company_info_dir.mkdir(parents=True, exist_ok=True)
+        target = initial.file_path or (self.company_info_dir / f"{slugify_company(company_name)}.md")
+        with _CompanyFileLock(self._lock_path_for(target), timeout=timeout):
+            _cleanup_hidden_stage_files(self.company_info_dir, target.stem)
+            current_text = None
+            if target.exists():
+                safe_target = self._resolve_single_file(target)
+                current_text = safe_target.read_text(encoding="utf-8")
+            current_digest = _digest_text(current_text) if current_text is not None else None
+            if expected_digest is not None and expected_digest != current_digest:
+                raise RuntimeError("digest conflict")
+            final_markdown = _merge_company_markdown(current_text, markdown)
+            stage_path = self._stage_candidate(target.stem, final_markdown)
+            try:
+                if before_validate is not None:
+                    before_validate(stage_path)
+                validation = validate_company(parse_company_file(stage_path), stage_path)
+                if not validation.company_name.strip():
+                    raise ValueError("company info markdown must include a title")
+                os.replace(stage_path, target)
+                _fsync_file(target)
+                _fsync_directory(self.company_info_dir)
+            finally:
+                if stage_path.exists():
+                    stage_path.unlink()
+                _cleanup_hidden_stage_files(self.company_info_dir, target.stem)
+        return self.inspect(company_name)
+
     def _resolve_files(self, file_name: str | None) -> list[Path]:
         if file_name is not None:
             target = Path(file_name)
@@ -430,6 +507,168 @@ class CompanyInfoService:
             for path in self.company_info_dir.glob("*.md")
             if path.is_file() and not path.is_symlink() and not path.name.startswith("_")
         )
+
+    def _find_lookup_candidate(self, company_name: str) -> tuple[Path, str] | None:
+        if not self.company_info_dir.is_dir():
+            return None
+        normalized = normalize_company_name(company_name)
+        slug = slugify_company(company_name, fallback="")
+        root = self.company_info_dir.resolve()
+        for candidate in sorted(self.company_info_dir.glob("*.md")):
+            if candidate.name.startswith("_"):
+                continue
+            slug_matches = bool(slug) and slug in {
+                slugify_company(candidate.stem, fallback=""),
+                slugify_company(candidate.resolve(strict=False).stem, fallback=""),
+            }
+            if candidate.is_symlink():
+                if not slug_matches:
+                    continue
+                try:
+                    path = candidate.resolve(strict=True)
+                    path.relative_to(root)
+                except (OSError, ValueError):
+                    return (candidate, "unsafe")
+            try:
+                path = candidate.resolve(strict=True)
+                path.relative_to(root)
+            except (OSError, ValueError):
+                if slug_matches:
+                    return (candidate, "unsafe")
+                continue
+            if path.suffix != ".md" or not path.is_file():
+                continue
+            if slug_matches:
+                return (path, "file")
+            try:
+                parsed_name = parse_company_file(path).name
+            except OSError:
+                continue
+            if normalized and normalize_company_name(parsed_name) == normalized:
+                return (path, "file")
+        return None
+
+    def _lock_path_for(self, target: Path) -> Path:
+        return self.company_info_dir / f".{target.stem}.lock"
+
+    def _resolve_single_file(self, candidate: Path) -> Path:
+        if candidate.is_symlink():
+            raise ValueError("company info file must stay inside private/company_info")
+        path = candidate.resolve(strict=True)
+        root = self.company_info_dir.resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("company info file must stay inside private/company_info") from exc
+        if path.suffix != ".md" or not path.is_file():
+            raise FileNotFoundError(f"company info file not found: {candidate.name}")
+        return path
+
+    def _stage_candidate(self, stem: str, content: str) -> Path:
+        fd, raw_path = tempfile.mkstemp(prefix=f".{stem}.", suffix=".tmp", dir=self.company_info_dir)
+        stage_path = Path(raw_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(fd)
+        return stage_path
+
+
+class _CompanyFileLock:
+    def __init__(self, path: Path, *, timeout: float) -> None:
+        self.path = path
+        self.timeout = timeout
+        self._file = None
+
+    def __enter__(self) -> "_CompanyFileLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("a+", encoding="utf-8")
+        deadline = time.monotonic() + max(self.timeout, 0.0)
+        while True:
+            try:
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    self._file.close()
+                    raise TimeoutError("company info writer lock timeout") from exc
+                time.sleep(0.01)
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        assert self._file is not None
+        fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+        self._file.close()
+
+
+def _digest_text(content: str | None) -> str | None:
+    if content is None:
+        return None
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _extract_section(content: str, heading: str) -> str | None:
+    pattern = rf"(^## {re.escape(heading)}\n.*?)(?=^## |\n---\n|\Z)"
+    match = re.search(pattern, content, flags=re.MULTILINE | re.DOTALL)
+    return match.group(1).rstrip() if match else None
+
+
+def _upsert_section(content: str, heading: str, replacement: str) -> str:
+    pattern = rf"(^## {re.escape(heading)}\n.*?)(?=^## |\n---\n|\Z)"
+    if re.search(pattern, content, flags=re.MULTILINE | re.DOTALL):
+        return re.sub(pattern, replacement.rstrip() + "\n\n", content, count=1, flags=re.MULTILINE | re.DOTALL)
+    footer_match = re.search(r"\n---\n", content)
+    insertion = replacement.rstrip() + "\n\n"
+    if footer_match:
+        return content[: footer_match.start()] + "\n" + insertion + content[footer_match.start() :]
+    return content.rstrip() + "\n\n" + insertion
+
+
+def _merge_company_markdown(current_text: str | None, candidate_text: str) -> str:
+    if current_text is None:
+        return candidate_text.rstrip() + "\n"
+    merged = current_text
+    for heading in ("기업 정보", "인원 통계", "연봉 정보", "매출 정보", "투자 정보"):
+        candidate_section = _extract_section(candidate_text, heading)
+        if candidate_section:
+            merged = _upsert_section(merged, heading, candidate_section)
+    candidate_footer = _extract_footer(candidate_text)
+    if candidate_footer:
+        merged = _replace_footer(merged, candidate_footer)
+    return merged.rstrip() + "\n"
+
+
+def _extract_footer(content: str) -> str | None:
+    if "\n---\n" not in content:
+        return None
+    return content[content.index("\n---\n") :].rstrip()
+
+
+def _replace_footer(content: str, footer: str) -> str:
+    if "\n---\n" in content:
+        return content[: content.index("\n---\n")] + footer.rstrip() + "\n"
+    return content.rstrip() + footer.rstrip() + "\n"
+
+
+def _cleanup_hidden_stage_files(directory: Path, stem: str) -> None:
+    for candidate in directory.glob(f".{stem}.*.tmp"):
+        if candidate.is_file():
+            candidate.unlink()
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _replace(data: CompanyData, **changes: object) -> CompanyData:

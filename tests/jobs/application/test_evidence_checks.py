@@ -99,6 +99,15 @@ def test_existing_four_column_document_without_provenance_metadata_stays_valid()
     ) == (True, "")
 
 
+def test_header_only_four_column_table_reports_no_rows():
+    rows, error = parse_match_table(
+        "".join(table("| 요건 | 구분 | 대조 | 근거 |"))
+    )
+
+    assert rows == []
+    assert error == "매칭 표 행 없음"
+
+
 def test_accepts_main_duty_kind():
     rows, error = parse_match_table("".join(table("| RAG 구축 | 주요업무 | 없음 | 없음 |")))
     assert error == ""
@@ -195,16 +204,16 @@ def test_missing_heading_reports_absence():
     assert error == "매칭 표 없음"
 
 
-def test_empty_table_returns_zero_rows_no_error():
+def test_empty_table_reports_no_rows():
     markdown = """## 이력/경험 매칭
 
 | 요건 | 구분 | 대조 | 근거 |
 |---|---|---|---|
 
-## 최종 판정
-"""
+    ## 최종 판정
+    """
     rows, error = parse_match_table(markdown)
-    assert error == ""
+    assert error == "매칭 표 행 없음"
     assert rows == []
 
 

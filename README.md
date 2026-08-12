@@ -4,9 +4,9 @@
 포맷(PDF, HTML, TXT)으로 빌드하고, 채용공고 수집·스크리닝 파이프라인을 함께 제공합니다.
 CLI는 `career-resume`과 `career-jobs` 둘입니다.
 
-공개 `careerkit` 저장소는 비공개 개발 저장소에서 도구 부분만 추려 내보낸 스냅샷입니다.
-이력서 원본과 채용 데이터는 내보내지 않으며, 이슈 트래커는 꺼져 있습니다. 기여 절차는
-[CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요.
+코드 개발은 공개 `careerkit` 저장소에서 진행합니다. 이력서 원본, 채용 데이터, 그리고
+설계·계획·회고 문서는 별도의 비공개 워크스페이스 저장소에 두며 여기에 커밋하지
+않습니다. 기여 절차는 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요.
 
 ## Features
 
