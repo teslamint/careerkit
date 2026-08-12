@@ -13,6 +13,16 @@ vocabulary — both are worth checking before working in a documented area.
 Source files in `private/profile/` and `private/companies/` → `careerkit.resume` → output in `private/build/` (gitignored).
 Job search automation lives in `careerkit.jobs`, with company info (`private/company_info/`), canonical JD records (`private/jd/records/`), runtime state (`private/jd/runtime/`), and rebuildable views (`private/jd/derived/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for ownership and change points.
 
+## Repository Boundary
+
+Code development happens in the public `careerkit` repository. The private
+workspace repository holds the resume sources, the job-search data under
+`private/`, and the lifecycle record (`docs/plans/`, `docs/retros/`,
+`docs/specs/`, `docs/deviations/`, `docs/research/`, `docs/superpowers/`,
+`ROADMAP.md`, `LESSONS.md`, `.release-loop/`). Neither side commits the other's
+material: a code change belongs in `careerkit`, and a plan, retro, or screening
+outcome belongs in the workspace repository.
+
 ## Critical Rules
 
 - **Markdown is source of truth** — edit `private/profile/` and `private/companies/`, never `private/build/` outputs

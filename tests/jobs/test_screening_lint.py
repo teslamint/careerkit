@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,20 @@ from careerkit.jobs.domain.model import (
 
 
 def _screening(verdict: str, extra: str = "") -> str:
-    return f"# screening\n{extra}\n## 최종 판정\n### 최종 판정: {verdict}\n"
+    body = extra or "- 구조화된 스크리닝 본문"
+    return (
+        "## 기본 정보\n\n"
+        "| 항목 | 내용 |\n|------|------|\n| 회사명 | Acme |\n| 포지션 | Backend |\n\n"
+        "## 스크리닝 결과\n\n"
+        f"{body}\n\n"
+        "## 이력/경험 매칭\n\n"
+        "| 요건 | 구분 | 대조 | 근거 |\n|------|------|------|------|\n"
+        "| Spring Boot 개발 | 필수 | 충족 | 사내 백엔드 개발 경험 |\n\n"
+        "## 최종 판정\n\n"
+        f"### 최종 판정: {verdict}\n\n"
+        "## 핵심 근거\n\n"
+        "- 구조화된 검토 결과\n"
+    )
 
 
 def _stored(
@@ -161,10 +173,10 @@ def test_hook_target_parity_for_claude_write_edit_and_codex_apply_patch(
         "tool_input": {"command": f"*** Update File: {screening.relative_to(tmp_path)}\n"},
     }
 
-    write_keys = screening_lint.hook_keys_from_stdin(io.StringIO(json.dumps(write_payload)), records_root=records_root)
-    patch_keys = screening_lint.hook_keys_from_stdin(io.StringIO(json.dumps(patch_payload)), records_root=records_root)
+    write_paths = screening_lint.hook_target_paths(payload=write_payload, records_root=records_root)
+    patch_paths = screening_lint.hook_target_paths(payload=patch_payload, records_root=records_root)
 
-    assert write_keys == patch_keys == [JobKey("wanted", "123")]
+    assert write_paths == patch_paths == [screening.resolve()]
 
 
 def test_render_report_exit_status_is_deterministic(tmp_path: Path) -> None:
@@ -216,6 +228,30 @@ def test_legacy_four_column_screening_without_provenance_metadata_remains_lint_c
     )
 
     assert screening_lint.lint_record(key, repository) == []
+
+
+def test_lint_record_reports_screening_structure_for_invalid_canonical_screening(tmp_path: Path) -> None:
+    repository, key = _stored(tmp_path / "records")
+    repository.update_screening_result(
+        key,
+        screening_markdown="## 기본 정보\n\nA\n\n## 스크리닝 결과\n\nB\n\n## 이력/경험 매칭\n\n| 요건 | 구분 | 대조 | 근거 |\n",
+    )
+
+    findings = screening_lint.lint_record(key, repository)
+
+    assert any(f.check == "screening-structure" and f.level == "violation" for f in findings)
+
+
+def test_lint_path_reports_structure_before_hash_integrity(tmp_path: Path) -> None:
+    records_root = tmp_path / "records"
+    repository, key = _stored(records_root)
+    screening_path = next((records_root / key.platform / key.job_id / "content").glob("*/screening.md"))
+    screening_path.write_text("## 기본 정보\n\nA\n", encoding="utf-8")
+
+    findings = screening_lint.lint_path(screening_path, repository)
+
+    assert findings[0].check == "screening-structure"
+    assert all(f.check != "storage-corrupt" for f in findings)
 
 
 def test_fallback_two_column_screening_document_remains_lint_clean(tmp_path: Path) -> None:

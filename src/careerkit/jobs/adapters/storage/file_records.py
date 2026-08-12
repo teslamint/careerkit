@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -13,6 +14,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from ...domain.model import (
+    ApplicationEvent,
     ApplicationStatus,
     JobKey,
     JobRecord,
@@ -115,7 +117,7 @@ class JDRecordRepository:
             raise JobRecordNotFound(f"Record not found: {key!r}")
         with self._locked(record_dir, exclusive=False):
             manifest = self._load_manifest(record_dir)
-            record = JobRecord.from_dict(manifest["record"])
+            record = self._record_from_manifest(manifest)
             if record.key != key:
                 raise JobRecordIntegrityError(
                     f"Manifest identity mismatch: expected {key!r}, got {record.key!r}"
@@ -140,7 +142,7 @@ class JDRecordRepository:
             raise JobRecordNotFound(f"Record not found: {key!r}")
         with self._locked(record_dir, exclusive=False):
             manifest = self._load_manifest(record_dir)
-            record = JobRecord.from_dict(manifest["record"])
+            record = self._record_from_manifest(manifest)
             if record.key != key:
                 raise JobRecordIntegrityError(
                     f"Manifest identity mismatch: expected {key!r}, got {record.key!r}"
@@ -235,21 +237,33 @@ class JDRecordRepository:
         application_status: ApplicationStatus | None = None,
         posting_status: PostingStatus | None = None,
         application_status_updated_at: str | None = None,
+        application_note: str | None = None,
     ) -> StoredJobRecord:
+        event = self._build_application_event(
+            application_status=application_status,
+            application_status_updated_at=application_status_updated_at,
+            application_note=application_note,
+        )
         record_dir = self._record_dir(key)
         if not self._manifest_path(record_dir).exists():
             raise JobRecordNotFound(f"Record not found: {key!r}")
         with self._locked(record_dir, exclusive=True):
             current = self._read_existing_locked(key, record_dir)
+            application_history = current.record.application_history
+            if event is not None:
+                application_history = (*application_history, event)
             updated_record = replace(
                 current.record,
-                application_status=application_status or current.record.application_status,
+                application_status=(
+                    event.status if event is not None else current.record.application_status
+                ),
                 posting_status=posting_status or current.record.posting_status,
                 application_status_updated_at=(
-                    application_status_updated_at
-                    if application_status_updated_at is not None
+                    event.occurred_at
+                    if event is not None
                     else current.record.application_status_updated_at
                 ),
+                application_history=application_history,
             )
             content = self._load_manifest_content(record_dir)
             self._publish_manifest(record_dir, updated_record, content)
@@ -271,16 +285,21 @@ class JDRecordRepository:
             current = self._read_locked(record.key, record_dir, missing_ok=True)
             if current is not None and not allow_overwrite:
                 raise FileExistsError(f"Record already exists: {record.key!r}")
+            locked_record = (
+                self._merge_refresh_record(record, current.record)
+                if current is not None
+                else record
+            )
             screening_markdown = current.screening_markdown if current is not None else None
             content = self._write_revision_content(
                 record_dir,
                 jd_markdown=jd_markdown,
                 screening_markdown=screening_markdown,
             )
-            self._publish_manifest(record_dir, record, content)
+            self._publish_manifest(record_dir, locked_record, content)
             self._cleanup_stale_revisions(record_dir, keep_revision=content.revision)
             return StoredJobRecord(
-                record=record,
+                record=locked_record,
                 jd_markdown=jd_markdown,
                 screening_markdown=screening_markdown,
             )
@@ -302,6 +321,44 @@ class JDRecordRepository:
         if record is None:
             raise JobRecordNotFound(f"Record not found: {key!r}")
         return record
+
+    def _build_application_event(
+        self,
+        *,
+        application_status: ApplicationStatus | None,
+        application_status_updated_at: str | None,
+        application_note: str | None,
+    ) -> ApplicationEvent | None:
+        if application_status is None:
+            if application_status_updated_at is not None:
+                raise ValueError(
+                    "application status is required when application_status_updated_at is set"
+                )
+            if application_note is not None:
+                normalized_note = application_note.strip()
+                if normalized_note:
+                    raise ValueError(
+                        "application status is required when application_note is set"
+                    )
+            return None
+        occurred_at = (
+            application_status_updated_at
+            if application_status_updated_at is not None
+            else datetime.now(timezone.utc).astimezone().isoformat()
+        )
+        return ApplicationEvent(
+            status=application_status,
+            occurred_at=occurred_at,
+            note=application_note,
+        )
+
+    def _merge_refresh_record(self, refreshed: JobRecord, current: JobRecord) -> JobRecord:
+        return replace(
+            current,
+            company=refreshed.company,
+            position=refreshed.position,
+            source_url=refreshed.source_url,
+        )
 
     def screening_path(self, key: JobKey) -> Path | None:
         record_dir = self._record_dir(key)
@@ -329,7 +386,7 @@ class JDRecordRepository:
             raise JobRecordIntegrityError(f"Manifest not found for {key.platform}/{key.job_id}")
 
         manifest = self._load_manifest(record_dir)
-        record = JobRecord.from_dict(manifest["record"])
+        record = self._record_from_manifest(manifest)
         if record.key != key:
             raise JobRecordIntegrityError(
                 f"Manifest identity mismatch: expected {key!r}, got {record.key!r}"
@@ -354,11 +411,39 @@ class JDRecordRepository:
     def _load_manifest(self, record_dir: Path) -> dict[str, Any]:
         manifest_path = self._manifest_path(record_dir)
         try:
-            return json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text())
         except FileNotFoundError as exc:
             raise JobRecordIntegrityError(f"Manifest not found for {record_dir}") from exc
         except json.JSONDecodeError as exc:
             raise JobRecordIntegrityError(f"Invalid manifest: {exc.msg}") from exc
+        if not isinstance(manifest, dict):
+            raise JobRecordIntegrityError("Invalid manifest: manifest root must be an object")
+        return manifest
+
+    def _record_from_manifest(self, manifest: dict[str, Any]) -> JobRecord:
+        try:
+            raw_record = manifest["record"]
+        except KeyError as exc:
+            raise JobRecordIntegrityError("Invalid manifest: missing record") from exc
+        if not isinstance(raw_record, dict):
+            raise JobRecordIntegrityError("Invalid manifest: record must be an object")
+
+        outer_version = self._manifest_schema_version(manifest.get("schema_version"))
+        inner_version = self._manifest_schema_version(raw_record.get("schema_version"))
+        if outer_version != inner_version:
+            raise JobRecordIntegrityError("Invalid manifest: manifest schema_version mismatch")
+
+        try:
+            return JobRecord.from_dict(raw_record)
+        except ValueError as exc:
+            raise JobRecordIntegrityError(f"Invalid manifest record: {exc}") from exc
+
+    def _manifest_schema_version(self, value: Any) -> int:
+        if type(value) is not int:
+            raise JobRecordIntegrityError("Invalid manifest: schema_version must be an integer")
+        if value not in {1, SCHEMA_VERSION}:
+            raise JobRecordIntegrityError("Invalid manifest: unsupported manifest schema_version")
+        return value
 
     def _load_manifest_content(self, record_dir: Path) -> _ManifestContent:
         return self._parse_manifest_content(self._load_manifest(record_dir))

@@ -41,6 +41,20 @@
       <button id="back-to-results" type="button">검색 결과로 돌아가기</button>
       <h2 id="detail-heading" tabindex="-1">상세</h2>
       <div id="detail-meta"></div>
+      <form id="application-status-form" class="application-status-form">
+        <label for="application-status-input">지원 상태</label>
+        <select id="application-status-input" name="application_status"><option value="pending">대기</option><option value="applied">지원</option><option value="interview">면접</option><option value="offer">오퍼</option><option value="rejected">탈락</option></select>
+        <label for="application-occurred-at-input">발생 시각</label>
+        <input id="application-occurred-at-input" name="occurred_at" type="text" inputmode="text" placeholder="예: 2026-08-10T09:30:00+09:00">
+        <label for="application-note-input">메모</label>
+        <textarea id="application-note-input" name="note" rows="3" maxlength="2000" placeholder="선택 사항"></textarea>
+        <div class="application-status-actions">
+          <button type="submit">상태 저장</button>
+        </div>
+        <p id="application-form-status" tabindex="-1" aria-live="polite"></p>
+      </form>
+      <h3>지원 이력</h3>
+      <ol id="application-history" class="application-history"></ol>
       <h3>JD 원문</h3><pre id="jd-content"></pre>
       <h3>스크리닝 결과</h3><pre id="screening-content"></pre>
     </section>

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import os
 from pathlib import Path
 import sqlite3
 import tempfile
+from typing import Iterator
 
 from ...domain.model import ApplicationStatus, PostingStatus, ScreeningVerdict
 from .file_records import JDRecordRepository, JobRecordRepositoryError
@@ -97,63 +100,64 @@ class JDSearchIndex:
     def rebuild(self) -> IndexRebuildReport:
         """Build a complete temporary database and publish it only when valid."""
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=f".{self.database_path.name}.",
-            suffix=".tmp",
-            dir=self.database_path.parent,
-        )
-        os.close(descriptor)
-        temp_path = Path(temp_name)
-        errors: list[IndexRebuildError] = []
-        indexed_count = 0
+        with self._locked_rebuild():
+            descriptor, temp_name = tempfile.mkstemp(
+                prefix=f".{self.database_path.name}.",
+                suffix=".tmp",
+                dir=self.database_path.parent,
+            )
+            os.close(descriptor)
+            temp_path = Path(temp_name)
+            errors: list[IndexRebuildError] = []
+            indexed_count = 0
 
-        try:
-            with sqlite3.connect(temp_path) as connection:
-                connection.executescript(_SCHEMA)
-                for key in self.repository.iter_keys():
-                    try:
-                        stored = self.repository.validate_integrity(key)
-                    except (JobRecordRepositoryError, OSError, UnicodeError, ValueError) as exc:
-                        errors.append(
-                            IndexRebuildError(
-                                platform=key.platform,
-                                job_id=key.job_id,
-                                message=str(exc),
+            try:
+                with sqlite3.connect(temp_path) as connection:
+                    connection.executescript(_SCHEMA)
+                    for key in self.repository.iter_keys():
+                        try:
+                            stored = self.repository.validate_integrity(key)
+                        except (JobRecordRepositoryError, OSError, UnicodeError, ValueError) as exc:
+                            errors.append(
+                                IndexRebuildError(
+                                    platform=key.platform,
+                                    job_id=key.job_id,
+                                    message=str(exc),
+                                )
                             )
-                        )
-                        continue
+                            continue
 
-                    record = stored.record
-                    connection.execute(
-                        _INSERT,
-                        (
-                            record.platform,
-                            record.job_id,
-                            record.company,
-                            record.position,
-                            record.source_url,
+                        record = stored.record
+                        connection.execute(
+                            _INSERT,
                             (
-                                record.screening_verdict.value
-                                if record.screening_verdict is not None
-                                else None
+                                record.platform,
+                                record.job_id,
+                                record.company,
+                                record.position,
+                                record.source_url,
+                                (
+                                    record.screening_verdict.value
+                                    if record.screening_verdict is not None
+                                    else None
+                                ),
+                                record.application_status.value,
+                                record.posting_status.value,
+                                record.application_status_updated_at,
+                                int(stored.has_screening),
                             ),
-                            record.application_status.value,
-                            record.posting_status.value,
-                            record.application_status_updated_at,
-                            int(stored.has_screening),
-                        ),
-                    )
-                    indexed_count += 1
+                        )
+                        indexed_count += 1
 
-            if errors:
-                return IndexRebuildReport(success=False, indexed_count=0, errors=tuple(errors))
+                if errors:
+                    return IndexRebuildReport(success=False, indexed_count=0, errors=tuple(errors))
 
-            self._fsync_file(temp_path)
-            temp_path.replace(self.database_path)
-            self._fsync_directory(self.database_path.parent)
-            return IndexRebuildReport(success=True, indexed_count=indexed_count)
-        finally:
-            temp_path.unlink(missing_ok=True)
+                self._fsync_file(temp_path)
+                temp_path.replace(self.database_path)
+                self._fsync_directory(self.database_path.parent)
+                return IndexRebuildReport(success=True, indexed_count=indexed_count)
+            finally:
+                temp_path.unlink(missing_ok=True)
 
     def search(
         self,
@@ -233,6 +237,20 @@ class JDSearchIndex:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+    def _lock_path(self) -> Path:
+        return self.database_path.with_name(f".{self.database_path.name}.lock")
+
+    @contextmanager
+    def _locked_rebuild(self) -> Iterator[None]:
+        lock_path = self._lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _enum_value(value: ScreeningVerdict | ApplicationStatus | PostingStatus | str) -> str:

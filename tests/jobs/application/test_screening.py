@@ -238,6 +238,18 @@ def test_invalid_first_response_gets_contract_specific_retry(tmp_path: Path) -> 
     assert '"id": "required-001"' in provider.prompts[1]
 
 
+def test_screening_result_constructor_keeps_fallback_reason_optional() -> None:
+    result = run_screening.__globals__["ScreeningResult"](
+        verdict="지원 보류",
+        screening_path=Path("wanted/1/screening.md"),
+        provider="fallback",
+        used_fallback=True,
+        raw_output="raw",
+    )
+
+    assert result.fallback_reason is None
+
+
 def test_invalid_retry_publishes_fallback_hold_without_raw_json(tmp_path: Path) -> None:
     workspace, repository, stored = _create_record(tmp_path)
     provider = SequenceProvider(["{}", "{}"])
@@ -261,33 +273,27 @@ def test_invalid_retry_publishes_fallback_hold_without_raw_json(tmp_path: Path) 
     assert "원시 실행 로그를 저장하지 않고" in persisted.screening_markdown
 
 
-def test_prose_only_qualifications_publish_hold(tmp_path: Path) -> None:
+def test_prose_only_qualifications_fail_before_provider_and_repository_mutation(tmp_path: Path) -> None:
     """Covers S3."""
     workspace, repository, stored = _create_record(tmp_path, jd_markdown=AMBIGUOUS_JD)
-    manifest = extract_requirement_manifest(stored.jd_markdown)
-    result = run_screening(
-        workspace=workspace,
-        jd=stored,
-        company_file=None,
-        dry_run=False,
-        llm_provider=SequenceProvider(
-            [
-                _assessment_json(
-                    without_main_duty(manifest),
-                    verdict="지원 추천",
-                    summary=["서술형 자격요건이라 보수적으로 본다"],
-                )
-            ]
-        ),
-        repository=repository,
-        candidate_context="[source: private/profile/skills-job.md] 데이터 파이프라인 운영",
-    )
+    provider = SequenceProvider(["{}"])
 
+    with pytest.raises(ValueError, match="screening-no-assessable-requirements"):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            dry_run=False,
+            llm_provider=provider,
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] 데이터 파이프라인 운영",
+        )
+
+    assert provider.calls == 0
     persisted = repository.get(JobKey("wanted", "100002"))
-    assert result.verdict == "지원 보류"
-    assert persisted.record.screening_verdict is ScreeningVerdict.HOLD
-    assert persisted.screening_markdown is not None
-    assert set(parse_verdict_candidates(persisted.screening_markdown)) == {"지원 보류"}
+    assert persisted.screening_markdown is None
+    assert persisted.record.screening_verdict is None
+    assert persisted.record.screening_provider is None
 
 
 def test_non_required_only_decision_basis_publishes_hold(tmp_path: Path) -> None:
@@ -544,6 +550,137 @@ def test_company_risk_summary_uses_computed_validator_flags(tmp_path: Path) -> N
     assert "완성도" in summary
 
 
+def test_main_duty_only_manifest_fails_before_provider_and_repository_mutation(tmp_path: Path) -> None:
+    jd_markdown = """# Main Duty Only Role
+
+## 주요 업무
+- 결제 서비스 운영
+"""
+    workspace, repository, stored = _create_record(tmp_path, jd_markdown=jd_markdown)
+    provider = SequenceProvider(["{}"])
+
+    with pytest.raises(ValueError, match="screening-no-assessable-requirements"):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            dry_run=False,
+            llm_provider=provider,
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] 결제 서비스 운영",
+        )
+
+    assert provider.calls == 0
+    assert repository.get(JobKey("wanted", "100002")).screening_markdown is None
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_reason"),
+    [
+        (lambda doc: doc.replace("| 생성 방식 | 자동 fallback |", "| 생성 방식 | 수동 fallback |"), "구조 검증 실패"),
+        (lambda doc: doc.replace("## 스크리닝 결과\n\nLLM", "## 핵심 근거\n\n- 먼저 씀\n\n## 스크리닝 결과\n\nLLM", 1), "구조 검증 실패"),
+        (lambda doc: doc.replace("| 항목 | 판단 |", "| 항목 | 근거 |"), "구조 검증 실패"),
+        (lambda doc: doc.replace("| JD 필수요건 대조 | 수동 재스크리닝 필요. |", "| JD 필수요건 대조 | 수동 재스크리닝 필요. |\n| 추가 행 | 위조 |"), "구조 검증 실패"),
+        (lambda doc: doc.replace("| 항목 | 판단 |\n|------|------|", "| 요건 | 구분 | 대조 | 근거 |\n|------|------|------|------|", 1), "구조 검증 실패"),
+        (lambda doc: doc.replace("### 최종 판정: 지원 보류", "### 최종 판정: 지원 추천"), "구조 검증 실패"),
+    ],
+)
+def test_forged_fallback_document_is_rejected_before_publication(tmp_path: Path, monkeypatch, mutate, expected_reason: str) -> None:
+    from careerkit.jobs.application import screening as screening_module
+
+    workspace, repository, stored = _create_record(tmp_path)
+    original = screening_module.build_fallback_output
+
+    def forged(*args, **kwargs):
+        return mutate(original(*args, **kwargs))
+
+    monkeypatch.setattr(screening_module, "build_fallback_output", forged)
+
+    with pytest.raises(RuntimeError, match=expected_reason):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            dry_run=False,
+            llm_provider=SequenceProvider(["{}", "{}"]),
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka",
+        )
+
+    assert repository.get(JobKey("wanted", "100002")).screening_markdown is None
+    assert repository.get_metadata(JobKey("wanted", "100002")).record.screening_provider is None
+
+
+def test_two_invalid_assessments_publish_fallback_with_contract_exhausted_reason(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+
+    result = run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        dry_run=False,
+        llm_provider=SequenceProvider(["{}", "{}"], provider_name="codex"),
+        repository=repository,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka",
+    )
+
+    persisted = repository.get(JobKey("wanted", "100002"))
+    assert result.provider == "fallback"
+    assert result.fallback_reason == "assessment-contract-exhausted"
+    assert persisted.record.screening_provider == "fallback"
+
+
+def test_invalid_assessment_then_provider_exhaustion_publish_fallback_with_provider_exhausted_reason(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+
+    class RetryFailProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, prompt: str, timeout: int, local_timeout: int | None = None) -> tuple[str, str]:
+            self.calls += 1
+            if self.calls == 1:
+                return "codex", "{}"
+            raise RuntimeError("second attempt failed")
+
+    provider = RetryFailProvider()
+    result = run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        dry_run=False,
+        llm_provider=provider,
+        repository=repository,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka",
+    )
+
+    persisted = repository.get(JobKey("wanted", "100002"))
+    assert provider.calls == 2
+    assert result.provider == "fallback"
+    assert result.fallback_reason == "provider-exhausted"
+    assert persisted.record.screening_provider == "fallback"
+
+
+def test_fallback_dry_run_reports_run_local_uncapped_state(tmp_path: Path) -> None:
+    workspace, repository, _ = _publish_initial_screening(tmp_path, provider_name="ollama", job_id="371154")
+    key = JobKey("wanted", "371154")
+    before = repository.get(key).screening_markdown
+
+    result = run_screening(
+        workspace=workspace,
+        jd=repository.get(key),
+        company_file=None,
+        dry_run=True,
+        llm_provider=FailingProvider(),
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot",
+    )
+
+    assert result.used_fallback is True
+    assert result.verdict_capped is False
+    assert repository.get_metadata(key).record.verdict_capped is True
+    assert repository.get(key).screening_markdown == before
+
+
 def test_screening_fallback_redacts_error_into_safe_hold_document(tmp_path: Path) -> None:
     workspace, repository, stored = _create_record(tmp_path)
     result = run_screening(
@@ -582,6 +719,46 @@ def test_structure_validation_accepts_the_fallback_document() -> None:
     assert validate_screening_structure(document) == (True, "")
 
 
+@pytest.mark.parametrize(
+    ("jd_markdown", "reason"),
+    [
+        ("# JD\n", "command A | command B"),
+        (
+            "---\ncompany: Company A | Company B\nposition: Platform | Backend\n---\n출처: [link](https://example.com/a|b)\n# JD\n",
+            "command A | command B",
+        ),
+    ],
+)
+def test_build_fallback_output_with_dynamic_pipe_cells_round_trips_cleanly(
+    tmp_path: Path,
+    jd_markdown: str,
+    reason: str,
+) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    stored = repository.create(
+        JobRecord(
+            platform="wanted",
+            job_id="77",
+            company="Example",
+            position="Backend Engineer",
+            screening_verdict=ScreeningVerdict.HOLD,
+        ),
+        jd_markdown=jd_markdown,
+    )
+    document = build_fallback_output(stored, stored.jd_markdown, reason)
+    repository.update_screening_result(
+        stored.record.key,
+        screening_markdown=document,
+        screening_provider="fallback",
+    )
+
+    assert is_fallback_document(document) is True
+    assert validate_screening_structure(document) == (True, "")
+
+    findings = __import__("careerkit.jobs.application.screening_lint", fromlist=["screening_lint"]).lint_record(stored.record.key, repository)
+    assert findings == []
+
+
 def test_build_fallback_output_is_recognised_by_is_fallback_document() -> None:
     """Round-trip: the writer and the selector must agree."""
     from careerkit.jobs.adapters.storage.file_records import StoredJobRecord
@@ -597,6 +774,104 @@ def test_build_fallback_output_is_recognised_by_is_fallback_document() -> None:
     )
 
     assert is_fallback_document(document) is True
+
+
+def test_fallback_document_with_conversational_reason_still_validates_and_publishes(
+    tmp_path: Path,
+) -> None:
+    _, repository, stored = _create_record(tmp_path)
+    document = build_fallback_output(stored, stored.jd_markdown, "승인 대기 중 upstream timeout")
+
+    assert validate_screening_structure(document) == (True, "")
+    assert is_fallback_document(document) is True
+
+    repository.update_screening_result(
+        stored.record.key,
+        screening_markdown=document,
+        screening_provider="fallback",
+    )
+
+    persisted = repository.get(stored.record.key)
+    assert persisted.screening_markdown == document
+
+
+def test_conversational_pattern_still_rejects_normal_provider_output() -> None:
+    document = """## 기본 정보
+
+| 항목 | 내용 |
+|------|------|
+| 회사명 | RealCo |
+| 포지션 | Backend |
+
+## 스크리닝 결과
+
+승인 대기 중
+
+## 이력/경험 매칭
+
+| 요건 | 구분 | 대조 | 근거 |
+|------|------|------|------|
+| Python 3년 | 필수 | 충족 | 이력서 명시 |
+
+## 최종 판정
+
+### 최종 판정: 지원 추천
+
+## 핵심 근거
+
+- 요건 충족.
+"""
+
+    assert validate_screening_structure(document) == (False, "대화형 패턴 탐지: '승인 대기 중'")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "label"),
+    [
+        (lambda doc: doc.replace("| 회사명 | 확인 필요 |", "| 회사명 |  |"), "blank dynamic cell"),
+        (lambda doc: doc.replace("| 회사명 | 확인 필요 |", "| 회사명 | 확인 | 필요 |"), "extra basic-info column"),
+        (lambda doc: doc.replace("- 실패 사유: timeout after 120s", "- 실패 사유: timeout | after 120s"), "unescaped separator"),
+    ],
+)
+def test_is_fallback_document_rejects_forged_dynamic_cells(mutate, label: str) -> None:
+    document = build_fallback_output(
+        repository_record_stub(),
+        repository_record_stub().jd_markdown,
+        "timeout after 120s",
+    )
+
+    assert is_fallback_document(mutate(document)) is False, label
+
+
+
+def test_normal_four_column_screening_with_generic_generation_phrase_remains_valid() -> None:
+    document = """## 기본 정보
+
+| 항목 | 내용 |
+|------|------|
+| 회사명 | RealCo |
+| 포지션 | Backend |
+
+## 스크리닝 결과
+
+- 생성 방식 설명은 일반 본문이다
+
+## 이력/경험 매칭
+
+| 요건 | 구분 | 대조 | 근거 |
+|------|------|------|------|
+| Python 3년 | 필수 | 충족 | 이력서 명시 |
+
+## 최종 판정
+
+### 최종 판정: 지원 추천
+
+## 핵심 근거
+
+- 요건 충족.
+"""
+
+    assert validate_screening_structure(document) == (True, "")
 
 
 def test_is_fallback_document_rejects_real_screening() -> None:
@@ -655,7 +930,7 @@ def test_a_marker_row_alone_does_not_buy_the_fallback_exemption() -> None:
 - 두 번째 근거 문장이다.
 """
 
-    assert validate_screening_structure(forged) == (False, "매칭 표 밖 내용: 없음")
+    assert validate_screening_structure(forged) == (False, "fallback 문서 계약 위반")
 
 
 def repository_record_stub():
@@ -716,6 +991,29 @@ def test_local_provider_publication_is_withheld_when_a_strong_provider_is_requir
 
     assert result.published is False
     assert repository.get(JobKey("wanted", "100003")).screening_markdown == original
+
+
+def test_ambiguous_manifest_with_one_assessable_leaf_preserves_hold_without_cap(tmp_path: Path) -> None:
+    jd_markdown = """# Mixed Ambiguous Role
+
+## 자격 요건
+협업 태도와 문제 해결 의지를 중요하게 본다.
+- 데이터 파이프라인 운영
+"""
+    workspace, _, stored = _create_record(tmp_path, jd_markdown=jd_markdown)
+    manifest = extract_requirement_manifest(stored.jd_markdown)
+
+    result = run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        dry_run=True,
+        llm_provider=SequenceProvider([_assessment_json(without_main_duty(manifest), verdict="지원 추천")], provider_name="codex"),
+        candidate_context="[source: private/profile/skills-job.md] 데이터 파이프라인 운영",
+    )
+
+    assert result.verdict == "지원 보류"
+    assert result.verdict_capped is False
 
 
 def test_fallback_publication_preserves_an_existing_cap(tmp_path: Path) -> None:
