@@ -43,7 +43,7 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # reason: `postgresql`, `linux`, `oracle`, `react` and `elasticsearch` each drive a
 # live demotion in this corpus and each is deliberately absent from the set.
 #
-# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 17 connective
+# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 15 connective
 # tokens below, after a Korean résumé was found to have none of the English
 # category nouns an English-language requirement is written from, so every such
 # row lost its 충족 claim:
@@ -66,11 +66,26 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # full of it. The second failure is measured here, the first is not, so the trade
 # is made that way and revisited if a real case appears.
 #
-# Known gap, predating this change and left alone: `http`, `https`, `tcp`, `udp`,
-# `rest`, `restful`, `b2b`, `b2c`, `b2b2c`, `saas`, `sql` and `api` fail the same
-# test — a requirement can be about HTTP or about B2B. Removing them raises strict
-# detections from 73 to 79 on this corpus, so revisiting them is its own
-# measurement and its own change, not an argument by analogy from this one.
+# `http`, `https`, `tcp`, `udp`, `rest`, `restful`, `b2b`, `b2c`, `b2b2c`, `saas`,
+# `sql` and `api` read like the same gap — a requirement can be about HTTP or
+# about B2B — and an earlier revision of this comment called removing them a
+# worthwhile separate change on the grounds that it raises strict detections from
+# 73 to 79. That reasoning was wrong, and the measurement it invited says do not:
+#
+#   metric              keep   remove 12
+#   strict                73          82
+#   rows demoted           1           7
+#
+# strict only counts warnings; a row is demoted when EVERY token is absent. All
+# six newly demoted rows were inspected and all six are false, each the same
+# hypernym gap `database` has — `HTTP와 관계형 데이터베이스 구조 이해` evidenced by
+# REST and GraphQL API design, `웹 기반 SaaS 백엔드` by FastAPI and Spring Boot
+# services, `B2C 서비스 백엔드` by consumer social apps. One of those rows names
+# B2C in its own evidence cell and still demotes, because the keyword check reads
+# the requirement cell alone. Per token: `http` +3 demotions, `b2c` +3, `saas` +2,
+# `b2b` +1; the other eight move nothing on this corpus, so removing them buys
+# nothing here either. Do not raise strict as an improvement without checking what
+# it demotes.
 GENERIC_TOKENS = frozenset(
     {
         "jd", "rdbms", "rdb", "nosql", "dbms", "database", "databases",

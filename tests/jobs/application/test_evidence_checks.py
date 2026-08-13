@@ -322,6 +322,13 @@ def test_generic_only_requirement_is_not_demoted():
         "복잡한 Backend System을 직접 설계하고 Production 환경에서 운영",
         "SQL Database 이해와 실무 경험",
         "Legacy 코드 분석을 통한 리팩토링",
+        # Measured false demotions if the pre-existing http/saas/b2c entries were
+        # dropped: each requirement names a hypernym the résumé evidences only
+        # through hyponyms — REST and GraphQL for HTTP, FastAPI services for SaaS,
+        # consumer social apps for B2C.
+        "HTTP와 관계형 데이터베이스 구조 및 쿼리 최적화에 대한 깊은 이해",
+        "웹 기반 SaaS 백엔드 설계 및 개발",
+        "B2C 서비스 백엔드 실무 개발·운영·유지보수 경험이 있으신 분",
     ],
 )
 def test_connective_english_requirement_is_not_demoted(requirement: str):
