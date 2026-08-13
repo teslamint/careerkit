@@ -343,6 +343,7 @@ def test_connective_english_requirement_is_not_demoted(requirement: str):
         "TDD를 적용해보셨거나 대규모 리팩토링을 주도해보신 분",
         "Machine Learning 제품 사용 등 관련 경험",
         "IoT·디바이스 연동 등 서버 밖의 기기와 통신해 본 경험",
+        "JSON 통신 구조 이해",
     ],
 )
 def test_absent_verifiable_claim_is_still_demoted(requirement: str):

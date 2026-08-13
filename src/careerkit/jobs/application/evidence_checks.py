@@ -43,22 +43,24 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # reason: `postgresql`, `linux`, `oracle`, `react` and `elasticsearch` each drive a
 # live demotion in this corpus and each is deliberately absent from the set.
 #
-# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 20 connective
+# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 19 connective
 # tokens below, after a Korean résumé was found to have none of the English
 # category nouns an English-language requirement is written from, so every such
 # row lost its 충족 claim:
-#   contradiction rows (없음 + positive evidence)  52 → 40
+#   contradiction rows (없음 + positive evidence)  52 → 41
 #   unevidenced_keyword_strict over 충족 rows      76 → 73  (5.22% → 5.01%)
 # Not every contradiction row was a false demotion: some were the guard correctly
 # catching an overreaching claim, which is why `tdd`, `iot`, `apm`, `agile`,
-# `sdlc`, `machine`, `learning`, `agent` and `premise` stay out (PR #7 review).
+# `sdlc`, `machine`, `learning`, `agent`, `premise` and `json` stay out (PR #7
+# review). Note the older `http`, `rest` and `restful` entries fail the same test
+# and predate this change; revisiting them is its own measurement.
 GENERIC_TOKENS = frozenset(
     {
         "jd", "rdbms", "rdb", "nosql", "dbms", "database", "databases",
         "oop", "mvc", "sql", "api", "apis", "orm",
         "years", "architecture", "backend", "frontend", "web", "server", "cloud",
         "devops", "infra", "microservice", "microservices", "msa", "rest", "restful",
-        "http", "https", "tcp", "udp", "json", "ci", "cd",
+        "http", "https", "tcp", "udp", "ci", "cd",
         "llm", "ai", "ml", "db", "ux", "ui",
         "saas", "b2b", "b2c", "b2b2c", "b2g", "o2o", "poc", "kpi", "qa",
         "pm", "cto",
