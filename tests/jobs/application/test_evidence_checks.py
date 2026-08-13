@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from careerkit.jobs.adapters.storage.file_records import StoredJobRecord
+from careerkit.jobs.application import evidence_checks
 from careerkit.jobs.application.evidence_checks import (
+    GENERIC_TOKENS,
     EvidenceReport,
     apply_demotions,
     check_rows,
@@ -264,16 +266,19 @@ def test_extract_tokens_returns_empty_for_korean_only_requirement():
     assert extract_tokens("대용량 트래픽 처리 경험") == set()
 
 
-def _report(*rows: str, root: Path | None = None) -> tuple[EvidenceReport, list]:
+def _report(
+    *rows: str, root: Path | None = None, corpus: str | None = None
+) -> tuple[EvidenceReport, list]:
     markdown = table(*rows)
     parsed, error = parse_match_table(markdown)
     assert error == ""
+    body = CORPUS if corpus is None else corpus
     report = check_rows(
         parsed,
-        corpus=CORPUS,
+        corpus=body,
         root=root or Path("/nonexistent-root"),
-        declared=corpus_source_paths(CORPUS),
-        basenames=corpus_basenames(CORPUS),
+        declared=corpus_source_paths(body),
+        basenames=corpus_basenames(body),
     )
     return report, parsed
 
@@ -318,16 +323,51 @@ def test_generic_only_requirement_is_not_demoted():
 @pytest.mark.parametrize(
     "requirement",
     [
-        "Software Engineering 경력 6년 이상",
-        "복잡한 Backend System을 직접 설계하고 Production 환경에서 운영",
-        "SQL Database 이해와 실무 경험",
-        "Legacy 코드 분석을 통한 리팩토링",
+        "Software Engineering 경력 5년 이상",
+        "System을 Production 환경에서 운영한 경험",
+        "Database 설계 이해",
+        "Legacy 코드 정리 경험",
     ],
 )
 def test_connective_english_requirement_is_not_demoted(requirement: str):
     report, _ = _report(f"| {requirement} | 필수 | 충족 | 다수 경험 |")
     assert report.demoted_indices == ()
     assert report.unevidenced_keyword == 0
+
+
+# A résumé can evidence a category through its members and never write the
+# category down: REST and GraphQL for HTTP, a hosted product for SaaS, consumer
+# apps for B2C. The check compares literal tokens, so dropping the hypernym from
+# the set demotes a row the résumé does support. Both halves are asserted — with
+# the token listed the row survives, without it the same row and corpus lose the
+# claim — so the entry cannot be removed on a strict count alone.
+HYPERNYM_CORPUS = """[source: private/profile/skills-job.md]
+FastAPI와 Spring Boot로 REST 및 GraphQL API를 설계하고 운영했다.
+구독형 제품과 일반 소비자용 소셜 앱 백엔드를 함께 담당했다.
+"""
+
+
+@pytest.mark.parametrize(
+    ("token", "requirement"),
+    [
+        ("http", "HTTP 통신 구조 이해"),
+        ("saas", "SaaS 제품 백엔드 개발"),
+        ("b2c", "B2C 서비스 운영 경험"),
+    ],
+)
+def test_hypernym_token_would_falsely_demote_if_removed(
+    monkeypatch: pytest.MonkeyPatch, token: str, requirement: str
+):
+    row = f"| {requirement} | 필수 | 충족 | 다수 경험 |"
+
+    kept, _ = _report(row, corpus=HYPERNYM_CORPUS)
+    assert kept.demoted_indices == ()
+
+    monkeypatch.setattr(
+        evidence_checks, "GENERIC_TOKENS", frozenset(GENERIC_TOKENS - {token})
+    )
+    dropped, _ = _report(row, corpus=HYPERNYM_CORPUS)
+    assert dropped.demoted_indices == (0,)
 
 
 # The counterpart, and the test that fails if the generic set grows too far: when
@@ -340,9 +380,9 @@ def test_connective_english_requirement_is_not_demoted(requirement: str):
         "PostgreSQL 기반 시스템 구축",
         "Oracle 마이그레이션 경험",
         "Elasticsearch 운영",
-        "TDD를 적용해보셨거나 대규모 리팩토링을 주도해보신 분",
-        "Machine Learning 제품 사용 등 관련 경험",
-        "IoT·디바이스 연동 등 서버 밖의 기기와 통신해 본 경험",
+        "TDD 실천 경험",
+        "Machine Learning 모델 운영 경험",
+        "IoT 디바이스 연동 경험",
         "JSON 통신 구조 이해",
         "B2G 서비스 구축 경험",
         "O2O 서비스 경험",
