@@ -29,18 +29,62 @@ CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 # A citation may carry a line reference or an anchor: `path.md:12`, `path.md#절`.
 CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 
-# Category and prose tokens that name no product. Their absence from the résumé
-# says nothing about whether the requirement is met — measured on the existing
-# corpus, keeping them raises false demotions from 2 documents to 5.
+# Tokens whose ABSENCE from the résumé carries no information about the
+# requirement. A row whose every token is listed here has an empty token set, so
+# check_rows skips it — the row is not verifiable by keyword, not verified and
+# passed. Membership therefore means "this word cannot decide the requirement",
+# never "this word is common".
+#
+# The test is what the requirement is ABOUT. "Software Engineering 경력 6년 이상"
+# is about years of experience; software and engineering are connective tissue and
+# their absence proves nothing. "TDD 경험" is about TDD itself, so an absent `tdd`
+# is exactly the signal the guard reads — listing it would let an unsupported 충족
+# reach 지원 추천 unchecked. Product and platform names fail the test for the same
+# reason: `postgresql`, `linux`, `oracle`, `react` and `elasticsearch` each drive a
+# live demotion in this corpus and each is deliberately absent from the set.
+#
+# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 17 connective
+# tokens below, after a Korean résumé was found to have none of the English
+# category nouns an English-language requirement is written from, so every such
+# row lost its 충족 claim:
+#   contradiction rows (없음 + positive evidence)  52 → 43
+#   unevidenced_keyword_strict over 충족 rows      76 → 73  (5.22% → 5.01%)
+# Not every contradiction row was a false demotion: some were the guard correctly
+# catching an overreaching claim, which is why `tdd`, `iot`, `apm`, `agile`,
+# `sdlc`, `machine`, `learning`, `agent`, `premise`, `json`, `b2g`, `o2o`,
+# `migration` and `deprecation` stay out (PR #7 review). `Legacy system migration
+# 경험` and `API deprecation 경험` are requirements about the migration and the
+# deprecation, so those two words can be a subject and not connective tissue.
+#
+# `database`, `databases` and `dbms` are the deliberate exception, and the reason
+# is a limit of token matching rather than a claim that they are connective. The
+# check compares literal tokens, so it cannot connect a requirement's hypernym to
+# the hyponyms a résumé actually names — this corpus evidences MySQL, MariaDB,
+# Redis, JPA and QueryDSL, and the word "database" appears nowhere. Keeping them
+# skips an unsupported claim on a résumé with no database experience at all;
+# removing them demotes `SQL Database에 대한 충분한 이해와 실무 경험` on a résumé
+# full of it. The second failure is measured here, the first is not, so the trade
+# is made that way and revisited if a real case appears.
+#
+# Known gap, predating this change and left alone: `http`, `https`, `tcp`, `udp`,
+# `rest`, `restful`, `b2b`, `b2c`, `b2b2c`, `saas`, `sql` and `api` fail the same
+# test — a requirement can be about HTTP or about B2B. Removing them raises strict
+# detections from 73 to 79 on this corpus, so revisiting them is its own
+# measurement and its own change, not an argument by analogy from this one.
 GENERIC_TOKENS = frozenset(
     {
-        "jd", "rdbms", "rdb", "nosql", "oop", "sql", "api", "apis", "orm", "mvc",
+        "jd", "rdbms", "rdb", "nosql", "dbms", "database", "databases",
+        "oop", "mvc", "sql", "api", "apis", "orm",
         "years", "architecture", "backend", "frontend", "web", "server", "cloud",
         "devops", "infra", "microservice", "microservices", "msa", "rest", "restful",
-        "http", "https", "tcp", "udp", "ci", "cd", "llm", "ai", "ml", "db", "ux", "ui",
-        "saas", "b2b", "b2c", "b2b2c", "poc", "kpi", "qa", "pm", "cto",
+        "http", "https", "tcp", "udp", "ci", "cd",
+        "llm", "ai", "ml", "db", "ux", "ui",
+        "saas", "b2b", "b2c", "b2b2c", "poc", "kpi", "qa",
+        "pm", "cto",
+        "software", "engineering", "system", "systems", "production", "technical",
+        "tool", "tools", "legacy",
         "and", "the", "for", "with", "based", "level", "senior", "junior", "lead",
-        "plus", "etc",
+        "plus", "etc", "first", "measure", "challenging",
     }
 )
 
