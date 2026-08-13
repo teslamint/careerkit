@@ -35,7 +35,7 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # passed. Membership therefore means "this word cannot decide the requirement",
 # never "this word is common".
 #
-# The test is what the requirement is ABOUT. "Software Engineering 경력 6년 이상"
+# The test is what the requirement is ABOUT. "Software Engineering 경력 5년 이상"
 # is about years of experience; software and engineering are connective tissue and
 # their absence proves nothing. "TDD 경험" is about TDD itself, so an absent `tdd`
 # is exactly the signal the guard reads — listing it would let an unsupported 충족
@@ -62,8 +62,8 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # the hyponyms a résumé actually names — this corpus evidences MySQL, MariaDB,
 # Redis, JPA and QueryDSL, and the word "database" appears nowhere. Keeping them
 # skips an unsupported claim on a résumé with no database experience at all;
-# removing them demotes `SQL Database에 대한 충분한 이해와 실무 경험` on a résumé
-# full of it. The second failure is measured here, the first is not, so the trade
+# removing them demotes a requirement naming a database in the abstract on a
+# résumé full of them. The second failure is measured here, the first is not, so the trade
 # is made that way and revisited if a real case appears.
 #
 # `http`, `https`, `tcp`, `udp`, `rest`, `restful`, `b2b`, `b2c`, `b2b2c`, `saas`,
@@ -78,11 +78,11 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 #
 # strict only counts warnings; a row is demoted when EVERY token is absent. All
 # six newly demoted rows were inspected and all six are false, each the same
-# hypernym gap `database` has — `HTTP와 관계형 데이터베이스 구조 이해` evidenced by
-# REST and GraphQL API design, `웹 기반 SaaS 백엔드` by FastAPI and Spring Boot
-# services, `B2C 서비스 백엔드` by consumer social apps. One of those rows names
-# B2C in its own evidence cell and still demotes, because the keyword check reads
-# the requirement cell alone. Per token: `http` +3 demotions, `b2c` +3, `saas` +2,
+# hypernym gap `database` has: a requirement naming HTTP against a résumé that
+# evidences REST and GraphQL API design, one naming SaaS against FastAPI and
+# Spring Boot services, one naming B2C against consumer social apps. One of those
+# rows names B2C in its own evidence cell and still demotes, because the keyword
+# check reads the requirement cell alone. Per token: `http` +3 demotions, `b2c` +3, `saas` +2,
 # `b2b` +1; the other eight move nothing on this corpus, so removing them buys
 # nothing here either. Do not raise strict as an improvement without checking what
 # it demotes.
