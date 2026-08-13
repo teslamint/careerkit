@@ -43,17 +43,24 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # reason: `postgresql`, `linux`, `oracle`, `react` and `elasticsearch` each drive a
 # live demotion in this corpus and each is deliberately absent from the set.
 #
-# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 19 connective
+# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 17 connective
 # tokens below, after a Korean résumé was found to have none of the English
 # category nouns an English-language requirement is written from, so every such
 # row lost its 충족 claim:
-#   contradiction rows (없음 + positive evidence)  52 → 41
+#   contradiction rows (없음 + positive evidence)  52 → 43
 #   unevidenced_keyword_strict over 충족 rows      76 → 73  (5.22% → 5.01%)
 # Not every contradiction row was a false demotion: some were the guard correctly
 # catching an overreaching claim, which is why `tdd`, `iot`, `apm`, `agile`,
-# `sdlc`, `machine`, `learning`, `agent`, `premise` and `json` stay out (PR #7
-# review). Note the older `http`, `rest` and `restful` entries fail the same test
-# and predate this change; revisiting them is its own measurement.
+# `sdlc`, `machine`, `learning`, `agent`, `premise`, `json`, `b2g` and `o2o` stay
+# out (PR #7 review). Every token added here is connective: `legacy`, `migration`
+# and `deprecation` qualify some other subject and never name what a requirement
+# asks for on their own.
+#
+# Known gap, predating this change and left alone: `http`, `https`, `tcp`, `udp`,
+# `rest`, `restful`, `b2b`, `b2c`, `b2b2c` and `saas` fail the same test — a
+# requirement can be about HTTP or about B2B. Removing them raises strict
+# detections from 73 to 79 on this corpus, so revisiting them is its own
+# measurement and its own change, not an argument by analogy from this one.
 GENERIC_TOKENS = frozenset(
     {
         "jd", "rdbms", "rdb", "nosql", "dbms", "database", "databases",
@@ -62,7 +69,7 @@ GENERIC_TOKENS = frozenset(
         "devops", "infra", "microservice", "microservices", "msa", "rest", "restful",
         "http", "https", "tcp", "udp", "ci", "cd",
         "llm", "ai", "ml", "db", "ux", "ui",
-        "saas", "b2b", "b2c", "b2b2c", "b2g", "o2o", "poc", "kpi", "qa",
+        "saas", "b2b", "b2c", "b2b2c", "poc", "kpi", "qa",
         "pm", "cto",
         "software", "engineering", "system", "systems", "production", "technical",
         "tool", "tools", "legacy", "migration", "deprecation",
