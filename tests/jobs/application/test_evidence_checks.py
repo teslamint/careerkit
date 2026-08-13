@@ -311,6 +311,37 @@ def test_generic_only_requirement_is_not_demoted():
     assert report.unevidenced_keyword_strict == 0
 
 
+# A Korean résumé carries no English category nouns, so a requirement written
+# entirely in them used to have every token absent and lost its 충족 claim.
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "Software Engineering 경력 6년 이상",
+        "복잡한 Backend System을 직접 설계하고 Production 환경에서 운영",
+        "SQL Database 이해와 실무 경험",
+        "TDD를 적용해보셨거나 대규모 리팩토링을 주도해보신 분",
+        "Legacy 코드 분석을 통한 리팩토링",
+        "Machine Learning 제품 사용 등 관련 경험",
+    ],
+)
+def test_english_category_requirement_is_not_demoted(requirement: str):
+    report, _ = _report(f"| {requirement} | 필수 | 충족 | 다수 경험 |")
+    assert report.demoted_indices == ()
+    assert report.unevidenced_keyword == 0
+
+
+# The counterpart: a product name absent from the résumé still loses its claim,
+# so widening the generic set did not disarm the guard.
+@pytest.mark.parametrize(
+    "requirement",
+    ["PostgreSQL 기반 시스템 구축", "Oracle 마이그레이션 경험", "Elasticsearch 운영"],
+)
+def test_absent_product_name_is_still_demoted(requirement: str):
+    report, _ = _report(f"| {requirement} | 필수 | 충족 | 있다고 주장 |")
+    assert report.demoted_indices == (0,)
+    assert report.unevidenced_keyword == 1
+
+
 def test_code_rendered_row_with_fabricated_resume_citation_is_demoted(tmp_path: Path):
     jd_markdown = """# Backend Role
 

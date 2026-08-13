@@ -32,15 +32,32 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # Category and prose tokens that name no product. Their absence from the résumé
 # says nothing about whether the requirement is met — measured on the existing
 # corpus, keeping them raises false demotions from 2 documents to 5.
+#
+# A product or platform name stays OUT of this set: its absence IS the signal the
+# guard exists to read. `postgresql`, `linux`, `oracle`, `react`, `elasticsearch`
+# were each measured as a live demotion driver and each was deliberately kept.
+#
+# 2026-08-13 re-measurement (284 parsed documents, 1,463 충족 rows) added the 29
+# category tokens below, after a Korean résumé corpus was found to demote English
+# requirements whose only tokens were category nouns ("Software Engineering 경력
+# 6년 이상" → tokens {software, engineering}, both absent, row demoted to 없음):
+#   contradiction rows (없음 + positive evidence)  55 → 26
+#   unevidenced_keyword_strict over 충족 rows      73 → 69  (4.99% → 4.72%)
+# The guard loses 4 strict detections and recovers 29 false demotions.
 GENERIC_TOKENS = frozenset(
     {
-        "jd", "rdbms", "rdb", "nosql", "oop", "sql", "api", "apis", "orm", "mvc",
+        "jd", "rdbms", "rdb", "nosql", "dbms", "database", "databases",
+        "oop", "mvc", "tdd", "agile", "sdlc", "sql", "api", "apis", "orm",
         "years", "architecture", "backend", "frontend", "web", "server", "cloud",
         "devops", "infra", "microservice", "microservices", "msa", "rest", "restful",
-        "http", "https", "tcp", "udp", "ci", "cd", "llm", "ai", "ml", "db", "ux", "ui",
-        "saas", "b2b", "b2c", "b2b2c", "poc", "kpi", "qa", "pm", "cto",
+        "http", "https", "tcp", "udp", "json", "ci", "cd", "apm",
+        "llm", "ai", "ml", "machine", "learning", "agent", "db", "ux", "ui",
+        "saas", "iot", "b2b", "b2c", "b2b2c", "b2g", "o2o", "poc", "kpi", "qa",
+        "pm", "cto",
+        "software", "engineering", "system", "systems", "production", "technical",
+        "tool", "tools", "legacy", "migration", "deprecation", "premise",
         "and", "the", "for", "with", "based", "level", "senior", "junior", "lead",
-        "plus", "etc",
+        "plus", "etc", "first", "measure", "challenging",
     }
 )
 
