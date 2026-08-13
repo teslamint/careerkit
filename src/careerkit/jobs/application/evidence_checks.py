@@ -43,49 +43,37 @@ CITATION_SUFFIX_RE = re.compile(r"(?:#\S*|:L?\d+(?:-L?\d+)?)$")
 # reason: `postgresql`, `linux`, `oracle`, `react` and `elasticsearch` each drive a
 # live demotion in this corpus and each is deliberately absent from the set.
 #
-# 2026-08-13 (284 parsed documents, 1,456 충족 rows) added the 15 connective
-# tokens below, after a Korean résumé was found to have none of the English
-# category nouns an English-language requirement is written from, so every such
-# row lost its 충족 claim:
-#   contradiction rows (없음 + positive evidence)  52 → 43
-#   unevidenced_keyword_strict over 충족 rows      76 → 73  (5.22% → 5.01%)
-# Not every contradiction row was a false demotion: some were the guard correctly
-# catching an overreaching claim, which is why `tdd`, `iot`, `apm`, `agile`,
-# `sdlc`, `machine`, `learning`, `agent`, `premise`, `json`, `b2g`, `o2o`,
-# `migration` and `deprecation` stay out (PR #7 review). `Legacy system migration
-# 경험` and `API deprecation 경험` are requirements about the migration and the
-# deprecation, so those two words can be a subject and not connective tissue.
+# 2026-08-13 added the 15 connective tokens below, after a Korean résumé was
+# found to have none of the English category nouns an English-language
+# requirement is written from, so every such row lost its 충족 claim. Not every
+# such row was a false demotion — some were the guard correctly catching an
+# overreaching claim — which is why `tdd`, `iot`, `apm`, `agile`, `sdlc`,
+# `machine`, `learning`, `agent`, `premise`, `json`, `b2g`, `o2o`, `migration`
+# and `deprecation` stay out (PR #7 review). A requirement can be about a
+# migration or about a deprecation, so those words are subjects, not tissue.
 #
 # `database`, `databases` and `dbms` are the deliberate exception, and the reason
 # is a limit of token matching rather than a claim that they are connective. The
 # check compares literal tokens, so it cannot connect a requirement's hypernym to
-# the hyponyms a résumé actually names — this corpus evidences MySQL, MariaDB,
-# Redis, JPA and QueryDSL, and the word "database" appears nowhere. Keeping them
-# skips an unsupported claim on a résumé with no database experience at all;
-# removing them demotes a requirement naming a database in the abstract on a
-# résumé full of them. The second failure is measured here, the first is not, so the trade
-# is made that way and revisited if a real case appears.
+# the hyponyms a résumé names. Keeping them skips an unsupported claim on a
+# résumé with no database experience at all; removing them demotes a requirement
+# naming a database in the abstract on a résumé full of them. The second failure
+# is measured, the first is not, so the trade is made that way and revisited if a
+# real case appears.
 #
 # `http`, `https`, `tcp`, `udp`, `rest`, `restful`, `b2b`, `b2c`, `b2b2c`, `saas`,
 # `sql` and `api` read like the same gap — a requirement can be about HTTP or
 # about B2B — and an earlier revision of this comment called removing them a
-# worthwhile separate change on the grounds that it raises strict detections from
-# 73 to 79. That reasoning was wrong, and the measurement it invited says do not:
-#
-#   metric              keep   remove 12
-#   strict                73          82
-#   rows demoted           1           7
-#
-# strict only counts warnings; a row is demoted when EVERY token is absent. All
-# six newly demoted rows were inspected and all six are false, each the same
-# hypernym gap `database` has: a requirement naming HTTP against a résumé that
-# evidences REST and GraphQL API design, one naming SaaS against FastAPI and
-# Spring Boot services, one naming B2C against consumer social apps. One of those
-# rows names B2C in its own evidence cell and still demotes, because the keyword
-# check reads the requirement cell alone. Per token: `http` +3 demotions, `b2c` +3, `saas` +2,
-# `b2b` +1; the other eight move nothing on this corpus, so removing them buys
-# nothing here either. Do not raise strict as an improvement without checking what
+# worthwhile separate change because it raises the strict warning count. That
+# reasoning was wrong. strict counts warnings; a row is demoted only when EVERY
+# token is absent, and on the measured corpus removing the twelve took demoted
+# rows from 1 to 7 while every added demotion was false, each the same hypernym
+# gap `database` has. Do not raise strict as an improvement without checking what
 # it demotes.
+#
+# The measurement, its method, the per-token breakdown and the rows it classified
+# stay in the workspace repository under `docs/solutions/`, with the corpus they
+# were run against.
 GENERIC_TOKENS = frozenset(
     {
         "jd", "rdbms", "rdb", "nosql", "dbms", "database", "databases",
