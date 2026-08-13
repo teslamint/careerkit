@@ -346,6 +346,8 @@ def test_connective_english_requirement_is_not_demoted(requirement: str):
         "JSON 통신 구조 이해",
         "B2G 서비스 구축 경험",
         "O2O 서비스 경험",
+        "Legacy system migration 경험",
+        "API deprecation 경험",
     ],
 )
 def test_absent_verifiable_claim_is_still_demoted(requirement: str):
