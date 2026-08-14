@@ -74,23 +74,32 @@ def load_quick_filters(workspace: Any) -> dict[str, Any]:
     return dict(quick_filters)
 
 
-def disputed_titles(repository: JDRecordRepository, quick_filters: Mapping[str, Any]) -> list[Any]:
-    """Records the title filter cuts whose title still carries a backend token.
+def confirmation_population(
+    repository: JDRecordRepository, quick_filters: Mapping[str, Any]
+) -> list[Any]:
+    """Every record whose pre-screen reason the requirement confirmation can cancel.
 
-    This is the population the requirement confirmation exists to settle.
+    That is every title/include cut that is not a seniority-level exclusion.
+    The earlier `disputed_titles` function selected only backend-token titles,
+    which covered the A3 accept-set (19 records) but missed the include-miss
+    population where the confirmation runs just as much — and that is the larger
+    set. The probe must measure what it ships.
     """
+    from careerkit.jobs.application.title_filter import is_level_exclusion, matched_title_exclusion
+
     cfg = {"quick_filters": quick_filters}
-    disputed = []
+    candidates = []
     for item in repository.list_metadata():
         title = item.record.position or ""
-        if not title:
+        if not title or title == "legacy":
             continue
         if quick_filter_title(title, cfg) != "pass":
             continue
-        if not has_backend_keyword(title):
+        kw = matched_title_exclusion(title, cfg)
+        if kw is not None and is_level_exclusion(kw):
             continue
-        disputed.append(item.record.key)
-    return disputed
+        candidates.append(item.record.key)
+    return candidates
 
 
 def matching_parents(jd_markdown: str) -> tuple[int, list[RequirementItem]]:
@@ -128,11 +137,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     repository = JDRecordRepository(workspace.jobs_records_dir)
     quick_filters = load_quick_filters(workspace)
 
-    keys = disputed_titles(repository, quick_filters)
+    keys = confirmation_population(repository, quick_filters)
     if not keys:
-        raise SystemExit("derived disputed set is empty; the title filter or the corpus changed")
+        raise SystemExit("derived confirmation population is empty; the title filter or the corpus changed")
     if args.expect_disputed is not None and len(keys) != args.expect_disputed:
-        raise SystemExit(f"derived {len(keys)} disputed records, expected {args.expect_disputed}")
+        raise SystemExit(f"derived {len(keys)} confirmation candidates, expected {args.expect_disputed}")
 
     confirmed = 0
     empty_manifest = 0

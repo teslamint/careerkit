@@ -699,11 +699,14 @@ def test_cli_record_show_outputs_history_in_json_and_human_modes(monkeypatch, ca
         },
     ]
 
+    assert payload['prescreen_reason'] is None
+
     assert cli.main(['record', 'show', 'wanted:1']) == 0
     assert capsys.readouterr().out == (
         'job_key=wanted:1\n'
         'has_screening=True\n'
         'screening_verdict=hold\n'
+        'prescreen_reason=None\n'
         'application_status=interview\n'
         'posting_status=active\n'
         'application_status_updated_at=2026-07-14T11:00:00+09:00\n'

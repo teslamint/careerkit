@@ -39,6 +39,8 @@ from careerkit.jobs.application.storage_migration import extract_job_id, get_pla
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
     has_domain_counter_indicator,
+    is_level_exclusion,
+    matched_title_exclusion,
     quick_filter_title,
     requirements_show_backend,
 )
@@ -853,8 +855,13 @@ def _pre_screen_reason(
             confirmed = requirements_show_backend(record.jd_markdown)
         return confirmed
 
-    if quick_filter_title(position, {"quick_filters": quick_filters}) == "pass" and not backend_confirmed():
-        return "title_exclude"
+    if quick_filter_title(position, {"quick_filters": quick_filters}) == "pass":
+        # A seniority keyword is evidence like a closed marker, not a guess about the
+        # role: backend work in the body does not make a 신입 posting a senior one.
+        # Role and domain keywords are a guess, and the requirements outrank them.
+        excluded_by = matched_title_exclusion(position, {"quick_filters": quick_filters})
+        if (excluded_by is not None and is_level_exclusion(excluded_by)) or not backend_confirmed():
+            return "title_exclude"
     domain = classify_non_backend_domain(position)
     if domain and not has_domain_counter_indicator(position, domain) and not backend_confirmed():
         return f"domain_{domain}"

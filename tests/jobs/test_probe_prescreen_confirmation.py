@@ -69,18 +69,27 @@ def test_load_quick_filters_refuses_a_blank_exclusion_entry(tmp_path: Path) -> N
         probe.load_quick_filters(workspace)
 
 
-def test_disputed_titles_derives_the_cut_backend_titles(tmp_path: Path) -> None:
+def test_confirmation_population_includes_both_exclude_and_include_miss(tmp_path: Path) -> None:
     repository = JDRecordRepository(tmp_path / "records")
-    # Cut by the exclude keyword, but the title still says backend — the disputed set.
+    # Cut by an exclude keyword — confirmation can cancel it.
     repository.create(JobRecord("wanted", "1", "Synthetic Co", "Synthetic Excluded Backend Engineer"), jd_markdown="# JD")
-    # Cut by the same keyword with no backend token — not disputed, the title stands.
+    # Cut by an exclude keyword with no backend token — still in the population,
+    # because confirmation runs on the JD body, not on the title.
     repository.create(JobRecord("wanted", "2", "Synthetic Co", "Synthetic Excluded Designer"), jd_markdown="# JD")
-    # Not cut at all.
+    # Not cut at all — not in the population.
     repository.create(JobRecord("wanted", "3", "Synthetic Co", "Backend Engineer"), jd_markdown="# JD")
+    # Cut by a seniority keyword — excluded from the population.
+    repository.create(JobRecord("wanted", "4", "Synthetic Co", "신입 Backend Engineer"), jd_markdown="# JD")
+    # position='legacy' — excluded (broken title filter, separate migration).
+    repository.create(JobRecord("wanted", "5", "Synthetic Co", "legacy"), jd_markdown="# JD")
+    # Title_include miss (no exclude keyword matches, but title_include is not met).
+    repository.create(JobRecord("wanted", "6", "Synthetic Co", "Software Engineer"), jd_markdown="# JD")
 
-    keys = probe.disputed_titles(repository, {"title_exclude": ["Synthetic Excluded"]})
+    keys = probe.confirmation_population(
+        repository, {"title_exclude": ["Synthetic Excluded", "신입"], "title_include": ["Backend", "백엔드", "Server", "서버"]}
+    )
 
-    assert keys == [JobKey("wanted", "1")]
+    assert set(keys) == {JobKey("wanted", "1"), JobKey("wanted", "2"), JobKey("wanted", "6")}
 
 
 def test_matching_parents_reports_only_the_matching_items() -> None:
@@ -177,7 +186,7 @@ def test_main_refuses_an_expected_count_that_does_not_match(tmp_path: Path, monk
         jd_markdown="# JD\n",
     )
 
-    with pytest.raises(SystemExit, match="derived 1 disputed records, expected 5"):
+    with pytest.raises(SystemExit, match="derived 1 confirmation candidates, expected 5"):
         probe.main(["--expect-disputed", "5"])
 
 
@@ -186,5 +195,5 @@ def test_main_refuses_an_empty_derived_set(tmp_path: Path, monkeypatch) -> None:
     repository = _probe_workspace(tmp_path, monkeypatch, "Synthetic Excluded")
     repository.create(JobRecord("wanted", "1", "Synthetic Co", "Backend Engineer"), jd_markdown="# JD\n")
 
-    with pytest.raises(SystemExit, match="derived disputed set is empty"):
+    with pytest.raises(SystemExit, match="confirmation population is empty"):
         probe.main([])

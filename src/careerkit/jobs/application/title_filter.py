@@ -36,6 +36,10 @@ _DOMAIN_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
 _DOMAIN_COUNTER_PATTERNS = {
     "frontend": re.compile(r"full[\s-]?stack|풀스택", re.IGNORECASE),
 }
+# Exclusion keywords that state a seniority level, not a role. The requirement
+# confirmation must not cancel these: backend work in the body does not make a
+# 신입 posting a senior one.
+_LEVEL_EXCLUSION_RE = re.compile(r"인턴|신입|주니어|junior|entry[\s-]?level|체험형", re.IGNORECASE)
 
 
 def normalize_job_query(query: str) -> str:
@@ -67,6 +71,34 @@ def _quick_filters(config: Mapping[str, object]) -> Mapping[str, object]:
     if isinstance(quick_filters, Mapping):
         return quick_filters
     return {}
+
+
+def matched_title_exclusion(title: str, config: Mapping[str, object]) -> str | None:
+    """The `title_exclude` keyword that cut this title, if one did.
+
+    `quick_filter_title` collapses an exclusion match and a `title_include` miss
+    into the same "pass", but they are different claims: one names something the
+    title *is*, the other only says the title did not advertise what we look for.
+    Callers deciding whether the JD body may overturn the cut need to tell them
+    apart.
+    """
+    title_lower = title.lower()
+    for keyword in _string_list(_quick_filters(config).get("title_exclude", [])):
+        if keyword.lower() in title_lower:
+            return keyword
+    return None
+
+
+def is_level_exclusion(keyword: str) -> bool:
+    """Does this exclusion keyword name a seniority level rather than a role?
+
+    Backend requirements cannot contradict it. A 신입 posting whose body describes
+    backend work is still a 신입 posting, so the body must not cancel the cut — the
+    same reason `closed` and `prior_application` are never cancelled. Role and
+    domain keywords are different: they are a guess about what the job *is*, and
+    the requirements are better evidence than the title.
+    """
+    return bool(_LEVEL_EXCLUSION_RE.search(keyword))
 
 
 def quick_filter_title(title: str, config: Mapping[str, object]) -> str | None:

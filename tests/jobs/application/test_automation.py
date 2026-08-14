@@ -1627,6 +1627,64 @@ def test_backend_confirmed_domain_title_is_not_pre_screened(tmp_path: Path, monk
     assert repository.get(JobKey("wanted", "36")).record.prescreen_reason is None
 
 
+def test_backend_requirements_do_not_cancel_a_seniority_exclusion(tmp_path: Path) -> None:
+    # A level keyword is evidence, not a guess about the role — the same reason
+    # `closed` and `prior_application` are never cancelled. Backend work in the body
+    # does not make a 신입 posting a senior one.
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "41", "Synthetic Co", "신입 Synthetic Backend Role"),
+        jd_markdown=_jd_with_requirements("신입 Synthetic Backend Role", backend=True),
+    )
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["신입"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:41",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
+    assert repository.get(JobKey("wanted", "41")).record.prescreen_reason == "title_exclude"
+
+
+def test_backend_requirements_still_cancel_a_role_exclusion(tmp_path: Path) -> None:
+    # The complement: a role keyword *is* a guess about what the job is, and the
+    # requirements outrank it. Without this the seniority guard could be widened to
+    # every exclusion and nothing would fail.
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "42", "Synthetic Co", "Synthetic Excluded Backend Role"),
+        jd_markdown=_jd_with_requirements("Synthetic Excluded Backend Role", backend=True),
+    )
+    screened: list[str] = []
+
+    def fake_run_screening(**kwargs):
+        screened.append(kwargs["jd"].record.job_id)
+        return _screening_result()
+
+    monkeypatch_target = "careerkit.jobs.application.automation.run_screening"
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(monkeypatch_target, fake_run_screening)
+        result = JobsScreeningStage(
+            workspace=workspace,
+            repository=repository,
+            quick_filters={"title_exclude": ["Synthetic Excluded"]},
+        ).screen(
+            ExtractionBatch(("url",), ("wanted:42",), (record,), {}),
+            dry_run=False,
+            llm_timeout=1,
+        )
+
+    assert result.metadata["prescreen_reasons"] == {}
+    assert screened == ["42"]
+
+
 def test_backend_requirements_do_not_cancel_a_closed_posting(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
     repository = JDRecordRepository(tmp_path / "private/jd/records")
