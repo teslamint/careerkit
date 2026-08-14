@@ -51,12 +51,26 @@ def load_quick_filters(workspace: Any) -> dict[str, Any]:
     filter under test never ran.
     """
     config_path = workspace.jobs_config_dir / "search_config.yaml"
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if config is None:
+        config = {}
+    if not isinstance(config, Mapping):
+        raise SystemExit(f"configuration is not a mapping in {config_path}")
     quick_filters = config.get("quick_filters")
     if not isinstance(quick_filters, Mapping):
         raise SystemExit(f"quick_filters missing or not a mapping in {config_path}")
-    if not quick_filters.get("title_exclude"):
-        raise SystemExit(f"quick_filters.title_exclude is empty in {config_path}; nothing to measure")
+    title_exclude = quick_filters.get("title_exclude")
+    # A bare string is truthy and iterable, so a plain truthiness check would accept
+    # `title_exclude: Backend` and then match character by character.
+    if not (
+        isinstance(title_exclude, list)
+        and title_exclude
+        and all(isinstance(value, str) and value.strip() for value in title_exclude)
+    ):
+        raise SystemExit(
+            f"quick_filters.title_exclude in {config_path} must be a non-empty list of "
+            "non-blank strings; nothing to measure otherwise"
+        )
     return dict(quick_filters)
 
 
@@ -80,8 +94,15 @@ def disputed_titles(repository: JDRecordRepository, quick_filters: Mapping[str, 
 
 
 def matching_parents(jd_markdown: str) -> tuple[int, list[RequirementItem]]:
+    """Parent count and the items that matched, for the explanatory output column.
+
+    Scans `items`, the same set `requirements_show_backend` decides on. The parent
+    count stays the readability signal — 0 parents means an unparseable body — but
+    the matches must come from the set the verdict came from, or the column explains
+    a decision the code did not make.
+    """
     manifest = extract_requirement_manifest(jd_markdown)
-    return len(manifest.parents), [item for item in manifest.parents if has_backend_keyword(item.text)]
+    return len(manifest.parents), [item for item in manifest.items if has_backend_keyword(item.text)]
 
 
 def format_matches(matches: Sequence[RequirementItem]) -> str:

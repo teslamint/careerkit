@@ -87,6 +87,21 @@ def test_rebuild_and_search_keep_platform_local_identity(tmp_path: Path) -> None
     }
 
 
+def test_index_distinguishes_a_set_aside_record_from_an_untouched_one(tmp_path: Path) -> None:
+    # Both carry a null verdict and no document. Without the reason the console
+    # cannot tell a deliberate skip from an outstanding screening.
+    repository = JDRecordRepository(tmp_path / "records")
+    repository.create(JobRecord("wanted", "1", "Acme", "Backend"), jd_markdown="# JD")
+    repository.create(JobRecord("wanted", "2", "Acme", "Backend"), jd_markdown="# JD")
+    repository.update_prescreen(JobRecord("wanted", "1", "Acme", "Backend").key, "title_exclude")
+    index = JDSearchIndex(tmp_path / "derived" / "jd.sqlite3", repository)
+    assert index.rebuild().success
+
+    reasons = {item.job_id: item.prescreen_reason for item in index.search(limit=10).items}
+
+    assert reasons == {"1": "title_exclude", "2": None}
+
+
 def test_combined_platform_and_application_status_filters_use_and_semantics(tmp_path: Path) -> None:
     repository = JDRecordRepository(tmp_path / "records")
     _seed(repository)

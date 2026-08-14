@@ -2840,6 +2840,71 @@ def _prescreened_cli(monkeypatch, tmp_path: Path, pipeline, repository=None):
     return bundle
 
 
+def test_queue_prescreened_counts_only_records_that_got_a_document(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    # Deriving these from the selected target list makes them contradict
+    # `rescreened` and `still_unscreened` in the same payload.
+    pipeline = _PrescreenedPipeline(
+        set_aside=[
+            _prescreened_metadata('1', reason='title_exclude'),
+            _prescreened_metadata('2', reason='title_exclude'),
+        ],
+        legacy=[_prescreened_metadata('3', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+
+    def _run(**kwargs):
+        job_id = kwargs['jd'].record.job_id
+        if job_id == '2':
+            return _screening(verdict='지원 보류', provider='ollama', published=False)
+        repository.screened.add(job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(
+        ['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '3', '--json']
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['rescreened'] == 2
+    assert payload['still_unscreened'] == 1
+    assert payload['set_aside_screened'] == 1
+    assert payload['legacy_screened'] == 1
+
+
+def test_queue_prescreened_screen_fails_when_classification_fails_after_publish(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    # The JSON reports the failure either way; exiting 0 lets a script read a
+    # partially failed batch as clean.
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+
+    def _run(**kwargs):
+        repository.screened.add(kwargs['jd'].record.job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    def _classify(key, *, dry_run=False):
+        raise RuntimeError('classification blew up after the document was published')
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+    monkeypatch.setattr(pipeline, 'classify_record', _classify)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--limit', '1', '--json']) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['failed_after_publish'] == 1
+    assert payload['failed'] == 0
+    assert payload['set_aside_screened'] == 0
+
+
 def test_queue_prescreened_lists_set_aside_and_legacy_separately(
     monkeypatch, capsys, tmp_path: Path
 ) -> None:

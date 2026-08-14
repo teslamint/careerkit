@@ -37,6 +37,16 @@ PREFERRED_ONLY_BACKEND_JD = """# 합성 공고
 - 인증 데이터를 처리하는 백엔드 플랫폼 운영 경험
 """
 
+NESTED_BACKEND_JD = """# 합성 공고
+
+## 자격요건
+
+- 아래 항목 중 하나 이상에 해당하는 분
+  - 합성 프레임워크 기반 백엔드 서비스 운영 경험
+  - 합성 대시보드 화면 구현 경험
+- 동료 리뷰 참여 경험
+"""
+
 NO_REQUIREMENT_SECTION_JD = """# 합성 공고
 
 ## 회사 소개
@@ -48,6 +58,12 @@ NO_REQUIREMENT_SECTION_JD = """# 합성 공고
 
 def test_requirements_show_backend_true_for_api_server_requirement() -> None:
     assert requirements_show_backend(BACKEND_JD) is True
+
+
+def test_requirements_show_backend_true_for_a_nested_requirement() -> None:
+    # The outer bullet is generic and the backend evidence is indented under it.
+    # Scanning parents alone returns False and sets a real backend posting aside.
+    assert requirements_show_backend(NESTED_BACKEND_JD) is True
 
 
 def test_requirements_show_backend_false_for_empty_manifest() -> None:

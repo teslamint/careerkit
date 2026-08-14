@@ -1379,9 +1379,11 @@ def _handle_queue_prescreened(args: argparse.Namespace, workspace: WorkspacePath
     targets = targets[: args.limit]
     # Set-aside records fill --limit first, so --include-legacy can reach nothing.
     # Say so: the user asked for legacy records and paid for a run without one.
-    legacy_screened = max(0, len(targets) - len(set_aside))
+    # Selected, not recovered: the notice is about --limit crowding legacy out,
+    # not about a screening that failed. The JSON's legacy_screened counts documents.
+    legacy_selected = max(0, len(targets) - len(set_aside))
     notice = None
-    if args.include_legacy and legacy_total and not legacy_screened:
+    if args.include_legacy and legacy_total and not legacy_selected:
         notice = (
             f"--include-legacy screened no legacy record: {len(targets)} set-aside "
             f"records filled --limit {args.limit} ({legacy_total} legacy records waiting). "
@@ -1404,6 +1406,21 @@ def _handle_queue_prescreened(args: argparse.Namespace, workspace: WorkspacePath
         require_strong_provider=False,
     )
 
+    # Count what actually got a document, not what was selected. Deriving these from
+    # the target list makes them contradict `rescreened` / `failed` in the same
+    # payload, and automation reading them cannot tell how much was recovered.
+    set_aside_keys = {(item.record.platform, item.record.job_id) for item in set_aside}
+    recovered_set_aside = 0
+    recovered_legacy = 0
+    for item in items:
+        if item["outcome"] != "rescreened":
+            continue
+        platform, _, job_id = item["job_key"].partition(":")
+        if (platform, job_id) in set_aside_keys:
+            recovered_set_aside += 1
+        else:
+            recovered_legacy += 1
+
     if args.json:
         payload = _base_payload("queue prescreened", workspace)
         payload.update(
@@ -1413,8 +1430,8 @@ def _handle_queue_prescreened(args: argparse.Namespace, workspace: WorkspacePath
                 "still_unscreened": counts["still_unscreened"],
                 "failed": counts["failed"],
                 "failed_after_publish": counts["failed_after_publish"],
-                "set_aside_screened": len(targets) - legacy_screened,
-                "legacy_screened": legacy_screened,
+                "set_aside_screened": recovered_set_aside,
+                "legacy_screened": recovered_legacy,
                 "notice": notice,
                 "items": items,
             }
@@ -1425,7 +1442,10 @@ def _handle_queue_prescreened(args: argparse.Namespace, workspace: WorkspacePath
             print(item["message"])
         if notice is not None:
             print(notice)
-    return 2 if counts["failed"] else 0
+    # `failed_after_publish` is a failure the JSON already reports; exiting 0 on it
+    # lets a script read a partially failed batch as clean. `queue fallback` counts
+    # it, `queue capped` does not — this follows fallback.
+    return 2 if counts["failed"] or counts["failed_after_publish"] else 0
 
 
 def _handle_storage_preflight(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:

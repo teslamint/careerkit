@@ -97,8 +97,12 @@ def has_backend_keyword(title: str) -> bool:
 
 
 def requirements_show_backend(jd_markdown: str) -> bool:
+    # Every item, not just the parents: a requirement whose outer bullet is generic
+    # ("아래 항목 중 하나 이상에 해당하는 분") keeps its backend evidence in an indented child,
+    # and scanning parents alone sets that posting aside. Re-measured over the corpus
+    # when this widened — the disputed set's outcomes did not move.
     manifest = extract_requirement_manifest(jd_markdown)
-    return any(has_backend_keyword(item.text) for item in manifest.parents)
+    return any(has_backend_keyword(item.text) for item in manifest.items)
 
 
 def classify_non_backend_domain(title: str) -> str | None:
