@@ -36,6 +36,10 @@ _VERDICT_LABELS = {
     ScreeningVerdict.NOT_RECOMMENDED: "지원 비추천",
 }
 
+# Notification text for a record the pre-screen set aside. It names a recorded
+# state, not a verdict and not a failure — no screening document backs it.
+_SET_ASIDE_LABEL = "사전 필터 제외 기록"
+
 _EXTRACTION_FAILURE_MESSAGE = "job extraction failed"
 _SCREENING_FAILURE_MESSAGE = "screening failed"
 _COMPANY_INFO_FAILURE_MESSAGE = "company info unavailable"
@@ -273,7 +277,11 @@ def _prepare_collect(
 
     stored = repository.find(key)
     if stored is not None:
-        if stored.record.screening_verdict is not None:
+        # A verdict means screening ran; a pre-screen reason means it was
+        # deliberately skipped. Either way the record is already decided, so
+        # re-collecting must not run screening again. Set-aside records are
+        # rescreened through `queue prescreened --screen --limit`, which is bounded.
+        if stored.record.screening_verdict is not None or stored.record.prescreen_reason is not None:
             return {"status": "duplicate", "action": "collect", "data": stored.record.to_dict()}, None
         tracking_id = str(uuid.uuid4())
         return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, (url, tracking_id, True)
@@ -481,15 +489,6 @@ def run_screening_worker(
                 continue
 
             stored = repository.find(key)
-            verdict = stored.record.screening_verdict if stored is not None else None
-            if verdict is None:
-                with stdout_lock:
-                    write_message(
-                        stdout,
-                        {"type": "screening_failed", "tracking_id": tracking_id, "message": _SCREENING_FAILURE_MESSAGE},
-                    )
-                continue
-
             if stored is None:
                 with stdout_lock:
                     write_message(
@@ -498,8 +497,22 @@ def run_screening_worker(
                     )
                 continue
 
+            # Read the authoritative field, not a proxy: a null verdict alone no
+            # longer means screening failed. A pre-screen reason records that
+            # screening was deliberately skipped — a state, not a failure. Only a
+            # record with neither is a genuine failure.
+            verdict = stored.record.screening_verdict
+            prescreen_reason = stored.record.prescreen_reason
+            if verdict is None and prescreen_reason is None:
+                with stdout_lock:
+                    write_message(
+                        stdout,
+                        {"type": "screening_failed", "tracking_id": tracking_id, "message": _SCREENING_FAILURE_MESSAGE},
+                    )
+                continue
+
             data = stored.record.to_dict()
-            data["verdict_label"] = _VERDICT_LABELS.get(verdict)
+            data["verdict_label"] = _VERDICT_LABELS.get(verdict) if verdict is not None else _SET_ASIDE_LABEL
             company_info_results = screening_result.metadata.get("company_info_results") or {}
             company_info_result = company_info_results.get(item_id)
             if isinstance(company_info_result, dict):

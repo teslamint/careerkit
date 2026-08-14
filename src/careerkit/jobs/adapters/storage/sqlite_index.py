@@ -27,6 +27,7 @@ CREATE TABLE job_records (
     posting_status TEXT NOT NULL,
     application_status_updated_at TEXT,
     has_screening INTEGER NOT NULL CHECK (has_screening IN (0, 1)),
+    prescreen_reason TEXT,
     PRIMARY KEY (platform, job_id)
 );
 CREATE INDEX job_records_by_id ON job_records (job_id, platform);
@@ -49,8 +50,9 @@ INSERT INTO job_records (
     application_status,
     posting_status,
     application_status_updated_at,
-    has_screening
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    has_screening,
+    prescreen_reason
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -66,6 +68,7 @@ class IndexedJobRecord:
     posting_status: PostingStatus
     application_status_updated_at: str | None
     has_screening: bool
+    prescreen_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,7 @@ class JDSearchIndex:
                                 record.posting_status.value,
                                 record.application_status_updated_at,
                                 int(stored.has_screening),
+                                record.prescreen_reason,
                             ),
                         )
                         indexed_count += 1
@@ -208,7 +212,8 @@ class JDSearchIndex:
                 application_status,
                 posting_status,
                 application_status_updated_at,
-                has_screening
+                has_screening,
+                prescreen_reason
             FROM job_records
             {where}
             ORDER BY job_id ASC, platform ASC
@@ -274,4 +279,7 @@ def _indexed_record(row: sqlite3.Row) -> IndexedJobRecord:
             else None
         ),
         has_screening=bool(row["has_screening"]),
+        prescreen_reason=(
+            str(row["prescreen_reason"]) if row["prescreen_reason"] is not None else None
+        ),
     )

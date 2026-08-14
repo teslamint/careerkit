@@ -21,6 +21,9 @@
     none: { color: "#9CA3AF", icon: "⚪", label: "미스크리닝" }
   };
 
+  // Not a verdict: a record of why detailed screening was skipped.
+  var SET_ASIDE_CONFIG = { color: "#6B7280", icon: "⏭", label: "사전 필터 제외 기록" };
+
   // Background only pushes screening_complete/screening_failed to the tab's
   // content script (chrome.tabs.sendMessage), not to extension pages like
   // this side panel. The chrome.runtime.onMessage listener below covers that
@@ -189,7 +192,9 @@
   if (typeof module !== "undefined" && module.exports) module.exports = { shouldOfferRescreen: shouldOfferRescreen, buildTabBar: buildTabBar };
 
   function verdictConfigFor(record) {
-    if (!record || !record.screening_verdict) return VERDICT_CONFIG.none;
+    if (!record || !record.screening_verdict) {
+      return record && record.prescreen_reason ? SET_ASIDE_CONFIG : VERDICT_CONFIG.none;
+    }
     if (record.screening_verdict === "hold" && record.verdict_capped === true) {
       return VERDICT_CONFIG.hold_capped;
     }
@@ -407,7 +412,7 @@
         pre.textContent = screeningMarkdown;
         screeningPanel.appendChild(pre);
       }
-    } else if (record.screening_verdict) {
+    } else if (record.screening_verdict || record.prescreen_reason) {
       var prescreenMsg = "사전 필터에서 판정되어 상세 스크리닝이 실행되지 않았습니다.";
       if (record.prescreen_reason) {
         var reasonLabels = {
@@ -531,7 +536,7 @@
         }
         if (!state.progressStageText) setStageText("재스크리닝 중...");
       } else {
-        if (data.record.screening_verdict) {
+        if (data.record.screening_verdict || data.record.prescreen_reason) {
           stopPolling();
           state.progressStageText = null;
           renderDetail(data.record, data.screening_markdown, data.jd_markdown, data.is_fallback);

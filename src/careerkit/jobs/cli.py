@@ -25,7 +25,7 @@ from careerkit.jobs.application.automation import (
 from careerkit.cli_logging import configure_cli_logging
 from careerkit.jobs.application.maintenance import CheckClosedResult, JobsMaintenanceService
 from careerkit.jobs.application.company_info import CompanyInfoService
-from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService
+from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService, PrescreenedListing
 from careerkit.jobs.adapters.screening.cli_provider import resolve_commands
 from careerkit.jobs.application.screening import STRONG_PROVIDER_LABELS, is_fallback_document, run_screening, validate_screening_structure
 from careerkit.jobs.application.storage_migration import get_platform_from_url
@@ -89,6 +89,7 @@ class PipelineOps(Protocol):
     def queue_status(self) -> Any: ...
     def migrate_queue_status(self) -> list[dict[str, str]]: ...
     def classify_record(self, key: JobKey, *, dry_run: bool = False) -> IngestResult: ...
+    def list_prescreened(self, *, reason: str | None = None) -> PrescreenedListing: ...
     def storage_status(self) -> dict[str, int]: ...
 
 
@@ -256,6 +257,24 @@ def build_parser() -> argparse.ArgumentParser:
     queue_fallback.add_argument("--include-closed", action="store_true")
     queue_fallback.add_argument("--json", action="store_true")
     queue_fallback.set_defaults(handler=_handle_queue_fallback)
+    queue_prescreened = queue_subparsers.add_parser(
+        "prescreened", help="List or screen records awaiting screening (set aside by pre-screen)"
+    )
+    prescreened_mode = queue_prescreened.add_mutually_exclusive_group()
+    prescreened_mode.add_argument("--list", action="store_true", dest="list_only")
+    prescreened_mode.add_argument("--screen", action="store_true")
+    queue_prescreened.add_argument("--limit", type=_positive_int)
+    queue_prescreened.add_argument("--reason")
+    queue_prescreened.add_argument(
+        "--include-legacy",
+        action="store_true",
+        help=(
+            "Also screen legacy verdict-bearing records. Set-aside records are screened "
+            "first and fill --limit before any legacy record is reached."
+        ),
+    )
+    queue_prescreened.add_argument("--json", action="store_true")
+    queue_prescreened.set_defaults(handler=_handle_queue_prescreened)
 
     storage = subparsers.add_parser("storage", help="Read-only storage checks and status")
     storage.set_defaults(handler=_handle_missing_operation)
@@ -856,6 +875,7 @@ def _handle_record_show(args: argparse.Namespace, workspace: WorkspacePaths, ser
         "job_key": f"{stored.record.platform}:{stored.record.job_id}",
         "has_screening": stored.has_screening,
         "screening_verdict": stored.record.screening_verdict.value if stored.record.screening_verdict else None,
+        "prescreen_reason": stored.record.prescreen_reason,
         "application_status": stored.record.application_status.value,
         "posting_status": stored.record.posting_status.value,
         "application_status_updated_at": stored.record.application_status_updated_at,
@@ -1281,6 +1301,151 @@ def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, 
             print(item["message"])
         if skipped_closed:
             print(f"(skipped {skipped_closed} closed postings)")
+    return 2 if counts["failed"] or counts["failed_after_publish"] else 0
+
+
+def _handle_queue_prescreened(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    listing = services.pipeline.list_prescreened(reason=args.reason)
+    set_aside = listing.set_aside
+    legacy = listing.legacy
+    # The counts report the whole backlog; --limit only bounds what is shown or
+    # screened. A header reading the sliced length would hide the backlog this
+    # command exists to surface.
+    set_aside_total = len(set_aside)
+    legacy_total = len(legacy)
+    if args.limit is not None:
+        set_aside = set_aside[: args.limit]
+        legacy = legacy[: args.limit]
+
+    if not args.screen:
+        if args.json:
+            payload = _base_payload("queue prescreened", workspace)
+            payload.update(
+                {
+                    "set_aside_count": set_aside_total,
+                    "legacy_count": legacy_total,
+                    "set_aside_shown": len(set_aside),
+                    "legacy_shown": len(legacy),
+                    "set_aside": [
+                        {
+                            "job_key": f"{item.record.platform}:{item.record.job_id}",
+                            "company": item.record.company,
+                            "prescreen_reason": item.record.prescreen_reason,
+                        }
+                        for item in set_aside
+                    ],
+                    "legacy": [
+                        {
+                            "job_key": f"{item.record.platform}:{item.record.job_id}",
+                            "company": item.record.company,
+                            "screening_verdict": (
+                                item.record.screening_verdict.value
+                                if item.record.screening_verdict is not None
+                                else None
+                            ),
+                        }
+                        for item in legacy
+                    ],
+                }
+            )
+            _print_json(payload)
+        else:
+            set_aside_shown = f" (showing {len(set_aside)})" if len(set_aside) < set_aside_total else ""
+            legacy_shown = f" (showing {len(legacy)})" if len(legacy) < legacy_total else ""
+            print(f"{set_aside_total} records set aside by pre-screen{set_aside_shown}:")
+            for item in set_aside:
+                record = item.record
+                print(f"  {record.platform}:{record.job_id}  {record.company}  ({record.prescreen_reason})")
+            print(f"{legacy_total} legacy verdicts without a screening document{legacy_shown}:")
+            for item in legacy:
+                record = item.record
+                verdict = record.screening_verdict.value if record.screening_verdict is not None else None
+                print(f"  {record.platform}:{record.job_id}  {record.company}  ({verdict})")
+        return 0
+
+    if args.limit is None:
+        backlog = set_aside_total + (legacy_total if args.include_legacy else 0)
+        msg = f"--limit is required to screen ({backlog} records in the backlog). Aborting."
+        if args.json:
+            payload = _base_payload("queue prescreened", workspace)
+            payload.update({"error": msg, "backlog": backlog})
+            _print_json(payload)
+        else:
+            print(msg, file=sys.stderr)
+        return 1
+
+    targets = [item.record for item in set_aside]
+    if args.include_legacy:
+        targets.extend(item.record for item in legacy)
+    targets = targets[: args.limit]
+    # Set-aside records fill --limit first, so --include-legacy can reach nothing.
+    # Say so: the user asked for legacy records and paid for a run without one.
+    # Selected, not recovered: the notice is about --limit crowding legacy out,
+    # not about a screening that failed. The JSON's legacy_screened counts documents.
+    legacy_selected = max(0, len(targets) - len(set_aside))
+    notice = None
+    if args.include_legacy and legacy_total and not legacy_selected:
+        notice = (
+            f"--include-legacy screened no legacy record: {len(targets)} set-aside "
+            f"records filled --limit {args.limit} ({legacy_total} legacy records waiting). "
+            "Raise --limit above the set-aside backlog to reach them."
+        )
+
+    repository = JDRecordRepository(workspace.jobs_records_dir)
+
+    def _prescreened_recovered(key: JobKey, repo: JDRecordRepository) -> bool:
+        return repo.get_metadata(key).has_screening
+
+    # A set-aside record holds no screening document, so the latest-only revision
+    # store has nothing a weak answer could destroy; requiring a strong provider
+    # would make every run a no-op whenever only a local one is reachable, and
+    # `queue capped --rescreen` already recovers a locally capped verdict.
+    items, counts = _run_batch_rescreen(
+        targets, workspace, services, repository,
+        _prescreened_recovered,
+        unrecovered_label="still_unscreened",
+        require_strong_provider=False,
+    )
+
+    # Count what actually got a document, not what was selected. Deriving these from
+    # the target list makes them contradict `rescreened` / `failed` in the same
+    # payload, and automation reading them cannot tell how much was recovered.
+    set_aside_keys = {(item.record.platform, item.record.job_id) for item in set_aside}
+    recovered_set_aside = 0
+    recovered_legacy = 0
+    for item in items:
+        if item["outcome"] != "rescreened":
+            continue
+        platform, _, job_id = item["job_key"].partition(":")
+        if (platform, job_id) in set_aside_keys:
+            recovered_set_aside += 1
+        else:
+            recovered_legacy += 1
+
+    if args.json:
+        payload = _base_payload("queue prescreened", workspace)
+        payload.update(
+            {
+                "count": len(items),
+                "rescreened": counts["rescreened"],
+                "still_unscreened": counts["still_unscreened"],
+                "failed": counts["failed"],
+                "failed_after_publish": counts["failed_after_publish"],
+                "set_aside_screened": recovered_set_aside,
+                "legacy_screened": recovered_legacy,
+                "notice": notice,
+                "items": items,
+            }
+        )
+        _print_json(payload)
+    else:
+        for item in items:
+            print(item["message"])
+        if notice is not None:
+            print(notice)
+    # `failed_after_publish` is a failure the JSON already reports; exiting 0 on it
+    # lets a script read a partially failed batch as clean. `queue fallback` counts
+    # it, `queue capped` does not — this follows fallback.
     return 2 if counts["failed"] or counts["failed_after_publish"] else 0
 
 

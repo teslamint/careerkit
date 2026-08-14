@@ -50,6 +50,9 @@
     none: { color: "#9CA3AF", icon: "⚪", label: "미스크리닝" }
   };
 
+  // Not a verdict: a record of why detailed screening was skipped.
+  var SET_ASIDE_CONFIG = { color: "#6B7280", icon: "⏭", label: "사전 필터 제외 기록" };
+
   var STYLE_TEXT = [
     ":host { all: initial; }",
     ".ck-container { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }",
@@ -198,6 +201,10 @@
     return VERDICT_CONFIG[data.screening_verdict] || VERDICT_CONFIG.none;
   }
 
+  function isDecided(data) {
+    return !!(data && (data.screening_verdict || data.prescreen_reason));
+  }
+
   function stopPolling() {
     if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
   }
@@ -217,7 +224,7 @@
       safeSend({ action: "lookup", url: url }, function (response, err) {
         if (url !== CURRENT_URL) { stopPolling(); return; }
         if (err || !response || response.status !== "ok" || !response.data) return;
-        if (response.data.screening_verdict) {
+        if (isDecided(response.data)) {
           stopPolling();
           renderFromRecord(response.data);
         }
@@ -235,7 +242,7 @@
         render(buildError(response.message));
         return;
       }
-      if (response && response.data && response.data.screening_verdict) {
+      if (response && isDecided(response.data)) {
         renderFromRecord(response.data);
         return;
       }
@@ -261,6 +268,10 @@
       return;
     }
     if (!data.screening_verdict) {
+      if (data.prescreen_reason) {
+        render(buildBadge(SET_ASIDE_CONFIG));
+        return;
+      }
       render(buildScreenButton());
       return;
     }

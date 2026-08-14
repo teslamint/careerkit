@@ -159,6 +159,27 @@ pageNext.addEventListener("click", () => {
 
 const VERDICT_LABELS = {recommended: "추천", hold: "보류", not_recommended: "비추천"};
 const STATUS_LABELS = {pending: "대기", applied: "지원", interview: "면접", offer: "오퍼", rejected: "탈락"};
+const SET_ASIDE_LABEL = "사전 필터 제외";
+const PRESCREEN_REASON_LABELS = {
+  title_exclude: "제목 제외 키워드 매칭",
+  title_include: "제목에 백엔드/서버 키워드 없음",
+  closed: "공고 마감",
+  prior_application: "동일 회사 기지원"
+};
+
+// A record with no verdict is one of two different things: set aside by the
+// pre-screen with a recorded reason, or never processed. Showing both as 미생성
+// erases the distinction the reason exists to draw.
+function verdictBadgeText(record) {
+  if (record.screening_verdict) return VERDICT_LABELS[record.screening_verdict] ?? record.screening_verdict;
+  return record.prescreen_reason ? SET_ASIDE_LABEL : "미생성";
+}
+
+function prescreenReasonText(reason) {
+  if (!reason) return null;
+  if (reason.indexOf("domain_") === 0) return `비백엔드 도메인 (${reason.slice(7)})`;
+  return PRESCREEN_REASON_LABELS[reason] ?? reason;
+}
 
 function resultItem(item) {
   const row = document.createElement("li");
@@ -193,7 +214,8 @@ function resultItem(item) {
   const verdictBadge = document.createElement("span");
   const verdictKey = item.screening_verdict ?? "null";
   verdictBadge.className = `badge badge-verdict-${verdictKey}`;
-  verdictBadge.textContent = VERDICT_LABELS[item.screening_verdict] ?? "미생성";
+  if (!item.screening_verdict && item.prescreen_reason) verdictBadge.classList.add("badge-set-aside");
+  verdictBadge.textContent = verdictBadgeText(item);
   const statusBadge = document.createElement("span");
   statusBadge.className = "badge badge-status";
   statusBadge.textContent = STATUS_LABELS[item.application_status] ?? item.application_status;
@@ -245,10 +267,17 @@ function applyDetail(detail) {
   const isVerdictCapped = detail.verdict_capped === true && detail.screening_verdict === "hold";
   verdictBadge.className = `badge badge-verdict-${verdictKey}`;
   if (isVerdictCapped) verdictBadge.classList.add("badge-capped");
-  verdictBadge.textContent = isVerdictCapped
-    ? "보류 (대기)"
-    : (VERDICT_LABELS[detail.screening_verdict] ?? "미생성");
+  if (!detail.screening_verdict && detail.prescreen_reason) verdictBadge.classList.add("badge-set-aside");
+  verdictBadge.textContent = isVerdictCapped ? "보류 (대기)" : verdictBadgeText(detail);
   detailMeta.append(verdictBadge);
+
+  const reasonText = !detail.screening_verdict ? prescreenReasonText(detail.prescreen_reason) : null;
+  if (reasonText) {
+    const reasonNote = document.createElement("span");
+    reasonNote.className = "detail-prescreen-reason";
+    reasonNote.textContent = `사유: ${reasonText}`;
+    detailMeta.append(reasonNote);
+  }
 
   const detailApplicationStatus = document.createElement("span");
   detailApplicationStatus.id = "application-current-status";

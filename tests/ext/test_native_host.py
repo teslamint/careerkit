@@ -414,6 +414,44 @@ def test_handle_collect_duplicate_returns_existing_record():
     repository.find.assert_called_once_with(JobKey("wanted", "123456"))
 
 
+def test_handle_collect_prescreened_record_returns_duplicate():
+    """A set-aside record carries a reason instead of a verdict. It is already
+    decided, so re-collecting it must not open a second, unbounded door to full
+    screening — `queue prescreened --screen --limit` owns that path."""
+    record = _make_record(screening_verdict=None, prescreen_reason="title_exclude")
+    repository = MagicMock()
+    repository.find.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
+    work_queue = queue.Queue()
+
+    response = host.handle_collect(
+        {"action": "collect", "url": "https://www.wanted.co.kr/wd/123456"}, repository, work_queue
+    )
+
+    assert response["status"] == "duplicate"
+    assert response["data"] == record.to_dict()
+    assert response["data"]["prescreen_reason"] == "title_exclude"
+    assert work_queue.empty()
+
+
+def test_handle_collect_record_without_verdict_or_reason_still_screens():
+    """Neither a verdict nor a reason means screening never happened. That record
+    still enqueues with screening_only=True."""
+    record = _make_record(screening_verdict=None, prescreen_reason=None)
+    repository = MagicMock()
+    repository.find.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
+    work_queue = queue.Queue()
+
+    response = host.handle_collect(
+        {"action": "collect", "url": "https://www.wanted.co.kr/wd/123456"}, repository, work_queue
+    )
+
+    assert response["status"] == "accepted"
+    queued_url, queued_tracking_id, queued_screening_only = work_queue.get_nowait()
+    assert queued_url == "https://www.wanted.co.kr/wd/123456"
+    assert queued_tracking_id == response["tracking_id"]
+    assert queued_screening_only is True
+
+
 def test_handle_collect_new_url_returns_accepted_and_enqueues():
     repository = MagicMock()
     repository.find.return_value = None
@@ -802,6 +840,81 @@ def test_run_screening_worker_sends_failed_when_verdict_is_null():
         "type": "screening_failed",
         "tracking_id": "track-4",
         "message": "screening failed",
+    }
+
+
+def test_run_screening_worker_sends_complete_with_set_aside_label_when_prescreen_reason_is_set():
+    """A pre-screen skip is a recorded state, not a failure. When screening leaves
+    a reason instead of a verdict, the worker emits screening_complete carrying the
+    set-aside label — and the company_info the service worker validates on."""
+    record = _make_record(screening_verdict=None, prescreen_reason="title_exclude")
+    stored = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown=None)
+
+    extraction_batch = MagicMock()
+    extraction_batch.records = [stored]
+    extraction_batch.company_contexts = {}
+    extraction_stage = MagicMock()
+    extraction_stage.extract.return_value = extraction_batch
+
+    screening_result = MagicMock()
+    screening_result.metadata = {
+        "failures": [],
+        "item_ids": [],
+        "prescreened_count": 1,
+        "prescreen_reasons": {"title_exclude": 1},
+        # Populated before the pre-screen `continue` in JobsScreeningStage.screen,
+        # so a set-aside item still has one. isValidCompletionMessage in
+        # service-worker.js drops any screening_complete lacking it.
+        "company_info_results": {
+            "wanted:123456": {
+                "status": "ready",
+                "attempted": True,
+                "persisted": True,
+                "completeness": 100.0,
+                "warning_code": None,
+                "file_path": "/Users/private/company_info/acme.md",
+            }
+        },
+    }
+    screening_stage = MagicMock()
+    screening_stage.screen.return_value = screening_result
+
+    repository = MagicMock()
+    repository.find.return_value = stored
+
+    work_queue = queue.Queue()
+    work_queue.put(("https://www.wanted.co.kr/wd/123456", "track-5", False))
+    stdout = io.BytesIO()
+    stdout_lock = threading.Lock()
+
+    with patch.object(
+        work_queue,
+        "get",
+        side_effect=[("https://www.wanted.co.kr/wd/123456", "track-5", False), KeyboardInterrupt],
+    ):
+        try:
+            host.run_screening_worker(work_queue, repository, extraction_stage, screening_stage, stdout, stdout_lock)
+        except KeyboardInterrupt:
+            pass
+
+    stdout.seek(0)
+    host.read_message(stdout)
+    host.read_message(stdout)
+    push = host.read_message(stdout)
+
+    expected_data = record.to_dict()
+    expected_data["verdict_label"] = "사전 필터 제외 기록"
+    expected_data["company_info"] = {
+        "status": "ready",
+        "attempted": True,
+        "persisted": True,
+        "completeness": 100.0,
+        "warning_code": None,
+    }
+    assert push == {
+        "type": "screening_complete",
+        "tracking_id": "track-5",
+        "data": expected_data,
     }
 
 

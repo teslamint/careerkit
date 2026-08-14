@@ -164,6 +164,8 @@ button { cursor: pointer; }
 .badge-verdict-not_recommended { color: var(--verdict-no-fg); background: var(--verdict-no-bg); }
 .badge-verdict-null { color: var(--verdict-null-fg); background: var(--verdict-null-bg); }
 .badge-capped { border: 1px dashed currentColor; }
+.badge-set-aside { border: 1px solid currentColor; }
+.detail-prescreen-reason { color: var(--verdict-null-fg); font-size: 0.85em; }
 .badge-status { color: var(--text-secondary); background: transparent; border: 1px solid var(--border-strong); }
 .platform-tag { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; color: var(--text-secondary); background: var(--bg-subtle); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; }
 .job-id { font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }

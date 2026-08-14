@@ -89,6 +89,15 @@ def test_console_app_handles_verdict_capped() -> None:
     assert "verdict_capped" in script
 
 
+def test_console_names_the_set_aside_state_separately_from_untouched() -> None:
+    script = read("app.js")
+    # A verdict-less record is either set aside with a recorded reason or never
+    # processed; the badge must not collapse both into 미생성.
+    assert "prescreen_reason" in script
+    assert "사전 필터 제외" in script
+    assert "미생성" in script
+
+
 def test_console_scripts_are_external_only() -> None:
     html = read("index.html")
     for match in re.finditer(r"<script\b[^>]*>", html):

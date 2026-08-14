@@ -529,5 +529,171 @@ test("runtime completion requires current url and company_info to trigger refres
   assert.strictEqual(api.__getState().companyInfoResult, null);
 });
 
+function makeSetAsideDetailResponse(verdict) {
+  return {
+    status: "ok",
+    data: {
+      record: {
+        company: "Acme",
+        position: "Backend Engineer",
+        screening_verdict: verdict === undefined ? null : verdict,
+        verdict_capped: false,
+        screening_provider: null,
+        prescreen_reason: "title_exclude"
+      },
+      screening_markdown: null,
+      jd_markdown: "# JD",
+      is_fallback: false
+    }
+  };
+}
+
+test("set-aside record renders its pre-screen reason even with no verdict", function () {
+  var harness = createHarness({
+    requestHandlers: {
+      get_detail: function () { return makeSetAsideDetailResponse(null); },
+      get_company_info: function () { return { status: "ok", data: { company_info_markdown: "# Company" } }; }
+    }
+  });
+  var api = harness.api;
+  api.__setState({ url: "https://current.example/job/1", detected: { platform: "wanted", jobId: "1" } });
+  api.__renderCollecting("대기 중...");
+  var listener = harness.runtimeListener();
+
+  listener({
+    action: "screening_complete",
+    url: "https://current.example/job/1",
+    data: {
+      verdict_label: "사전 필터 제외 기록",
+      company_info: { status: "ready", attempted: true, persisted: true, completeness: 100, warning_code: null }
+    }
+  });
+
+  var text = harness.textTree();
+  assert.ok(text.indexOf("사전 필터에서 판정되어 상세 스크리닝이 실행되지 않았습니다.") >= 0);
+  assert.ok(text.indexOf("사유: 제목 제외 키워드 매칭") >= 0);
+  assert.strictEqual(text.indexOf("스크리닝 결과가 아직 없습니다."), -1);
+
+  // A later poll tick must not clobber the rendered reason.
+  api.__pollOnce();
+  assert.ok(harness.textTree().indexOf("사유: 제목 제외 키워드 매칭") >= 0);
+});
+
+test("set-aside record with a verdict still renders its pre-screen reason", function () {
+  var harness = createHarness({
+    requestHandlers: {
+      get_detail: function () { return makeSetAsideDetailResponse("not_recommended"); },
+      get_company_info: function () { return { status: "ok", data: { company_info_markdown: "# Company" } }; }
+    }
+  });
+  var api = harness.api;
+  api.__setState({ url: "https://current.example/job/1", detected: { platform: "wanted", jobId: "1" } });
+  var listener = harness.runtimeListener();
+
+  listener({
+    action: "screening_complete",
+    url: "https://current.example/job/1",
+    data: {
+      screening_verdict: "not_recommended",
+      company_info: { status: "ready", attempted: true, persisted: true, completeness: 100, warning_code: null }
+    }
+  });
+
+  assert.ok(harness.textTree().indexOf("사유: 제목 제외 키워드 매칭") >= 0);
+});
+
+test("poll stops and renders the detail for a set-aside record", function () {
+  var harness = createHarness({
+    requestHandlers: {
+      get_detail: function () { return makeSetAsideDetailResponse(null); }
+    }
+  });
+  var api = harness.api;
+  api.__setState({ url: "https://current.example/job/1", detected: { platform: "wanted", jobId: "1" } });
+  api.__renderCollecting("대기 중...");
+
+  api.__pollOnce();
+
+  var text = harness.textTree();
+  assert.ok(text.indexOf("사유: 제목 제외 키워드 매칭") >= 0, text);
+  assert.strictEqual(text.indexOf("스크리닝 중..."), -1, text);
+  assert.strictEqual(api.__getState().progressStageText, null);
+});
+
+test("header badge names the set-aside state instead of 미스크리닝", function () {
+  var harness = createHarness({
+    requestHandlers: {
+      get_detail: function () { return makeSetAsideDetailResponse(null); },
+      get_company_info: function () { return { status: "ok", data: { company_info_markdown: "# Company" } }; }
+    }
+  });
+  var api = harness.api;
+  api.__setState({ url: "https://current.example/job/1", detected: { platform: "wanted", jobId: "1" } });
+  var listener = harness.runtimeListener();
+
+  listener({
+    action: "screening_complete",
+    url: "https://current.example/job/1",
+    data: {
+      verdict_label: "사전 필터 제외 기록",
+      company_info: { status: "ready", attempted: true, persisted: true, completeness: 100, warning_code: null }
+    }
+  });
+
+  var badge = harness.content.querySelector(".verdict-badge");
+  assert.ok(badge, "no verdict badge rendered");
+  var badgeText = textTree(badge);
+  assert.ok(badgeText.indexOf("사전 필터 제외 기록") >= 0, badgeText);
+  assert.strictEqual(badgeText.indexOf("미스크리닝"), -1, badgeText);
+});
+
+test("header badge still reads 미스크리닝 for a record that was never screened", function () {
+  var harness = createHarness({
+    requestHandlers: {
+      get_detail: function () { return makeNoVerdictDetailResponse(); },
+      get_company_info: function () { return { status: "ok", data: { company_info_markdown: "# Company" } }; }
+    }
+  });
+  var api = harness.api;
+  api.__setState({ url: "https://current.example/job/1", detected: { platform: "wanted", jobId: "1" } });
+  var listener = harness.runtimeListener();
+
+  listener({
+    action: "screening_complete",
+    url: "https://current.example/job/1",
+    data: {
+      company_info: { status: "ready", attempted: true, persisted: true, completeness: 100, warning_code: null }
+    }
+  });
+
+  var badgeText = textTree(harness.content.querySelector(".verdict-badge"));
+  assert.ok(badgeText.indexOf("미스크리닝") >= 0, badgeText);
+});
+
+test("header badge for a verdict-bearing record is unchanged", function () {
+  var harness = createHarness({
+    requestHandlers: {
+      get_detail: function () { return makeSetAsideDetailResponse("not_recommended"); },
+      get_company_info: function () { return { status: "ok", data: { company_info_markdown: "# Company" } }; }
+    }
+  });
+  var api = harness.api;
+  api.__setState({ url: "https://current.example/job/1", detected: { platform: "wanted", jobId: "1" } });
+  var listener = harness.runtimeListener();
+
+  listener({
+    action: "screening_complete",
+    url: "https://current.example/job/1",
+    data: {
+      screening_verdict: "not_recommended",
+      company_info: { status: "ready", attempted: true, persisted: true, completeness: 100, warning_code: null }
+    }
+  });
+
+  var badgeText = textTree(harness.content.querySelector(".verdict-badge"));
+  assert.ok(badgeText.indexOf("비추천") >= 0, badgeText);
+  assert.strictEqual(badgeText.indexOf("사전 필터 제외 기록"), -1, badgeText);
+});
+
 console.log(passed + "/" + (passed + failed) + " passed");
 if (failed > 0) process.exit(1);

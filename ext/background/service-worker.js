@@ -20,7 +20,17 @@ var nativePort = null;
 var nextRequestId = 1;
 var notificationContexts = new Map();
 var pendingRequests = new Map(); // request_id -> {resolve, reject}
-var COMPLETION_DATA_ALLOWLIST = ["company", "position", "verdict_label", "screening_verdict", "verdict_capped"];
+var COMPLETION_DATA_ALLOWLIST = [
+  "company",
+  "position",
+  "verdict_label",
+  "screening_verdict",
+  "verdict_capped",
+  // The content script decides "was this record decided?" from a verdict OR a
+  // pre-screen reason. Dropping the reason here made a set-aside record arrive
+  // looking undecided, and the badge redrew the screen button.
+  "prescreen_reason"
+];
 
 function connectNativeHost() {
   if (nativePort) return nativePort;
