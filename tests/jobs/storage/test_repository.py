@@ -474,6 +474,35 @@ def test_verdict_update_preserves_application_history(tmp_path: Path) -> None:
     assert updated.record.application_history == expected_history
 
 
+def test_update_prescreen_sets_reason_without_verdict(tmp_path: Path) -> None:
+    repo = JDRecordRepository(tmp_path)
+    key = JobKey("wanted", "100001")
+    repo.create(_record(), jd_markdown="body")
+
+    updated = repo.update_prescreen(key, "title_exclude")
+
+    assert updated.record.screening_verdict is None
+    assert updated.record.prescreen_reason == "title_exclude"
+    reread = repo.get(key).record
+    assert reread.screening_verdict is None
+    assert reread.prescreen_reason == "title_exclude"
+
+
+def test_update_prescreen_preserves_an_existing_verdict(tmp_path: Path) -> None:
+    repo = JDRecordRepository(tmp_path)
+    key = JobKey("wanted", "100001")
+    repo.create(_record(), jd_markdown="body")
+    repo.update_verdict(key, ScreeningVerdict.HOLD, prescreen_reason="title_exclude")
+
+    updated = repo.update_prescreen(key, "closed")
+
+    assert updated.record.screening_verdict is ScreeningVerdict.HOLD
+    assert updated.record.prescreen_reason == "closed"
+    reread = repo.get(key).record
+    assert reread.screening_verdict is ScreeningVerdict.HOLD
+    assert reread.prescreen_reason == "closed"
+
+
 def test_screening_result_atomically_preserves_newer_status_metadata(tmp_path: Path) -> None:
     repo = JDRecordRepository(tmp_path)
     repo.create(_record(), jd_markdown="body")
@@ -719,6 +748,9 @@ def test_update_operations_require_existing_record(tmp_path: Path) -> None:
 
     with pytest.raises(JobRecordNotFound):
         repo.update_status(key, application_status=ApplicationStatus.APPLIED)
+
+    with pytest.raises(JobRecordNotFound):
+        repo.update_prescreen(key, "title_exclude")
 
 
 def test_missing_record_has_distinct_required_and_optional_lookup_semantics(tmp_path: Path) -> None:

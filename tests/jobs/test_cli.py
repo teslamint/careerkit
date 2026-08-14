@@ -22,7 +22,7 @@ from careerkit.jobs.application.automation import (
 from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.company_info import CompanyValidationSummary
 from careerkit.jobs.application.maintenance import CheckClosedResult
-from careerkit.jobs.application.pipeline import IngestResult, QueueStatusResult
+from careerkit.jobs.application.pipeline import IngestResult, PrescreenedListing, QueueStatusResult
 from careerkit.jobs.application.preflight import PreflightFinding, StoragePreflightResult
 from careerkit.jobs.domain.model import (
     ApplicationEvent,
@@ -300,6 +300,12 @@ class FakePipeline:
         if self.classify_error is not None:
             raise self.classify_error
         return IngestResult(source='wanted/1', job_id='1', outcome='success', message='classified')
+
+    def list_prescreened(self, *, reason: str | None = None) -> PrescreenedListing:
+        # Present so this double still satisfies PipelineOps, but never a stand-in
+        # for _PrescreenedPipeline: an empty listing would let a queue prescreened
+        # test pass while asserting nothing.
+        raise AssertionError('queue prescreened tests use _PrescreenedPipeline')
 
     def rescreen_record(self, key: JobKey, *, dry_run: bool = False):
         return [IngestResult(source='wanted/1', job_id='1', outcome='success', message='rescanned')]
@@ -2749,3 +2755,510 @@ def test_cli_company_apply_returns_usage_error_for_digest_conflict(monkeypatch, 
 
     assert cli.main(['company', 'apply', '--company-name', 'Acme', '--input', str(source), '--expected-digest', digest]) == 2
     assert 'digest' in capsys.readouterr().err
+
+
+def _prescreened_metadata(
+    job_id: str,
+    *,
+    reason: str | None = None,
+    verdict: ScreeningVerdict | None = None,
+):
+    from careerkit.jobs.adapters.storage.file_records import StoredJobMetadata
+
+    return StoredJobMetadata(
+        record=JobRecord(
+            'wanted',
+            job_id,
+            'Acme',
+            'Backend',
+            screening_verdict=verdict,
+            prescreen_reason=reason,
+        ),
+        has_screening=False,
+    )
+
+
+class _PrescreenedPipeline(FakePipeline):
+    def __init__(self, set_aside=(), legacy=()) -> None:
+        super().__init__()
+        self.listing = (list(set_aside), list(legacy))
+        self.reason_calls: list[str | None] = []
+
+    def list_prescreened(self, *, reason: str | None = None) -> PrescreenedListing:
+        self.reason_calls.append(reason)
+        set_aside, legacy = self.listing
+        if reason is not None:
+            set_aside = [item for item in set_aside if item.record.prescreen_reason == reason]
+            legacy = [item for item in legacy if item.record.prescreen_reason == reason]
+        return PrescreenedListing(set_aside=list(set_aside), legacy=list(legacy))
+
+
+class _PrescreenedRepository:
+    """Fake record store whose screening document appears once screening runs."""
+
+    def __init__(self) -> None:
+        self.screened: set[str] = set()
+
+    def get_metadata(self, key: JobKey):
+        from careerkit.jobs.adapters.storage.file_records import StoredJobMetadata
+
+        return StoredJobMetadata(
+            record=JobRecord('wanted', key.job_id, 'Acme', 'Backend'),
+            has_screening=key.job_id in self.screened,
+        )
+
+    def get(self, key: JobKey):
+        return SimpleNamespace(
+            record=JobRecord('wanted', key.job_id, 'Acme', 'Backend'),
+            jd_markdown='# JD',
+        )
+
+
+def _prescreened_cli(monkeypatch, tmp_path: Path, pipeline, repository=None):
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+
+    class FakeCompanyInfo:
+        def __init__(self, *, workspace):
+            pass
+
+        def find_matching_file(self, company_name: str):
+            return None
+
+        def validate(self, *, file_name: str):
+            return SimpleNamespace(errors=(), incomplete_companies=0)
+
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=pipeline,
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+    monkeypatch.setattr(cli, 'JDRecordRepository', lambda path: repository or _PrescreenedRepository())
+    monkeypatch.setattr(cli, 'CompanyInfoService', FakeCompanyInfo)
+    monkeypatch.setattr(cli, 'load_candidate_context', lambda workspace: 'context')
+    return bundle
+
+
+def test_queue_prescreened_lists_set_aside_and_legacy_separately(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+
+    assert cli.main(['queue', 'prescreened', '--list']) == 0
+
+    out = capsys.readouterr().out
+    assert 'set aside' in out
+    assert 'legacy' in out
+    set_aside_at = out.index('set aside')
+    legacy_at = out.index('legacy')
+    assert set_aside_at < out.index('wanted:1') < legacy_at < out.index('wanted:2')
+    assert 'title_exclude' in out
+
+
+def test_queue_prescreened_screen_requires_limit(monkeypatch, capsys, tmp_path: Path) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[
+            _prescreened_metadata('1', reason='title_exclude'),
+            _prescreened_metadata('2', reason='title_exclude'),
+        ],
+        legacy=[_prescreened_metadata('3', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, 'run_screening', lambda **kwargs: calls.append(kwargs))
+
+    assert cli.main(['queue', 'prescreened', '--screen']) == 1
+
+    assert calls == []
+    assert '2' in capsys.readouterr().err
+
+
+def test_queue_prescreened_screen_requires_limit_counts_legacy_when_included(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, 'run_screening', lambda **kwargs: calls.append(kwargs))
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--json']) == 1
+
+    assert calls == []
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['backlog'] == 2
+    assert 'error' in payload
+
+
+def test_queue_prescreened_json_separates_verdict_bearing_records(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+
+    assert cli.main(['queue', 'prescreened', '--list', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['set_aside_count'] == 1
+    assert payload['legacy_count'] == 1
+    assert payload['set_aside'] == [
+        {
+            'job_key': 'wanted:1',
+            'company': 'Acme',
+            'prescreen_reason': 'title_exclude',
+        }
+    ]
+    assert payload['legacy'] == [
+        {
+            'job_key': 'wanted:2',
+            'company': 'Acme',
+            'screening_verdict': 'not_recommended',
+        }
+    ]
+
+
+@pytest.mark.parametrize('limit', ['0', '-1'])
+def test_queue_prescreened_rejects_a_non_positive_limit(
+    monkeypatch, capsys, tmp_path: Path, limit: str
+) -> None:
+    _prescreened_cli(monkeypatch, tmp_path, _PrescreenedPipeline())
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(['queue', 'prescreened', '--list', '--limit', limit])
+
+    assert excinfo.value.code == 2
+    assert 'positive integer' in capsys.readouterr().err
+
+
+def test_queue_prescreened_screen_skips_legacy_without_include_legacy(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+    screened: list[str] = []
+
+    def _run(**kwargs):
+        job_id = kwargs['jd'].record.job_id
+        screened.append(job_id)
+        repository.screened.add(job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--limit', '5', '--json']) == 0
+
+    assert screened == ['1']
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['rescreened'] == 1
+    assert payload['still_unscreened'] == 0
+
+
+def test_queue_prescreened_screen_includes_legacy_when_asked(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+    screened: list[str] = []
+
+    def _run(**kwargs):
+        job_id = kwargs['jd'].record.job_id
+        screened.append(job_id)
+        repository.screened.add(job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '5']) == 0
+
+    assert screened == ['1', '2']
+
+
+def test_queue_prescreened_screen_caps_the_batch_at_the_limit(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[
+            _prescreened_metadata('1', reason='title_exclude'),
+            _prescreened_metadata('2', reason='title_exclude'),
+        ],
+        legacy=[_prescreened_metadata('3', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+    screened: list[str] = []
+
+    def _run(**kwargs):
+        job_id = kwargs['jd'].record.job_id
+        screened.append(job_id)
+        repository.screened.add(job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '2']) == 0
+
+    assert screened == ['1', '2']
+
+
+def test_queue_prescreened_screen_does_not_require_a_strong_provider(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+    seen: list[bool] = []
+
+    def _run(**kwargs):
+        seen.append(kwargs['require_strong_provider'])
+        repository.screened.add(kwargs['jd'].record.job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--limit', '1']) == 0
+
+    assert seen == [False]
+
+
+def test_queue_prescreened_screen_reports_a_record_left_unscreened(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+    monkeypatch.setattr(cli, 'run_screening', lambda **kwargs: _screening())
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--limit', '1', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['rescreened'] == 0
+    assert payload['still_unscreened'] == 1
+
+
+def test_queue_prescreened_passes_the_reason_filter_through(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[
+            _prescreened_metadata('1', reason='title_exclude'),
+            _prescreened_metadata('2', reason='backend_override'),
+        ],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+
+    assert cli.main(['queue', 'prescreened', '--list', '--reason', 'backend_override', '--json']) == 0
+
+    assert pipeline.reason_calls == ['backend_override']
+    payload = json.loads(capsys.readouterr().out)
+    assert [item['job_key'] for item in payload['set_aside']] == ['wanted:2']
+
+
+def test_queue_prescreened_rejects_list_and_screen_together(monkeypatch, tmp_path: Path) -> None:
+    _prescreened_cli(monkeypatch, tmp_path, _PrescreenedPipeline())
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(['queue', 'prescreened', '--list', '--screen'])
+
+    assert excinfo.value.code == 2
+
+
+def test_queue_prescreened_list_limit_reports_the_true_backlog(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata(str(index), reason='title_exclude') for index in range(1, 4)],
+        legacy=[
+            _prescreened_metadata('8', verdict=ScreeningVerdict.NOT_RECOMMENDED),
+            _prescreened_metadata('9', verdict=ScreeningVerdict.NOT_RECOMMENDED),
+        ],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+
+    assert cli.main(['queue', 'prescreened', '--list', '--limit', '1']) == 0
+
+    out = capsys.readouterr().out
+    assert '3 records set aside by pre-screen (showing 1):' in out
+    assert '2 legacy verdicts without a screening document (showing 1):' in out
+    assert 'wanted:2' not in out
+
+
+def test_queue_prescreened_list_json_reports_the_true_backlog(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata(str(index), reason='title_exclude') for index in range(1, 4)],
+        legacy=[
+            _prescreened_metadata('8', verdict=ScreeningVerdict.NOT_RECOMMENDED),
+            _prescreened_metadata('9', verdict=ScreeningVerdict.NOT_RECOMMENDED),
+        ],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+
+    assert cli.main(['queue', 'prescreened', '--list', '--limit', '1', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['set_aside_count'] == 3
+    assert payload['legacy_count'] == 2
+    assert payload['set_aside_shown'] == 1
+    assert payload['legacy_shown'] == 1
+    assert len(payload['set_aside']) == 1
+    assert len(payload['legacy']) == 1
+
+
+def test_queue_prescreened_list_omits_the_showing_suffix_when_nothing_is_hidden(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+    )
+    _prescreened_cli(monkeypatch, tmp_path, pipeline)
+
+    assert cli.main(['queue', 'prescreened', '--list', '--limit', '5']) == 0
+
+    assert 'showing' not in capsys.readouterr().out
+
+
+def test_queue_prescreened_screen_says_include_legacy_reached_nothing(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[
+            _prescreened_metadata('1', reason='title_exclude'),
+            _prescreened_metadata('2', reason='title_exclude'),
+        ],
+        legacy=[_prescreened_metadata('3', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+    screened: list[str] = []
+
+    def _run(**kwargs):
+        job_id = kwargs['jd'].record.job_id
+        screened.append(job_id)
+        repository.screened.add(job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '2']) == 0
+
+    assert screened == ['1', '2']
+    out = capsys.readouterr().out
+    assert '--include-legacy screened no legacy record' in out
+    assert '1 legacy records waiting' in out
+
+
+def test_queue_prescreened_screen_json_carries_the_legacy_notice(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+
+    def _run(**kwargs):
+        repository.screened.add(kwargs['jd'].record.job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '1', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['set_aside_screened'] == 1
+    assert payload['legacy_screened'] == 0
+    assert payload['notice'] is not None
+
+
+def test_queue_prescreened_screen_is_silent_when_legacy_records_fit(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+
+    def _run(**kwargs):
+        repository.screened.add(kwargs['jd'].record.job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '5', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['legacy_screened'] == 1
+    assert payload['notice'] is None
+
+
+def test_queue_prescreened_screen_is_silent_when_no_legacy_record_exists(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    # Without this case, dropping the `legacy_total` guard from the notice's trigger
+    # passes the whole suite while emitting "0 legacy records waiting" to a user whose
+    # backlog has no legacy record at all.
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+
+    def _run(**kwargs):
+        repository.screened.add(kwargs['jd'].record.job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--include-legacy', '--limit', '1', '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['legacy_screened'] == 0
+    assert payload['notice'] is None
+
+
+def test_queue_prescreened_screen_is_silent_without_include_legacy(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    pipeline = _PrescreenedPipeline(
+        set_aside=[_prescreened_metadata('1', reason='title_exclude')],
+        legacy=[_prescreened_metadata('2', verdict=ScreeningVerdict.NOT_RECOMMENDED)],
+    )
+    repository = _PrescreenedRepository()
+    _prescreened_cli(monkeypatch, tmp_path, pipeline, repository)
+
+    def _run(**kwargs):
+        repository.screened.add(kwargs['jd'].record.job_id)
+        return _screening(verdict='지원 보류', provider='ollama', published=True)
+
+    monkeypatch.setattr(cli, 'run_screening', _run)
+
+    assert cli.main(['queue', 'prescreened', '--screen', '--limit', '1', '--json']) == 0
+
+    assert json.loads(capsys.readouterr().out)['notice'] is None

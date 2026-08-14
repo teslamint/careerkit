@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Iterable, Mapping
 
+from careerkit.jobs.application.requirement_manifest import extract_requirement_manifest
+
 _BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]*\]\s*")
 _BACKEND_KW_RE = re.compile(r"backend|back(?:-|\s|_)?end|server|백엔드|서버", re.IGNORECASE)
 _DOMAIN_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
@@ -92,6 +94,11 @@ def strip_bracket_prefix(title: str) -> str:
 
 def has_backend_keyword(title: str) -> bool:
     return bool(_BACKEND_KW_RE.search(strip_bracket_prefix(title)))
+
+
+def requirements_show_backend(jd_markdown: str) -> bool:
+    manifest = extract_requirement_manifest(jd_markdown)
+    return any(has_backend_keyword(item.text) for item in manifest.parents)
 
 
 def classify_non_backend_domain(title: str) -> str | None:

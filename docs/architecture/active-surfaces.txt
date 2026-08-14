@@ -124,6 +124,7 @@ src/careerkit/jobs/domain/filters.py
 src/careerkit/jobs/domain/model.py
 src/careerkit/jobs/domain/naming.py
 src/careerkit/jobs/domain/verdict.py
+src/careerkit/jobs/probe_prescreen_confirmation.py
 src/careerkit/jobs/probe_screening_provider_contract.py
 src/careerkit/jobs/resources/__init__.py
 src/careerkit/jobs/resources/prompts/__init__.py
@@ -180,6 +181,7 @@ tests/docs/test_merge_readiness_documentation.py
 tests/ext/__init__.py
 tests/ext/conftest.py
 tests/ext/fixtures/url_patterns.json
+tests/ext/test_badge.cjs
 tests/ext/test_content_detector.cjs
 tests/ext/test_e2e_extension.py
 tests/ext/test_integration.py
@@ -213,6 +215,7 @@ tests/jobs/application/test_pipeline.py
 tests/jobs/application/test_requirement_manifest.py
 tests/jobs/application/test_screening.py
 tests/jobs/application/test_screening_assessment.py
+tests/jobs/application/test_title_filter.py
 tests/jobs/console/test_console_e2e.py
 tests/jobs/console/test_server.py
 tests/jobs/console/test_static_contract.py
@@ -238,6 +241,7 @@ tests/jobs/test_cli_verbose.py
 tests/jobs/test_http.py
 tests/jobs/test_optional_dependency_imports.py
 tests/jobs/test_preflight.py
+tests/jobs/test_probe_prescreen_confirmation.py
 tests/jobs/test_probe_screening_provider_contract.py
 tests/jobs/test_screening_lint.py
 tests/jobs/test_screening_lint_hook.py

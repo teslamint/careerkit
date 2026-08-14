@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import stat
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -1332,7 +1333,8 @@ def test_screening_stage_prescreens_closed_and_recent_prior_application(tmp_path
     assert repository.get(JobKey("wanted", "1")).record.posting_status is PostingStatus.CLOSED
     current_record = repository.get(JobKey("remember", "3")).record
     assert current_record.application_status is ApplicationStatus.REJECTED
-    assert current_record.screening_verdict is ScreeningVerdict.NOT_RECOMMENDED
+    assert current_record.screening_verdict is None
+    assert current_record.prescreen_reason == "prior_application"
     assert len(current_record.application_history) == 1
     assert current_record.application_history[0].status is ApplicationStatus.REJECTED
     assert current_record.application_history[0].note is None
@@ -1501,10 +1503,271 @@ def test_screening_stage_prescreens_title_and_domain_for_url_batches(tmp_path: P
     assert result.item_ids == ("wanted:12",)
     assert result.metadata["prescreen_reasons"] == {"domain_frontend": 1, "title_exclude": 1}
     assert screened == ["12"]
-    for job_id in ("10", "11"):
+    for job_id, expected_reason in {"10": "title_exclude", "11": "domain_frontend"}.items():
         record = repository.get(JobKey("wanted", job_id)).record
         assert record.application_status is ApplicationStatus.PENDING
-        assert record.screening_verdict is ScreeningVerdict.NOT_RECOMMENDED
+        assert record.screening_verdict is None
+        assert record.prescreen_reason == expected_reason
+
+
+def test_pre_screen_writes_reason_without_verdict(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    excluded = repository.create(
+        JobRecord("wanted", "30", "Synthetic Co", "Synthetic Excluded Role"),
+        jd_markdown="# Synthetic Excluded Role\n",
+    )
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["Synthetic Excluded Role"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:30",), (excluded,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ()
+    assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
+    stored = repository.get(JobKey("wanted", "30")).record
+    assert stored.screening_verdict is None
+    assert stored.prescreen_reason == "title_exclude"
+
+
+def _jd_with_requirements(title: str, *, backend: bool) -> str:
+    requirement = (
+        "- Python 기반 API 서버 개발 경험 3년 이상"
+        if backend
+        else "- React 기반 웹 UI 개발 경험 3년 이상"
+    )
+    return f"# {title}\n\n## 자격요건\n\n{requirement}\n- 관계형 데이터베이스 스키마 설계 경험\n"
+
+
+def test_backend_confirmed_title_is_not_pre_screened(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    _write_valid_company_info(tmp_path, "synthetic-co", "Synthetic Co")
+    record = repository.create(
+        JobRecord("wanted", "34", "Synthetic Co", "Synthetic Excluded Role"),
+        jd_markdown=_jd_with_requirements("Synthetic Excluded Role", backend=True),
+    )
+    screened: list[str] = []
+
+    def fake_run_screening(**kwargs):
+        screened.append(kwargs["jd"].record.job_id)
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["Synthetic Excluded Role"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:34",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("wanted:34",)
+    assert result.metadata["prescreen_reasons"] == {}
+    assert screened == ["34"]
+    assert repository.get(JobKey("wanted", "34")).record.prescreen_reason is None
+
+
+def test_non_backend_requirements_keep_the_reason(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "35", "Synthetic Co", "Synthetic Excluded Role"),
+        jd_markdown=_jd_with_requirements("Synthetic Excluded Role", backend=False),
+    )
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["Synthetic Excluded Role"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:35",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ()
+    assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
+    assert repository.get(JobKey("wanted", "35")).record.prescreen_reason == "title_exclude"
+
+
+def test_backend_confirmed_domain_title_is_not_pre_screened(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    _write_valid_company_info(tmp_path, "synthetic-co", "Synthetic Co")
+    record = repository.create(
+        JobRecord("wanted", "36", "Synthetic Co", "Frontend Engineer"),
+        jd_markdown=_jd_with_requirements("Frontend Engineer", backend=True),
+    )
+    screened: list[str] = []
+
+    def fake_run_screening(**kwargs):
+        screened.append(kwargs["jd"].record.job_id)
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(("url",), ("wanted:36",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ("wanted:36",)
+    assert result.metadata["prescreen_reasons"] == {}
+    assert screened == ["36"]
+    assert repository.get(JobKey("wanted", "36")).record.prescreen_reason is None
+
+
+def test_backend_requirements_do_not_cancel_a_closed_posting(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "37", "Synthetic Co", "Synthetic Backend Role"),
+        jd_markdown=_jd_with_requirements("Synthetic Backend Role", backend=True) + "\n채용 마감\n",
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(("url",), ("wanted:37",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["prescreen_reasons"] == {"closed": 1}
+    stored = repository.get(JobKey("wanted", "37")).record
+    assert stored.posting_status is PostingStatus.CLOSED
+    assert stored.prescreen_reason == "closed"
+
+
+def test_backend_requirements_do_not_cancel_a_prior_application(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    prior_timestamp = datetime.now().isoformat()
+    repository.create(
+        JobRecord(
+            "wanted",
+            "38",
+            "Synthetic Co",
+            "Synthetic Backend Role",
+            application_status=ApplicationStatus.APPLIED,
+            application_status_updated_at=prior_timestamp,
+            application_history=(
+                ApplicationEvent(
+                    status=ApplicationStatus.APPLIED,
+                    occurred_at=prior_timestamp,
+                    note=None,
+                ),
+            ),
+        ),
+        jd_markdown="# Synthetic Backend Role\n",
+    )
+    record = repository.create(
+        JobRecord("wanted", "39", "Synthetic Co", "Synthetic Backend Role"),
+        jd_markdown=_jd_with_requirements("Synthetic Backend Role", backend=True),
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(("url",), ("wanted:39",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["prescreen_reasons"] == {"prior_application": 1}
+    assert repository.get(JobKey("wanted", "39")).record.prescreen_reason == "prior_application"
+
+
+def test_closed_posting_still_marks_posting_status(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    closed = repository.create(
+        JobRecord("wanted", "31", "Synthetic Co", "Synthetic Backend Role"),
+        jd_markdown="# JD\n\n채용 마감\n",
+    )
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(("url",), ("wanted:31",), (closed,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["prescreen_reasons"] == {"closed": 1}
+    stored = repository.get(JobKey("wanted", "31")).record
+    assert stored.posting_status is PostingStatus.CLOSED
+    assert stored.screening_verdict is None
+    assert stored.prescreen_reason == "closed"
+
+
+def test_pre_screen_write_failure_propagates_without_verdict_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _PrescreenWriteError(Exception):
+        """Distinct from RuntimeError/ValueError so the run_screening guard cannot swallow it."""
+
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    excluded = repository.create(
+        JobRecord("wanted", "32", "Synthetic Co", "Synthetic Excluded Role"),
+        jd_markdown="# Synthetic Excluded Role\n",
+    )
+    verdict_calls: list[tuple] = []
+
+    def raise_on_prescreen(key, reason):
+        del key, reason
+        raise _PrescreenWriteError("write failed")
+
+    monkeypatch.setattr(repository, "update_prescreen", raise_on_prescreen)
+    monkeypatch.setattr(
+        repository,
+        "update_verdict",
+        lambda *args, **kwargs: verdict_calls.append((args, kwargs)),
+    )
+    stage = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["Synthetic Excluded Role"]},
+    )
+
+    with pytest.raises(_PrescreenWriteError):
+        stage.screen(
+            ExtractionBatch(("url",), ("wanted:32",), (excluded,), {}),
+            dry_run=False,
+            llm_timeout=1,
+        )
+
+    assert verdict_calls == []
+
+
+def test_pre_screened_record_is_absent_from_verdict_counts(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    excluded = repository.create(
+        JobRecord("wanted", "33", "Synthetic Co", "Synthetic Excluded Role"),
+        jd_markdown="# Synthetic Excluded Role\n",
+    )
+
+    JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["Synthetic Excluded Role"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:33",), (excluded,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    counts: Counter[ScreeningVerdict | None] = Counter(
+        stored.record.screening_verdict for stored in repository.list()
+    )
+    assert counts[None] == 1
+    assert counts.get(ScreeningVerdict.NOT_RECOMMENDED, 0) == 0
 
 
 def test_screening_only_bypasses_prescreen_filters(tmp_path: Path, monkeypatch) -> None:
