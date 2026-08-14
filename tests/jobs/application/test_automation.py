@@ -1652,6 +1652,31 @@ def test_backend_requirements_do_not_cancel_a_seniority_exclusion(tmp_path: Path
     assert repository.get(JobKey("wanted", "41")).record.prescreen_reason == "title_exclude"
 
 
+def test_seniority_wins_when_title_matches_both_a_level_and_a_role_keyword(tmp_path: Path) -> None:
+    # "신입 Synthetic Excluded Backend Role" matches both 신입 (level) and
+    # Synthetic Excluded (role). The level keyword must win regardless of
+    # list ordering, because it is evidence the body cannot contradict.
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "43", "Synthetic Co", "신입 Synthetic Excluded Backend Role"),
+        jd_markdown=_jd_with_requirements("신입 Synthetic Excluded Backend Role", backend=True),
+    )
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_exclude": ["Synthetic Excluded", "신입"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:43",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
+    assert repository.get(JobKey("wanted", "43")).record.prescreen_reason == "title_exclude"
+
+
 def test_backend_requirements_still_cancel_a_role_exclusion(tmp_path: Path) -> None:
     # The complement: a role keyword *is* a guess about what the job is, and the
     # requirements outrank it. Without this the seniority guard could be widened to

@@ -74,19 +74,24 @@ def _quick_filters(config: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def matched_title_exclusion(title: str, config: Mapping[str, object]) -> str | None:
-    """The `title_exclude` keyword that cut this title, if one did.
+    """The strongest `title_exclude` keyword that cut this title, if one did.
 
-    `quick_filter_title` collapses an exclusion match and a `title_include` miss
-    into the same "pass", but they are different claims: one names something the
-    title *is*, the other only says the title did not advertise what we look for.
-    Callers deciding whether the JD body may overturn the cut need to tell them
-    apart.
+    When a title matches both a seniority keyword and a role keyword (e.g.
+    "신입 Frontend Backend Engineer"), the seniority keyword wins: it is evidence
+    the body cannot contradict, and a list ordering that puts the role keyword
+    first must not let the body cancel the cut. A role-only match returns the
+    first role keyword — ordering is immaterial there, since any role keyword
+    is equally cancellable.
     """
     title_lower = title.lower()
+    first_match: str | None = None
     for keyword in _string_list(_quick_filters(config).get("title_exclude", [])):
         if keyword.lower() in title_lower:
-            return keyword
-    return None
+            if is_level_exclusion(keyword):
+                return keyword
+            if first_match is None:
+                first_match = keyword
+    return first_match
 
 
 def is_level_exclusion(keyword: str) -> bool:
