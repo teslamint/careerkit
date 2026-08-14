@@ -29,6 +29,12 @@ class QueueStatusResult:
     counts: dict[str, int]
 
 
+@dataclass(frozen=True)
+class PrescreenedListing:
+    set_aside: list[StoredJobMetadata]
+    legacy: list[StoredJobMetadata]
+
+
 class JobsPipelineService:
     def __init__(self, *, workspace_root: Path, repository: JDRecordRepository, runtime_dir: Path) -> None:
         self.workspace_root = workspace_root
@@ -147,6 +153,23 @@ class JobsPipelineService:
             current=current_status.value,
             verdict=verdict,
         )
+
+    def list_prescreened(self, *, reason: str | None = None) -> PrescreenedListing:
+        """List records awaiting screening, split by whether a pre-screen reason exists."""
+        set_aside: list[StoredJobMetadata] = []
+        legacy: list[StoredJobMetadata] = []
+        for item in self.repository.list_metadata():
+            record = item.record
+            if record.posting_status is PostingStatus.CLOSED or item.has_screening:
+                continue
+            if reason is not None and record.prescreen_reason != reason:
+                continue
+            if record.screening_verdict is None:
+                if record.prescreen_reason is not None:
+                    set_aside.append(item)
+            else:
+                legacy.append(item)
+        return PrescreenedListing(set_aside=set_aside, legacy=legacy)
 
     def show_record(self, key: JobKey) -> StoredJobMetadata:
         return self.repository.get_metadata(key)

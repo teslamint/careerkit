@@ -39,9 +39,12 @@ from careerkit.jobs.application.storage_migration import extract_job_id, get_pla
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
     has_domain_counter_indicator,
+    is_level_exclusion,
+    matched_title_exclusion,
     quick_filter_title,
+    requirements_show_backend,
 )
-from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus, ScreeningVerdict
+from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus
 from careerkit.jobs.domain.naming import slugify_company
 from careerkit.workspace import WorkspacePaths
 
@@ -841,10 +844,26 @@ def _pre_screen_reason(
             ):
                 return "prior_application"
     position = record.record.position
+    # The conjunct sits inside each inferring branch, not above the chain: the returns
+    # further up rest on evidence (a closed marker, a recorded application) rather than
+    # on a guess about the role, so requirements must not cancel them.
+    confirmed: bool | None = None
+
+    def backend_confirmed() -> bool:
+        nonlocal confirmed
+        if confirmed is None:
+            confirmed = requirements_show_backend(record.jd_markdown)
+        return confirmed
+
     if quick_filter_title(position, {"quick_filters": quick_filters}) == "pass":
-        return "title_exclude"
+        # A seniority keyword is evidence like a closed marker, not a guess about the
+        # role: backend work in the body does not make a 신입 posting a senior one.
+        # Role and domain keywords are a guess, and the requirements outrank them.
+        excluded_by = matched_title_exclusion(position, {"quick_filters": quick_filters})
+        if (excluded_by is not None and is_level_exclusion(excluded_by)) or not backend_confirmed():
+            return "title_exclude"
     domain = classify_non_backend_domain(position)
-    if domain and not has_domain_counter_indicator(position, domain):
+    if domain and not has_domain_counter_indicator(position, domain) and not backend_confirmed():
         return f"domain_{domain}"
     return None
 
@@ -937,7 +956,7 @@ class JobsScreeningStage:
                         self.repository.update_status(record.record.key, posting_status=PostingStatus.CLOSED)
                     elif prescreen_reason == "prior_application":
                         self.repository.update_status(record.record.key, application_status=ApplicationStatus.REJECTED)
-                    self.repository.update_verdict(record.record.key, ScreeningVerdict.NOT_RECOMMENDED, prescreen_reason=prescreen_reason)
+                    self.repository.update_prescreen(record.record.key, prescreen_reason)
                 continue
             try:
                 result = run_screening(

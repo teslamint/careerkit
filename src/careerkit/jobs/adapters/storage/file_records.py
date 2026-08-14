@@ -230,6 +230,18 @@ class JDRecordRepository:
             self._publish_manifest(record_dir, updated_record, content)
             return replace(current, record=updated_record)
 
+    def update_prescreen(self, key: JobKey, reason: str) -> StoredJobRecord:
+        """Record why screening was skipped, leaving the verdict field untouched."""
+        record_dir = self._record_dir(key)
+        if not self._manifest_path(record_dir).exists():
+            raise JobRecordNotFound(f"Record not found: {key!r}")
+        with self._locked(record_dir, exclusive=True):
+            current = self._read_existing_locked(key, record_dir)
+            updated_record = replace(current.record, prescreen_reason=reason)
+            content = self._load_manifest_content(record_dir)
+            self._publish_manifest(record_dir, updated_record, content)
+            return replace(current, record=updated_record)
+
     def update_status(
         self,
         key: JobKey,

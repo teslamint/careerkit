@@ -83,6 +83,17 @@ def _running_server(tmp_path: Path) -> Iterator[str]:
         JobKey("wanted", "9999"),
         screening_markdown="# Capped screening\nhold (capped)",
     )
+    repo.create(
+        JobRecord(
+            platform="wanted",
+            job_id="8888",
+            company="SetAsideCo",
+            position="Set Aside Engineer",
+            source_url="https://www.wanted.co.kr/wd/8888",
+        ),
+        jd_markdown="# Set aside JD",
+    )
+    repo.update_prescreen(JobKey("wanted", "8888"), "title_exclude")
     server = create_server(
         records_root=records,
         database_path=tmp_path / "derived" / "search.sqlite3",
@@ -254,6 +265,28 @@ def test_screening_absent_shows_message(browser_page: Page) -> None:
     screening = browser_page.locator("#screening-content")
     expect(screening).not_to_have_text("")
     expect(screening).to_contain_text("스크리닝 결과가 아직 없습니다")
+
+
+def test_set_aside_record_is_named_apart_from_an_unscreened_one(browser_page: Page) -> None:
+    # Both carry a null verdict. Collapsing them into 미생성 erases the reason the
+    # pre-screen recorded, which is the distinction this state exists to draw.
+    browser_page.locator("#job-id").fill("")
+    browser_page.locator("#job-id").fill("8888")
+    browser_page.locator("#search-form button[type='submit']").click()
+    browser_page.wait_for_selector(".result-card")
+    expect(browser_page.locator(".result-card").first).to_contain_text("사전 필터 제외")
+
+    browser_page.locator(".result-card").first.click()
+    expect(browser_page.locator("#detail-meta")).to_contain_text("사전 필터 제외")
+    expect(browser_page.locator("#detail-meta")).to_contain_text("제목 제외 키워드 매칭")
+
+
+def test_record_with_no_verdict_and_no_reason_still_reads_unscreened(browser_page: Page) -> None:
+    browser_page.locator("#job-id").fill("")
+    browser_page.locator("#job-id").fill("1003")
+    browser_page.locator("#search-form button[type='submit']").click()
+    browser_page.wait_for_selector(".result-card")
+    expect(browser_page.locator(".result-card").first).to_contain_text("미생성")
 
 
 def test_empty_state_id_mismatch(browser_page: Page) -> None:
