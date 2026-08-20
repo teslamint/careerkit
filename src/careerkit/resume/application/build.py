@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import Any
 
 from careerkit.resume.adapters.filesystem import ResumeWorkspaceAdapter
 from datetime import datetime
