@@ -107,13 +107,13 @@ class ResumeBuildService:
             return [extract_overview(profile_content)]
         parts = [profile_content.strip()]
         excluded_projects: set[str] = set(detail.get("exclude_projects") or [])
-        for rel_dir, allowed in (
-            ("projects", detail.get("projects")),
-            ("achievements", detail.get("achievements")),
+        for rel_dir, allowed, excluded in (
+            ("projects", detail.get("projects"), excluded_projects),
+            ("achievements", detail.get("achievements"), set()),
         ):
             base_dir = company_dir / rel_dir
             if base_dir.exists():
-                for path in self._filter_project_paths(base_dir, allowed, excluded_projects):
+                for path in self._filter_project_paths(base_dir, allowed, excluded):
                     parts.append(filter_content(self.adapter.read_file(path), variant).strip())
         return [part for part in parts if part]
 
@@ -237,8 +237,7 @@ class ResumeBuildService:
         return f"# Education\n{school} | {major} ({period})"
 
     def build_wanted(self, variant: str, *, now: datetime | None = None) -> str:
-        config_all = self.adapter.load_variant_config()
-        config = config_all.get(variant, config_all["job"])
+        config = self.adapter.load_target_config(self.adapter.target, variant)
         profile_dir = self.adapter.profile_dir
         lines: list[str] = []
         contact = profile_dir / "contact.md"

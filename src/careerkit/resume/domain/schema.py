@@ -170,7 +170,27 @@ def validate_company_key_case(base_dir: Path) -> list[ValidationError]:
                                     f"company_detail['{company}'].level must be 'full' or 'summary', got {level!r}",
                                 )
                             )
-                    elif not isinstance(value, str):
+                        for list_key in ("projects", "achievements", "exclude_projects"):
+                            list_val = value.get(list_key)
+                            if list_val is None:
+                                continue
+                            if not isinstance(list_val, list) or not all(isinstance(item, str) for item in list_val):
+                                errors.append(
+                                    ValidationError(
+                                        str(config_path),
+                                        f"company_detail['{company}'].{list_key} must be a list of strings or null,"
+                                        f" got {type(list_val).__name__}",
+                                    )
+                                )
+                    elif isinstance(value, str):
+                        if value not in ("full", "summary"):
+                            errors.append(
+                                ValidationError(
+                                    str(config_path),
+                                    f"company_detail['{company}'] must be 'full' or 'summary', got {value!r}",
+                                )
+                            )
+                    else:
                         errors.append(
                             ValidationError(
                                 str(config_path),
