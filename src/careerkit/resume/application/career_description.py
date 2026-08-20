@@ -153,7 +153,7 @@ def _normalize_company_detail(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {"level": "full", "projects": None, "achievements": None, "exclude_projects": None}
     return {
-        "level": raw.get("level", "full"),
+        "level": raw.get("level") or "full",
         "projects": raw.get("projects"),
         "achievements": raw.get("achievements"),
         "exclude_projects": raw.get("exclude_projects"),
