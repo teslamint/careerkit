@@ -170,7 +170,7 @@ def validate_company_key_case(base_dir: Path) -> list[ValidationError]:
                                 )
                             )
                         level = value.get("level")
-                        if level is not None and level not in ("full", "summary"):
+                        if "level" in value and level not in ("full", "summary"):
                             errors.append(
                                 ValidationError(
                                     str(config_path),
