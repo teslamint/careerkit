@@ -148,6 +148,13 @@ def validate_company_key_case(base_dir: Path) -> list[ValidationError]:
             if isinstance(companies, list):
                 configured_keys.update(company for company in companies if isinstance(company, str))
             company_detail = variant_config.get("company_detail", {})
+            if company_detail is not None and not isinstance(company_detail, dict):
+                errors.append(
+                    ValidationError(
+                        str(config_path),
+                        f"company_detail must be a dict, got {type(company_detail).__name__}",
+                    )
+                )
             if isinstance(company_detail, dict):
                 for company, value in company_detail.items():
                     if not isinstance(company, str):
