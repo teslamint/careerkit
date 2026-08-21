@@ -265,3 +265,93 @@ def test_wanted_project_uses_legacy_period_section(tmp_path: Path) -> None:
     result = service.build_wanted("job")
 
     assert "Legacy Project\n2021.01 - 2021.12" in result
+
+
+def test_build_company_dict_detail_selects_and_excludes_projects(tmp_path: Path) -> None:
+    service = _make_service(
+        tmp_path,
+        {
+            "job": {
+                "companies": ["Acme"],
+                "company_detail": {
+                    "Acme": {"level": "full", "projects": ["api", "platform"], "exclude_projects": ["legacy"]}
+                },
+            },
+            "public": {"companies": []},
+        },
+    )
+    _write(tmp_path / "companies" / "Acme" / "profile.md", "# Acme\n\n## Overview\n- Period: 2020.01 - 2022.01\n- Role: Engineer\n")
+    _write(tmp_path / "companies" / "Acme" / "projects" / "api.md", "# API\n\nAPI work\n")
+    _write(tmp_path / "companies" / "Acme" / "projects" / "platform.md", "# Platform\n\nPlatform work\n")
+    _write(tmp_path / "companies" / "Acme" / "projects" / "legacy.md", "# Legacy\n\nLegacy work\n")
+    _write(tmp_path / "companies" / "Acme" / "projects" / "other.md", "# Other\n\nOther work\n")
+
+    result = "\n".join(service.build_company(tmp_path / "companies" / "Acme", "job"))
+
+    assert "API work" in result
+    assert "Platform work" in result
+    assert "Legacy work" not in result
+    assert "Other work" not in result
+
+
+def test_build_wanted_dict_detail_selects_projects(tmp_path: Path) -> None:
+    service = _make_service(
+        tmp_path,
+        {
+            "job": {
+                "companies": ["Acme"],
+                "company_detail": {"Acme": {"level": "full", "projects": ["api"]}},
+            },
+            "public": {"companies": []},
+        },
+    )
+    _write(tmp_path / "profile" / "contact.md", "# Contact\n- Name: User\n")
+    _write(
+        tmp_path / "companies" / "Acme" / "profile.md",
+        "# Acme\n\n## Overview\n- Period: 2020.01 - 2022.01\n- Role: Engineer\n",
+    )
+    _write(
+        tmp_path / "companies" / "Acme" / "projects" / "api.md",
+        "# API Project\n\n## Overview\n- Period: 2021\n\n## Tech Stack\n- FastAPI\n\n## Responsibilities\n- Built API\n",
+    )
+    _write(
+        tmp_path / "companies" / "Acme" / "projects" / "other.md",
+        "# Other Project\n\n## Overview\n- Period: 2021\n\n## Tech Stack\n- Python\n\n## Responsibilities\n- Did other\n",
+    )
+
+    result = service.build_wanted("job")
+
+    assert "API Project" in result
+    assert "FastAPI" in result
+    assert "Other Project" not in result
+
+
+def test_build_career_dict_detail_selects_projects(tmp_path: Path) -> None:
+    service = _make_service(
+        tmp_path,
+        {
+            "job": {
+                "companies": ["Acme"],
+                "company_detail": {"Acme": {"level": "full", "projects": ["api"]}},
+            },
+            "public": {"companies": []},
+        },
+    )
+    _write(
+        tmp_path / "companies" / "Acme" / "profile.md",
+        "# Acme\n\n## Overview\n- Period: 2020.01 - 2022.01\n- Role: Engineer\n\n## Summary\nOwned backend.\n",
+    )
+    _write(
+        tmp_path / "companies" / "Acme" / "projects" / "api.md",
+        "# API\n\n## Key Responsibilities\n- Built API\n\n## Achievements\n- Improved latency\n",
+    )
+    _write(
+        tmp_path / "companies" / "Acme" / "projects" / "other.md",
+        "# Other\n\n## Key Responsibilities\n- Did other\n",
+    )
+
+    result = build_career(service.adapter, "job")
+
+    assert "Built API" in result
+    assert "Improved latency" in result
+    assert "Did other" not in result

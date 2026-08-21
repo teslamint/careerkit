@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from careerkit.resume.adapters.filesystem import ResumeWorkspaceAdapter
 from datetime import datetime
@@ -124,11 +125,18 @@ def build_career_company(
     if narrative:
         parts.append(f"- 담당업무: {narrative}")
 
-    if detail_level == "full":
+    detail = _normalize_company_detail(detail_level)
+    if detail["level"] == "full":
+        excluded = set(detail.get("exclude_projects") or [])
+        allowed = detail.get("projects")
         project_index = 1
         for path_str in adapter.resolve_glob(company_dir / "projects", "*.md"):
             path = Path(path_str)
             if path.name == "CLAUDE.md":
+                continue
+            if path.stem in excluded or path.name in excluded:
+                continue
+            if allowed is not None and path.stem not in allowed and path.name not in allowed:
                 continue
             project = build_career_project(adapter, path, project_index, variant)
             if not project:
@@ -136,6 +144,20 @@ def build_career_company(
             parts.extend(("", project))
             project_index += 1
     return "\n".join(parts)
+
+
+def _normalize_company_detail(raw: Any) -> dict[str, Any]:
+    """Normalize company_detail entry to {level, projects, achievements, exclude_projects}."""
+    if isinstance(raw, str):
+        return {"level": raw, "projects": None, "achievements": None, "exclude_projects": None}
+    if not isinstance(raw, dict):
+        return {"level": "full", "projects": None, "achievements": None, "exclude_projects": None}
+    return {
+        "level": raw.get("level") or "full",
+        "projects": raw.get("projects"),
+        "achievements": raw.get("achievements"),
+        "exclude_projects": raw.get("exclude_projects"),
+    }
 
 
 def build_career(

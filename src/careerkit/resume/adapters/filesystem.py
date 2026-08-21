@@ -74,10 +74,16 @@ class ResumeWorkspaceAdapter:
             return base_config
         variant_overrides = target_config.get(variant, {})
         if "company_detail" in variant_overrides:
-            base_config["company_detail"] = {
-                **base_config.get("company_detail", {}),
-                **variant_overrides["company_detail"],
-            }
+            merged: dict[str, Any] = dict(base_config.get("company_detail", {}))
+            for company, override_value in variant_overrides["company_detail"].items():
+                base_value = merged.get(company)
+                # When both base and override are dicts, merge recursively.
+                # Otherwise the override wins (including string values).
+                if isinstance(base_value, dict) and isinstance(override_value, dict):
+                    merged[company] = {**base_value, **override_value}
+                else:
+                    merged[company] = override_value
+            base_config["company_detail"] = merged
         for key in (
             "companies",
             "include_certificates",
