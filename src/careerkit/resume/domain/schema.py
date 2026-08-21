@@ -148,8 +148,62 @@ def validate_company_key_case(base_dir: Path) -> list[ValidationError]:
             if isinstance(companies, list):
                 configured_keys.update(company for company in companies if isinstance(company, str))
             company_detail = variant_config.get("company_detail", {})
+            if company_detail is not None and not isinstance(company_detail, dict):
+                errors.append(
+                    ValidationError(
+                        str(config_path),
+                        f"company_detail must be a dict, got {type(company_detail).__name__}",
+                    )
+                )
             if isinstance(company_detail, dict):
-                configured_keys.update(company for company in company_detail if isinstance(company, str))
+                for company, value in company_detail.items():
+                    if not isinstance(company, str):
+                        continue
+                    configured_keys.add(company)
+                    if isinstance(value, dict):
+                        unknown_keys = set(value.keys()) - {"level", "projects", "achievements", "exclude_projects"}
+                        if unknown_keys:
+                            errors.append(
+                                ValidationError(
+                                    str(config_path),
+                                    f"company_detail['{company}'] has unknown keys: {sorted(unknown_keys)}",
+                                )
+                            )
+                        level = value.get("level")
+                        if "level" in value and level not in ("full", "summary"):
+                            errors.append(
+                                ValidationError(
+                                    str(config_path),
+                                    f"company_detail['{company}'].level must be 'full' or 'summary', got {level!r}",
+                                )
+                            )
+                        for list_key in ("projects", "achievements", "exclude_projects"):
+                            list_val = value.get(list_key)
+                            if list_val is None:
+                                continue
+                            if not isinstance(list_val, list) or not all(isinstance(item, str) for item in list_val):
+                                errors.append(
+                                    ValidationError(
+                                        str(config_path),
+                                        f"company_detail['{company}'].{list_key} must be a list of strings or null,"
+                                        f" got {type(list_val).__name__}",
+                                    )
+                                )
+                    elif isinstance(value, str):
+                        if value not in ("full", "summary"):
+                            errors.append(
+                                ValidationError(
+                                    str(config_path),
+                                    f"company_detail['{company}'] must be 'full' or 'summary', got {value!r}",
+                                )
+                            )
+                    else:
+                        errors.append(
+                            ValidationError(
+                                str(config_path),
+                                f"company_detail['{company}'] must be a string or dict, got {type(value).__name__}",
+                            )
+                        )
         for company in sorted(configured_keys):
             if company in company_names:
                 continue

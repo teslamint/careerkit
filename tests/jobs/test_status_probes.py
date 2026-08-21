@@ -106,8 +106,9 @@ def test_json_probes_reject_non_object_top_level_payloads():
 
 
 def test_jumpit_active():
+    future = (datetime.now(timezone(timedelta(hours=9))) + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     http = FakeHttpClient(
-        json_queue=[{"code": "C001", "result": {"alwaysOpen": False, "closedAt": "2026-08-17 23:59:59"}}]
+        json_queue=[{"code": "C001", "result": {"alwaysOpen": False, "closedAt": future}}]
     )
     assert probe_posting_status("jumpit", "54487088", http, sleep=_no_sleep) is ProbeOutcome.ACTIVE
 

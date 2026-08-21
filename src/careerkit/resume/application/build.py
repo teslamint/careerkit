@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import Any
 
 from careerkit.resume.adapters.filesystem import ResumeWorkspaceAdapter
 from datetime import datetime
@@ -59,23 +60,60 @@ class ResumeBuildService:
                     parts.append(content)
         return parts
 
+    def _company_detail(self, config: dict[str, Any], company_name: str) -> dict[str, Any]:
+        """Normalize company_detail entry into {level, projects, achievements, exclude_projects}.
+
+        Backward compatible with the original string values "full" and "summary".
+        """
+        raw = config.get("company_detail", {}).get(company_name, "full")
+        if isinstance(raw, str):
+            return {"level": raw, "projects": None, "achievements": None, "exclude_projects": None}
+        if not isinstance(raw, dict):
+            return {"level": "full", "projects": None, "achievements": None, "exclude_projects": None}
+        return {
+            "level": raw.get("level") or "full",
+            "projects": raw.get("projects"),
+            "achievements": raw.get("achievements"),
+            "exclude_projects": raw.get("exclude_projects"),
+        }
+
+    def _filter_project_paths(
+        self,
+        base_dir: Path,
+        allowed: list[str] | None,
+        excluded: set[str],
+    ) -> list[Path]:
+        paths: list[Path] = []
+        for path_str in self.adapter.resolve_glob(base_dir, "*.md"):
+            path = Path(path_str)
+            if path.name == "CLAUDE.md":
+                continue
+            if path.stem in excluded or path.name in excluded:
+                continue
+            if allowed is not None:
+                if path.stem not in allowed and path.name not in allowed:
+                    continue
+            paths.append(path)
+        return paths
+
     def build_company(self, company_dir: Path, variant: str) -> list[str]:
         config = self.adapter.load_target_config(self.adapter.target, variant)
-        detail_level = config.get("company_detail", {}).get(company_dir.name, "full")
+        detail = self._company_detail(config, company_dir.name)
         profile = company_dir / "profile.md"
         if not profile.exists():
             return []
         profile_content = filter_content(self.adapter.read_file(profile), variant)
-        if detail_level == "summary":
+        if detail["level"] == "summary":
             return [extract_overview(profile_content)]
         parts = [profile_content.strip()]
-        for rel_dir in ("projects", "achievements"):
+        excluded_projects: set[str] = set(detail.get("exclude_projects") or [])
+        for rel_dir, allowed, excluded in (
+            ("projects", detail.get("projects"), excluded_projects),
+            ("achievements", detail.get("achievements"), set()),
+        ):
             base_dir = company_dir / rel_dir
             if base_dir.exists():
-                for path_str in self.adapter.resolve_glob(base_dir, "*.md"):
-                    path = Path(path_str)
-                    if path.name == "CLAUDE.md":
-                        continue
+                for path in self._filter_project_paths(base_dir, allowed, excluded):
                     parts.append(filter_content(self.adapter.read_file(path), variant).strip())
         return [part for part in parts if part]
 
@@ -199,8 +237,7 @@ class ResumeBuildService:
         return f"# Education\n{school} | {major} ({period})"
 
     def build_wanted(self, variant: str, *, now: datetime | None = None) -> str:
-        config_all = self.adapter.load_variant_config()
-        config = config_all.get(variant, config_all["job"])
+        config = self.adapter.load_target_config(self.adapter.target, variant)
         profile_dir = self.adapter.profile_dir
         lines: list[str] = []
         contact = profile_dir / "contact.md"
@@ -262,10 +299,17 @@ class ResumeBuildService:
                     key_experience.append(line)
             if key_experience:
                 lines.extend(["Key Experience", *key_experience, ""])
-            if config.get("company_detail", {}).get(company_name, "full") == "full":
+            detail = self._company_detail(config, company_name)
+            if detail["level"] == "full":
+                excluded_projects: set[str] = set(detail.get("exclude_projects") or [])
+                allowed_projects = detail.get("projects")
                 for path_str in self.adapter.resolve_glob(company_dir / "projects", "*.md"):
                     path = Path(path_str)
                     if path.name == "CLAUDE.md":
+                        continue
+                    if path.stem in excluded_projects or path.name in excluded_projects:
+                        continue
+                    if allowed_projects is not None and path.stem not in allowed_projects and path.name not in allowed_projects:
                         continue
                     project = _extract_wanted_project(filter_content(self.adapter.read_file(path), variant))
                     if not project.title:
