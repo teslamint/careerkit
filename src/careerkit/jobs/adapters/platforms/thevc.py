@@ -59,10 +59,14 @@ def _safe_str(value: object) -> str:
 def _safe_int(value: object) -> int:
     if _is_paywall(value) or value is None:
         return 0
-    try:
+    if isinstance(value, (int, float)):
         return int(value)
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _parse_date(value: object) -> str:
