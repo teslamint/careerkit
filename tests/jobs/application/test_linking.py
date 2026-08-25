@@ -131,6 +131,28 @@ def test_list_links_inconsistent_filter(workspace):
     assert len(inconsistent) == 1
 
 
+def test_list_and_show_mark_posting_status_inconsistent(workspace):
+    records_dir, links_dir = workspace
+    repo = JDRecordRepository(records_dir)
+    first = _make_record("a", "1")
+    second = _make_record("b", "2")
+    repo.create(first, jd_markdown="# JD")
+    repo.create(second, jd_markdown="# JD")
+    store = LinkStore(links_dir)
+    service = LinkService(link_store=store, record_repo=repo)
+    key_a = JobKey("a", "1")
+    key_b = JobKey("b", "2")
+
+    service.add_link([key_a, key_b])
+    repo.update_status(key_a, posting_status=PostingStatus.CLOSED)
+
+    summaries = service.list_links()
+    detail = service.show_link(key_a)
+    assert summaries[0].inconsistent is True
+    assert detail is not None
+    assert detail.inconsistent is True
+
+
 def test_remove_link(service: LinkService):
     k1 = JobKey("saramin", "111")
     k2 = JobKey("wanted", "222")

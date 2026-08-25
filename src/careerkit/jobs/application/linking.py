@@ -330,6 +330,7 @@ class LinkService:
     def _build_detail(self, group: LinkGroup) -> GroupDetail:
         members: list[MemberDetail] = []
         statuses: set[str] = set()
+        posting_statuses: set[str] = set()
         for m in group.members:
             try:
                 stored = self._repo.get(m)
@@ -345,6 +346,7 @@ class LinkService:
                     )
                 )
                 statuses.add(r.application_status.value)
+                posting_statuses.add(r.posting_status.value)
             except JobRecordNotFound:
                 members.append(
                     MemberDetail(
@@ -360,15 +362,17 @@ class LinkService:
             group_id=group.group_id,
             members=tuple(members),
             note=group.note,
-            inconsistent=len(statuses) > 1,
+            inconsistent=len(statuses) > 1 or len(posting_statuses) > 1,
         )
 
     def _is_inconsistent(self, group: LinkGroup) -> bool:
         statuses: set[str] = set()
+        posting_statuses: set[str] = set()
         for m in group.members:
             try:
-                stored = self._repo.get(m)
-                statuses.add(stored.record.application_status.value)
+                record = self._repo.get(m).record
+                statuses.add(record.application_status.value)
+                posting_statuses.add(record.posting_status.value)
             except JobRecordNotFound:
                 pass
-        return len(statuses) > 1
+        return len(statuses) > 1 or len(posting_statuses) > 1
