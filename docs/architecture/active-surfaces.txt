@@ -92,6 +92,7 @@ src/careerkit/jobs/adapters/semantic_filter.py
 src/careerkit/jobs/adapters/status_probes.py
 src/careerkit/jobs/adapters/storage/__init__.py
 src/careerkit/jobs/adapters/storage/file_records.py
+src/careerkit/jobs/adapters/storage/link_store.py
 src/careerkit/jobs/adapters/storage/sqlite_index.py
 src/careerkit/jobs/application/__init__.py
 src/careerkit/jobs/application/automation.py
@@ -99,6 +100,7 @@ src/careerkit/jobs/application/company_enrichment.py
 src/careerkit/jobs/application/company_info.py
 src/careerkit/jobs/application/config.py
 src/careerkit/jobs/application/evidence_checks.py
+src/careerkit/jobs/application/linking.py
 src/careerkit/jobs/application/maintenance.py
 src/careerkit/jobs/application/pipeline.py
 src/careerkit/jobs/application/preflight.py
@@ -121,6 +123,7 @@ src/careerkit/jobs/console/static/styles.css
 src/careerkit/jobs/console/static/theme.js
 src/careerkit/jobs/domain/__init__.py
 src/careerkit/jobs/domain/filters.py
+src/careerkit/jobs/domain/link_model.py
 src/careerkit/jobs/domain/model.py
 src/careerkit/jobs/domain/naming.py
 src/careerkit/jobs/domain/verdict.py
@@ -210,6 +213,7 @@ tests/jobs/application/test_automation.py
 tests/jobs/application/test_company_enrichment.py
 tests/jobs/application/test_company_info.py
 tests/jobs/application/test_evidence_checks.py
+tests/jobs/application/test_linking.py
 tests/jobs/application/test_maintenance.py
 tests/jobs/application/test_pipeline.py
 tests/jobs/application/test_requirement_manifest.py
@@ -219,6 +223,7 @@ tests/jobs/application/test_title_filter.py
 tests/jobs/console/test_console_e2e.py
 tests/jobs/console/test_server.py
 tests/jobs/console/test_static_contract.py
+tests/jobs/domain/test_link_model.py
 tests/jobs/fixtures/screening_contract/candidate.md
 tests/jobs/fixtures/screening_contract/company.md
 tests/jobs/fixtures/screening_contract/jd.md
@@ -231,6 +236,7 @@ tests/jobs/platforms/test_wanted_company.py
 tests/jobs/storage/test_activation.py
 tests/jobs/storage/test_cutover.py
 tests/jobs/storage/test_index.py
+tests/jobs/storage/test_link_store.py
 tests/jobs/storage/test_migration.py
 tests/jobs/storage/test_model.py
 tests/jobs/storage/test_repository.py
@@ -239,6 +245,7 @@ tests/jobs/test_cli.py
 tests/jobs/test_cli_provider.py
 tests/jobs/test_cli_verbose.py
 tests/jobs/test_http.py
+tests/jobs/test_link_cli.py
 tests/jobs/test_optional_dependency_imports.py
 tests/jobs/test_preflight.py
 tests/jobs/test_probe_prescreen_confirmation.py
