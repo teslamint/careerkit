@@ -9,7 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from careerkit.jobs.domain.link_model import LinkGroup, generate_group_id
+from careerkit.jobs.domain.link_model import (
+    LinkGroup,
+    generate_group_id,
+    is_valid_group_id,
+)
 from careerkit.jobs.domain.model import JobKey
 
 _LOCK_NAME = ".lock"
@@ -39,6 +43,8 @@ class LinkStore:
                 created_at=datetime.now(timezone.utc).astimezone().isoformat(),
                 note=note,
             )
+            if (self.root / f"{group.group_id}.json").exists():
+                raise ValueError(f"링크 그룹 ID 충돌: {group.group_id}")
             self._save_group(group)
             return group
 
@@ -49,6 +55,8 @@ class LinkStore:
             return self._get_by_key_unlocked(key)
 
     def get_by_group_id(self, group_id: str) -> LinkGroup | None:
+        if not is_valid_group_id(group_id):
+            return None
         path = self.root / f"{group_id}.json"
         if not path.exists():
             return None

@@ -314,6 +314,13 @@ class LinkService:
                 if source_key is not None:
                     note = f"링크 그룹 동기화 ({source_key.platform}:{source_key.job_id}에서 전파)"
 
+                fresh = self._repo.get(change.key)
+                if fresh.record.application_status is ApplicationStatus.REJECTED:
+                    warnings.append(
+                        f"동기화 건너뜀: {change.key.platform}:{change.key.job_id}이(가) 거절 상태입니다"
+                    )
+                    continue
+
                 self._repo.update_status(
                     change.key,
                     application_status=change.to_status,

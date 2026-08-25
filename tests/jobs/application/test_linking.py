@@ -293,7 +293,7 @@ def test_sync_missing_member(workspace):
     store.root.mkdir(parents=True, exist_ok=True)
     from careerkit.jobs.domain.link_model import LinkGroup
     group = LinkGroup(
-        group_id="deadbeef",
+        group_id="0123456789abcdef0123456789abcdef",
         members=(JobKey("a", "1"), JobKey("b", "missing")),
         created_at="2026-08-25T00:00:00+09:00",
     )
@@ -360,3 +360,37 @@ def test_add_link_warns_company_mismatch(workspace):
 def test_sync_unlinked_key_raises(service: LinkService):
     with pytest.raises(ValueError, match="소속.*없"):
         service.sync(JobKey("x", "99"))
+
+
+def test_sync_skips_member_rejected_during_sync(workspace):
+    """If a member is rejected after the sync snapshot, the sync must not
+    overwrite the rejection with the propagated status (review finding:
+    snapshot-to-write race in LinkService.sync)."""
+    records_dir, links_dir = workspace
+    repo = JDRecordRepository(records_dir)
+    repo.create(_make_record("a", "1"), jd_markdown="# JD")
+    repo.create(_make_record("b", "2"), jd_markdown="# JD")
+    store = LinkStore(links_dir)
+    svc = LinkService(link_store=store, record_repo=repo)
+
+    svc.add_link([JobKey("a", "1"), JobKey("b", "2")])
+    repo.update_status(JobKey("a", "1"), application_status=ApplicationStatus.INTERVIEW)
+
+    target = JobKey("b", "2")
+    original_get = repo.get
+    calls: dict = {}
+
+    def racing_get(key):
+        calls[key] = calls.get(key, 0) + 1
+        if key == target and calls[key] >= 2:
+            repo.update_status(target, application_status=ApplicationStatus.REJECTED)
+        return original_get(key)
+
+    repo.get = racing_get
+    try:
+        result = svc.sync(JobKey("a", "1"))
+    finally:
+        repo.get = original_get
+
+    assert repo.get(target).record.application_status == ApplicationStatus.REJECTED
+    assert any("b:2" in w for w in result.warnings)

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from careerkit.jobs.adapters.storage.link_store import LinkStore
+from careerkit.jobs.domain.link_model import LinkGroup, LinkSchemaError
 from careerkit.jobs.domain.model import JobKey
 
 
@@ -19,7 +20,7 @@ def test_create_and_get(store: LinkStore):
     k1 = JobKey("saramin", "111")
     k2 = JobKey("wanted", "222")
     group = store.create([k1, k2], note="same company")
-    assert len(group.group_id) == 8
+    assert len(group.group_id) == 32
     assert len(group.members) == 2
     assert group.note == "same company"
 
@@ -128,3 +129,90 @@ def test_remove_unlink_failure_preserves_file(store: LinkStore, monkeypatch):
         store.remove_member(k1)
     monkeypatch.setattr(Path, "unlink", original_unlink)
     assert group_file.exists()
+
+
+def test_create_rejects_id_collision_without_clobbering(store: LinkStore, monkeypatch):
+    """A pre-existing file with the ID that generate_group_id returns must
+    raise, not be silently overwritten (review finding: blind tmp_path.replace)."""
+    g2 = LinkGroup(
+        group_id="f" * 32,
+        members=(JobKey("c", "1"), JobKey("d", "1")),
+        created_at="2026-08-25T01:00:00+09:00",
+    )
+    store.root.mkdir(parents=True, exist_ok=True)
+    store._save_group(g2)
+    monkeypatch.setattr(
+        "careerkit.jobs.adapters.storage.link_store.generate_group_id",
+        lambda: "f" * 32,
+    )
+    with pytest.raises(ValueError):
+        store.create([JobKey("e", "1"), JobKey("f", "1")])
+    survivor = store.get_by_group_id("f" * 32)
+    assert survivor is not None
+    assert survivor == g2
+
+
+def test_get_by_group_id_rejects_path_traversal(store: LinkStore):
+    """get_by_group_id must not read files outside the link root
+    (review finding: unvalidated group_id fed to Path)."""
+    import json
+
+    outside_dir = store.root.parent / "outside"
+    store.root.mkdir(parents=True, exist_ok=True)
+    outside_dir.mkdir(parents=True)
+    group = LinkGroup(
+        group_id="a" * 32,
+        members=(JobKey("c", "1"), JobKey("d", "1")),
+        created_at="2026-08-25T01:00:00+09:00",
+    )
+    (outside_dir / "x.json").write_text(
+        json.dumps(group.to_dict()) + "\n", encoding="utf-8"
+    )
+
+    assert store.get_by_group_id("../outside/x") is None
+    assert store.get_by_group_id("/tmp/x") is None
+
+
+def _write_raw_group(store: LinkStore, filename: str, payload: dict) -> None:
+    import json
+
+    store.root.mkdir(parents=True, exist_ok=True)
+    (store.root / filename).write_text(
+        json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def test_store_rejects_wellformed_unknown_schema_version(store: LinkStore):
+    """A well-formed v2 group file must fail loudly on every store entry
+    point, not load as a partial group (review finding: schema version swallowed)."""
+    _write_raw_group(
+        store,
+        "e" * 32 + ".json",
+        {
+            "group_id": "e" * 32,
+            "members": [
+                {"platform": "a", "job_id": "1"},
+                {"platform": "b", "job_id": "2"},
+            ],
+            "created_at": "2026-08-25T01:00:00+09:00",
+            "note": None,
+            "schema_version": 2,
+        },
+    )
+    with pytest.raises(LinkSchemaError):
+        store.get_by_group_id("e" * 32)
+    with pytest.raises(LinkSchemaError):
+        store.list_all()
+    with pytest.raises(LinkSchemaError):
+        store.create([JobKey("a", "1"), JobKey("b", "2")])
+
+
+def test_store_rejects_broken_shape_unknown_version_before_member_access(store: LinkStore):
+    """A v2 file missing 'members' must fail on the version check, not be
+    swallowed as a missing file and let create() build a duplicate
+    (review finding: version error masked by KeyError)."""
+    _write_raw_group(
+        store, "d" * 32 + ".json", {"group_id": "d" * 32, "schema_version": 2}
+    )
+    with pytest.raises(LinkSchemaError):
+        store.create([JobKey("a", "1"), JobKey("b", "2")])
