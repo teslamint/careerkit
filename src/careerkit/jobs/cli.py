@@ -30,6 +30,8 @@ from careerkit.jobs.adapters.screening.cli_provider import resolve_commands
 from careerkit.jobs.application.screening import STRONG_PROVIDER_LABELS, is_fallback_document, run_screening, validate_screening_structure
 from careerkit.jobs.application.storage_migration import get_platform_from_url
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
+from careerkit.jobs.adapters.storage.link_store import LinkStore
+from careerkit.jobs.application.linking import LinkService
 from careerkit.jobs.console.server import create_server
 from careerkit.jobs.domain.model import ApplicationStatus, JobKey, PostingStatus, ScreeningVerdict
 from careerkit.workspace import WorkspacePaths, WorkspaceResolutionError, resolve_workspace
@@ -102,6 +104,7 @@ class ServiceBundle:
     maintenance: MaintenanceOps
     pipeline: PipelineOps
     automation: AutomationOps
+    link_service: LinkService | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -359,6 +362,32 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_eval_compare.add_argument('--json', action='store_true')
     semantic_eval_compare.set_defaults(handler=_handle_semantic_eval_compare)
 
+    link = subparsers.add_parser("link", help="Cross-platform JD link groups")
+    link.set_defaults(handler=_handle_missing_operation)
+    link_subparsers = link.add_subparsers(dest="link_command")
+    link_add = link_subparsers.add_parser("add", help="Link records into a group")
+    link_add.add_argument("keys", nargs="+")
+    link_add.add_argument("--note")
+    link_add.add_argument("--json", action="store_true")
+    link_add.set_defaults(handler=_handle_link_add)
+    link_remove = link_subparsers.add_parser("remove", help="Remove a record from its link group")
+    link_remove.add_argument("key")
+    link_remove.add_argument("--json", action="store_true")
+    link_remove.set_defaults(handler=_handle_link_remove)
+    link_show = link_subparsers.add_parser("show", help="Show link group for a record")
+    link_show.add_argument("key")
+    link_show.add_argument("--json", action="store_true")
+    link_show.set_defaults(handler=_handle_link_show)
+    link_list = link_subparsers.add_parser("list", help="List all link groups")
+    link_list.add_argument("--inconsistent", action="store_true")
+    link_list.add_argument("--json", action="store_true")
+    link_list.set_defaults(handler=_handle_link_list)
+    link_sync = link_subparsers.add_parser("sync", help="Sync status across a link group")
+    link_sync.add_argument("key")
+    link_sync.add_argument("--dry-run", action="store_true")
+    link_sync.add_argument("--json", action="store_true")
+    link_sync.set_defaults(handler=_handle_link_sync)
+
     console = subparsers.add_parser("console", help="Serve the local JD review console")
     console.set_defaults(handler=_handle_missing_operation)
     console_subparsers = console.add_subparsers(dest="console_command")
@@ -409,10 +438,14 @@ def _build_services(workspace: WorkspacePaths, *, http: HttpClient | None = None
         resume_state=JobsResumeStateService(workspace=workspace),
         result_store=JobsAutoResultService(workspace=workspace),
     )
+    links_dir = workspace.jobs_dir / "links"
+    link_store = LinkStore(links_dir)
+    link_service = LinkService(link_store=link_store, record_repo=maintenance.repository)
     return ServiceBundle(
         maintenance=maintenance,
         pipeline=pipeline,
         automation=automation,
+        link_service=link_service,
     )
 
 
@@ -946,6 +979,14 @@ def _handle_record_set_status(args: argparse.Namespace, workspace: WorkspacePath
         print(
             f"updated {updated.record.platform}:{updated.record.job_id} application={updated.record.application_status.value} posting={updated.record.posting_status.value}"
         )
+    if services.link_service is not None:
+        group = services.link_service.check_membership(key)
+        if group is not None:
+            print(
+                f"ℹ 이 레코드는 링크 그룹 {group.group_id}에 속해 있습니다. "
+                f"career-jobs link sync {key.platform}:{key.job_id} 로 동기화하세요.",
+                file=sys.stderr,
+            )
     return 0
 
 
@@ -1782,6 +1823,121 @@ def _handle_semantic_eval_compare(args: argparse.Namespace, workspace: Workspace
             line += f" output_path={services.maintenance.relative_path(result.output_path)}"
         print(line)
     return 0 if result.status == 'pass' else 2
+
+
+def _handle_link_add(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    if len(args.keys) < 2:
+        print("link add requires at least 2 keys", file=sys.stderr)
+        return 2
+    assert services.link_service is not None
+    keys = [_parse_job_key(raw) for raw in args.keys]
+    result = services.link_service.add_link(keys, note=args.note)
+    if args.json:
+        payload = _base_payload("link add", workspace)
+        payload.update(result.to_dict())
+        _print_json(payload)
+    else:
+        if result.created:
+            print(f"created group {result.group_id}")
+        else:
+            print(f"already linked in group {result.group_id}")
+        for w in result.warnings:
+            print(f"  warning: {w}", file=sys.stderr)
+    return 0
+
+
+def _handle_link_remove(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    assert services.link_service is not None
+    key = _parse_job_key(args.key)
+    result = services.link_service.remove_link(key)
+    if result is None:
+        if args.json:
+            payload = _base_payload("link remove", workspace)
+            payload["removed"] = False
+            _print_json(payload)
+        else:
+            print("소속된 링크 그룹 없음")
+        return 0
+    if args.json:
+        payload = _base_payload("link remove", workspace)
+        payload.update(result.to_dict())
+        _print_json(payload)
+    else:
+        if result.group_deleted:
+            print(f"removed {result.removed_key}, group deleted")
+        else:
+            print(f"removed {result.removed_key}, {result.remaining_members} members remaining")
+    return 0
+
+
+def _handle_link_show(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    assert services.link_service is not None
+    key = _parse_job_key(args.key)
+    detail = services.link_service.show_link(key)
+    if detail is None:
+        if args.json:
+            payload = _base_payload("link show", workspace)
+            payload["found"] = False
+            _print_json(payload)
+        else:
+            print("소속된 링크 그룹 없음")
+        return 0
+    if args.json:
+        payload = _base_payload("link show", workspace)
+        payload.update(detail.to_dict())
+        _print_json(payload)
+    else:
+        print(f"group {detail.group_id}" + (" [inconsistent]" if detail.inconsistent else ""))
+        if detail.note:
+            print(f"  note: {detail.note}")
+        for m in detail.members:
+            status = f"app={m.application_status} posting={m.posting_status}" if m.application_status else "record not found"
+            print(f"  {m.platform}:{m.job_id}  {m.company or '?'} | {m.position or '?'} | {status}")
+    return 0
+
+
+def _handle_link_list(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    assert services.link_service is not None
+    summaries = services.link_service.list_links(inconsistent_only=args.inconsistent)
+    if args.json:
+        payload = _base_payload("link list", workspace)
+        payload["count"] = len(summaries)
+        payload["groups"] = [s.to_dict() for s in summaries]
+        _print_json(payload)
+    else:
+        if not summaries:
+            print("no link groups" + (" with inconsistent status" if args.inconsistent else ""))
+        else:
+            for s in summaries:
+                marker = " [inconsistent]" if s.inconsistent else ""
+                print(f"{s.group_id} ({s.member_count} members){marker}: {', '.join(s.member_keys)}")
+    return 0
+
+
+def _handle_link_sync(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    assert services.link_service is not None
+    key = _parse_job_key(args.key)
+    result = services.link_service.sync(key, dry_run=args.dry_run)
+    if args.json:
+        payload = _base_payload("link sync", workspace)
+        payload.update(result.to_dict())
+        payload["dry_run"] = args.dry_run
+        _print_json(payload)
+    else:
+        prefix = "[DRY-RUN] " if args.dry_run else ""
+        if not result.changes:
+            print(f"{prefix}no changes needed for group {result.group_id}")
+        else:
+            for c in result.changes:
+                parts = []
+                if c.to_status is not None:
+                    parts.append(f"application: {c.from_status.value if c.from_status else '?'} → {c.to_status.value}")
+                if c.posting_status_change is not None:
+                    parts.append(f"posting: → {c.posting_status_change.value}")
+                print(f"{prefix}{c.key.platform}:{c.key.job_id} {', '.join(parts)}")
+        for w in result.warnings:
+            print(f"  warning: {w}", file=sys.stderr)
+    return 0
 
 
 def _handle_console_serve(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:

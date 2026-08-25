@@ -6,6 +6,7 @@ from careerkit.jobs.adapters.storage.file_records import (
     StoredJobMetadata,
     StoredJobRecord,
 )
+from careerkit.jobs.adapters.storage.link_store import LinkStore
 from careerkit.jobs.adapters.storage.sqlite_index import (
     IndexedJobRecord,
     IndexRebuildError,
@@ -23,6 +24,7 @@ __all__ = [
     "JobRecordIntegrityError",
     "JobRecordNotFound",
     "JobRecordRepositoryError",
+    "LinkStore",
     "SearchResult",
     "StoredJobMetadata",
     "StoredJobRecord",
