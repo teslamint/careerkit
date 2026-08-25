@@ -61,7 +61,7 @@ def test_remove_from_three_members(store: LinkStore):
     k1 = JobKey("a", "1")
     k2 = JobKey("b", "2")
     k3 = JobKey("c", "3")
-    group = store.create([k1, k2, k3])
+    store.create([k1, k2, k3])
 
     updated = store.remove_member(k1)
     assert updated is not None

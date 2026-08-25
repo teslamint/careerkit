@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -19,7 +19,6 @@ from careerkit.jobs.domain.model import (
     ApplicationStatus,
     JobKey,
     JobRecord,
-    PostingStatus,
 )
 from careerkit.workspace import WorkspacePaths
 
@@ -66,9 +65,9 @@ def env(tmp_path: Path):
         pass
 
     services = cli.ServiceBundle(
-        maintenance=FakeMaintenance(),
-        pipeline=FakePipeline(),
-        automation=FakeAutomation(),
+        maintenance=cast(cli.MaintenanceOps, FakeMaintenance()),
+        pipeline=cast(cli.PipelineOps, FakePipeline()),
+        automation=cast(cli.AutomationOps, FakeAutomation()),
         link_service=link_service,
     )
     return workspace, services, repo
@@ -116,7 +115,7 @@ def test_link_show(env):
 
 
 def test_link_sync(env):
-    workspace, services, repo = env
+    _, _, repo = env
     _run(
         cli._handle_link_add,
         {"keys": ["saramin:111", "wanted:222"], "note": None, "json": False},
@@ -165,7 +164,7 @@ def test_link_remove(env):
     assert rc == 0
     assert "group deleted" in stdout
 
-    rc2, stdout2, _ = _run(
+    _, stdout2, _ = _run(
         cli._handle_link_show,
         {"key": "saramin:111", "json": False},
         env,
@@ -229,7 +228,7 @@ def test_link_add_single_key_error(env):
 
 
 def test_link_sync_dry_run(env):
-    workspace, services, repo = env
+    _, _, repo = env
     _run(
         cli._handle_link_add,
         {"keys": ["saramin:111", "wanted:222"], "note": None, "json": False},
