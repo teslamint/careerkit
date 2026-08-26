@@ -63,6 +63,7 @@ class MaintenanceOps(Protocol):
         delay: float = 1.0,
         platforms: tuple[str, ...] | None = None,
         recheck: bool = False,
+        keys: tuple[JobKey, ...] | None = None,
     ) -> Any: ...
     def write_stale_screening_report(
         self, *, days: int = 30, output_path: Path | None = None
@@ -1009,13 +1010,6 @@ def _handle_record_set_verdict(args: argparse.Namespace, workspace: WorkspacePat
     else:
         print(f"updated {updated.record.platform}:{updated.record.job_id} verdict={updated.record.screening_verdict.value if updated.record.screening_verdict else None}")
     return 0
-
-
-def _parse_job_key(raw: str) -> JobKey:
-    parts = raw.split(":", 1)
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(f"invalid job key {raw!r}; expected platform:job_id")
-    return JobKey(platform=parts[0], job_id=parts[1])
 
 
 def _handle_record_check_closed(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:

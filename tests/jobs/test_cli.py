@@ -1195,7 +1195,7 @@ def test_cli_record_check_closed_invalid_key_format(monkeypatch, capsys) -> None
 
     exit_code = cli.main(['record', 'check-closed', 'badformat'])
     assert exit_code != 0
-    assert 'invalid job key' in capsys.readouterr().err
+    assert 'job_key must be platform:job_id' in capsys.readouterr().err
 
 
 def test_cli_record_check_closed_unsupported_key_platform(monkeypatch, capsys) -> None:
