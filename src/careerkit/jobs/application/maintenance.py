@@ -500,7 +500,10 @@ class JobsMaintenanceService:
         delay: float = 1.0,
         platforms: tuple[str, ...] | None = None,
         recheck: bool = False,
+        keys: tuple[JobKey, ...] | None = None,
     ) -> CheckClosedResult:
+        if keys is not None and platforms is not None:
+            raise ValueError("--platform and positional job keys are mutually exclusive")
         closed_keys: list[str] = []
         unknown_keys: list[str] = []
         reopened_keys: list[str] = []
@@ -509,7 +512,24 @@ class JobsMaintenanceService:
         consecutive_unknowns: dict[str, int] = {}
         probed_once = False
         target_status = PostingStatus.CLOSED if recheck else PostingStatus.ACTIVE
-        for stored in self.repository.list():
+
+        if keys is not None:
+            records = []
+            seen_keys: set[tuple[str, str]] = set()
+            for key in keys:
+                dedup_key = (key.platform, key.job_id)
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+                stored = self.repository.find(key)
+                if stored is None:
+                    unknown_keys.append(f"{key.platform}:{key.job_id}")
+                    continue
+                records.append(stored)
+        else:
+            records = self.repository.list()
+
+        for stored in records:
             record = stored.record
             if record.posting_status is not target_status:
                 continue
