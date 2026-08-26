@@ -8,7 +8,7 @@ description: This skill should be used when the user asks to "extract company in
 <!-- shared-contract:start -->
 ## Shared Contract: packaged writer, storage, and privacy
 
-- Fetch supported source candidates only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|wanted} --id {id}`.
+- Fetch supported source candidates only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|thevc|wanted} --id {id}`.
 - Persist candidates only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company apply --company-name {company_name} --input {candidate.md}`.
 - Validate the resulting private file only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {company_slug}.md`.
 - Store company information only under `private/company_info/`.
@@ -19,7 +19,7 @@ description: This skill should be used when the user asks to "extract company in
 
 ## 추출 경로 우선순위
 
-1. **CLI `company fetch`** (1차) — `UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|wanted} --id {id}` 로 구조화 데이터 즉시 추출. 브라우저 불필요.
+1. **CLI `company fetch`** (1차) — `UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|thevc|wanted} --id {id}` 로 구조화 데이터 즉시 추출. 브라우저 불필요.
 2. **HTTP `__NEXT_DATA__`** (1차 대안) — Wanted 회사 페이지(`/company/{id}`)를 WebFetch/curl로 GET하면 `<script id="__NEXT_DATA__">` 안에 `companySummary`(평균연봉, 인원, 입사/퇴사, 매출)와 `companyInfo`(설립, 업종, 태그, 위치)가 JSON으로 포함.
 3. **Chrome MCP 브라우저** (2차) — 경력별 제보 연봉(Wanted 모달, API 401), TheVC 투자 세부(로그인 필요) 등 HTTP로 접근 불가한 데이터만 브라우저로 보완.
 
@@ -39,6 +39,12 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id 
 
 # Saramin (JSON 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id {csn} --json
+
+# TheVC (마크다운 출력)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id}
+
+# TheVC (JSON 출력)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id} --json
 
 # Wanted (마크다운 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform wanted --id {company_id}
