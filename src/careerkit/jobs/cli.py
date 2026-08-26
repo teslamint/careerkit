@@ -63,6 +63,7 @@ class MaintenanceOps(Protocol):
         delay: float = 1.0,
         platforms: tuple[str, ...] | None = None,
         recheck: bool = False,
+        keys: tuple[JobKey, ...] | None = None,
     ) -> Any: ...
     def write_stale_screening_report(
         self, *, days: int = 30, output_path: Path | None = None
@@ -212,6 +213,10 @@ def build_parser() -> argparse.ArgumentParser:
     record_verdict.set_defaults(handler=_handle_record_set_verdict)
     record_check_closed = record_subparsers.add_parser(
         "check-closed", help="Probe live posting status and close stale records"
+    )
+    record_check_closed.add_argument(
+        "job_key", nargs="*", default=[],
+        help="Optional platform:job_id keys to check individually",
     )
     record_check_closed.add_argument("--apply", action="store_true")
     record_check_closed.add_argument("--delay", type=_non_negative_float, default=1.0)
@@ -1016,8 +1021,20 @@ def _handle_record_check_closed(args: argparse.Namespace, workspace: WorkspacePa
                 f"unsupported platform(s): {', '.join(unsupported)}; "
                 f"supported: {', '.join(sorted(SUPPORTED_PLATFORMS))}"
             )
+    keys: tuple[JobKey, ...] | None = None
+    if args.job_key:
+        keys = tuple(_parse_job_key(k) for k in args.job_key)
+        if platforms is not None:
+            raise ValueError("--platform and positional job keys are mutually exclusive")
+        unsupported_key_platforms = sorted({k.platform for k in keys} - SUPPORTED_PLATFORMS)
+        if unsupported_key_platforms:
+            raise ValueError(
+                f"unsupported platform(s) in job keys: {', '.join(unsupported_key_platforms)}; "
+                f"supported: {', '.join(sorted(SUPPORTED_PLATFORMS))}"
+            )
     result = services.maintenance.check_closed(
-        dry_run=not args.apply, delay=args.delay, platforms=platforms, recheck=args.recheck_closed
+        dry_run=not args.apply, delay=args.delay, platforms=platforms,
+        recheck=args.recheck_closed, keys=keys,
     )
     payload = _check_closed_payload(
         workspace=workspace,

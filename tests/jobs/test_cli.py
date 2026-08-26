@@ -87,12 +87,12 @@ class FakeMaintenance:
         from careerkit.jobs.application.maintenance import ClosedBackfillResult
         return ClosedBackfillResult(('wanted:1',), changed=not dry_run)
 
-    def check_closed(self, *, dry_run=True, delay=1.0, platforms=None, recheck=False):
+    def check_closed(self, *, dry_run=True, delay=1.0, platforms=None, recheck=False, keys=None):
         from careerkit.jobs.application.maintenance import CheckClosedResult
         if self.check_closed_calls is None:
             self.check_closed_calls = []
         self.check_closed_calls.append(
-            {'dry_run': dry_run, 'delay': delay, 'platforms': platforms, 'recheck': recheck}
+            {'dry_run': dry_run, 'delay': delay, 'platforms': platforms, 'recheck': recheck, 'keys': keys}
         )
         return CheckClosedResult(
             closed_keys=('wanted:1',),
@@ -887,7 +887,7 @@ def test_cli_record_check_closed_defaults_to_dry_run_all_platforms(monkeypatch, 
 
     assert cli.main(['record', 'check-closed']) == 0
     assert maintenance.check_closed_calls == [
-        {'dry_run': True, 'delay': 1.0, 'platforms': None, 'recheck': False}
+        {'dry_run': True, 'delay': 1.0, 'platforms': None, 'recheck': False, 'keys': None}
     ]
     out = capsys.readouterr().out
     assert out == (
@@ -913,7 +913,7 @@ def test_cli_record_check_closed_apply_and_repeated_platform(monkeypatch, capsys
 
     assert cli.main(['record', 'check-closed', '--apply', '--platform', 'wanted']) == 0
     assert maintenance.check_closed_calls == [
-        {'dry_run': False, 'delay': 1.0, 'platforms': ('wanted',), 'recheck': False}
+        {'dry_run': False, 'delay': 1.0, 'platforms': ('wanted',), 'recheck': False, 'keys': None}
     ]
 
     assert cli.main(
@@ -925,6 +925,7 @@ def test_cli_record_check_closed_apply_and_repeated_platform(monkeypatch, capsys
         'delay': 1.0,
         'platforms': ('wanted', 'remember'),
         'recheck': False,
+        'keys': None,
     }
 
 
@@ -959,6 +960,7 @@ def test_cli_record_check_closed_json_is_exclusive_and_forwards_platforms(
             'delay': 1.0,
             'platforms': ('wanted', 'remember'),
             'recheck': False,
+            'keys': None,
         }
     ]
     captured = capsys.readouterr()
@@ -1038,7 +1040,7 @@ def test_cli_record_check_closed_recheck_apply_dispatches_recheck_true(monkeypat
 
     assert cli.main(['record', 'check-closed', '--recheck-closed', '--apply']) == 0
     assert maintenance.check_closed_calls == [
-        {'dry_run': False, 'delay': 1.0, 'platforms': None, 'recheck': True}
+        {'dry_run': False, 'delay': 1.0, 'platforms': None, 'recheck': True, 'keys': None}
     ]
     out = capsys.readouterr().out
     assert out == (
@@ -1119,6 +1121,96 @@ def test_cli_record_check_closed_human_rejects_invalid_delay_without_partial_std
     captured = capsys.readouterr()
     assert captured.out == ''
     assert 'finite non-negative' in captured.err
+
+
+def test_cli_record_check_closed_individual_keys(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    maintenance = FakeMaintenance()
+    bundle = cli.ServiceBundle(
+        maintenance=maintenance,
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['record', 'check-closed', 'wanted:123', 'remember:456']) == 0
+    assert maintenance.check_closed_calls == [
+        {
+            'dry_run': True, 'delay': 1.0, 'platforms': None, 'recheck': False,
+            'keys': (JobKey('wanted', '123'), JobKey('remember', '456')),
+        }
+    ]
+
+
+def test_cli_record_check_closed_individual_keys_with_apply(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    maintenance = FakeMaintenance()
+    bundle = cli.ServiceBundle(
+        maintenance=maintenance,
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['record', 'check-closed', 'wanted:123', '--apply']) == 0
+    assert maintenance.check_closed_calls == [
+        {
+            'dry_run': False, 'delay': 1.0, 'platforms': None, 'recheck': False,
+            'keys': (JobKey('wanted', '123'),),
+        }
+    ]
+
+
+def test_cli_record_check_closed_keys_and_platform_raises(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    maintenance = FakeMaintenance()
+    bundle = cli.ServiceBundle(
+        maintenance=maintenance,
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    exit_code = cli.main(
+        ['record', 'check-closed', 'wanted:123', '--platform', 'wanted']
+    )
+    assert exit_code != 0
+    assert 'mutually exclusive' in capsys.readouterr().err
+
+
+def test_cli_record_check_closed_invalid_key_format(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    maintenance = FakeMaintenance()
+    bundle = cli.ServiceBundle(
+        maintenance=maintenance,
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    exit_code = cli.main(['record', 'check-closed', 'badformat'])
+    assert exit_code != 0
+    assert 'job_key must be platform:job_id' in capsys.readouterr().err
+
+
+def test_cli_record_check_closed_unsupported_key_platform(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    maintenance = FakeMaintenance()
+    bundle = cli.ServiceBundle(
+        maintenance=maintenance,
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    exit_code = cli.main(['record', 'check-closed', 'nope:123'])
+    assert exit_code != 0
+    assert 'nope' in capsys.readouterr().err
 
 
 class _FakeCheckClosedHttpClient:
