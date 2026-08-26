@@ -40,17 +40,17 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id 
 # Saramin (JSON 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id {csn} --json
 
-# TheVC (마크다운 출력)
-UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id}
-
-# TheVC (JSON 출력)
-UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id} --json
-
 # Wanted (마크다운 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform wanted --id {company_id}
 
 # Wanted (JSON 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform wanted --id {company_id} --json
+
+# TheVC (마크다운 출력 — slug은 thevc.kr/{slug} URL에서 추출)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_slug}
+
+# TheVC (JSON 출력)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_slug} --json
 
 # 검증 (필수 — Phase 8)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {slug}.md --fix
@@ -68,7 +68,7 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {slug}.md --fi
 | Wanted | CLI `company fetch --platform wanted` | 경력별 제보 연봉 (모달) |
 | Remember | CLI `company fetch --platform remember` | 없음 |
 | Saramin | CLI `company fetch --platform saramin` | 복지 상세, 면접후기 |
-| TheVC | 기본 대시보드 (비로그인) | 투자 세부 금액, 투자사 (로그인/프로 플랜) |
+| TheVC | CLI `company fetch --platform thevc` | 투자 세부 금액 (스크램블됨), 투자사명 (BASIC+), 직원수/재무 (PRO) |
 
 ## 추출 데이터 포인트
 
@@ -85,11 +85,12 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {slug}.md --fi
 - 올해 입사자 평균 연봉
 - **경력별 제보 연봉** (Wanted 모달에서 탭별 추출)
 
-### 투자 정보 (TheVC - 스타트업 전용)
+### 투자 정보 (TheVC CLI - 스타트업 전용)
 - 현재 라운드 (Seed/Pre-A/Series A/B/C/...)
-- 누적 투자금
-- 투자자 (주요 투자사 목록)
-- 투자 이력 (라운드별 일자, 금액, 투자사)
+- 투자 라운드 수, 투자자 수
+- 투자 이력 (라운드별 일자, 유형)
+- ~~누적 투자금~~ (API 스크램블 — 뉴스/DART에서 보완)
+- ~~투자사 목록~~ (PLAN:BASIC+ 필요 — 뉴스에서 보완)
 
 ### 복지/혜택 (Saramin > Wanted)
 - 복지 태그
@@ -194,16 +195,29 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id 
 
 #### TheVC 추출 (스타트업)
 
+**Step 1: CLI (권장)**
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_slug}
 ```
-1. navigate → thevc.kr/{company_slug}
-2. computer(screenshot)으로 기본 정보 확인
-3. "투자 유치" 탭 클릭:
-   javascript_tool(action: "javascript_exec",
-     text: "document.evaluate(\"//a[contains(text(),'투자 유치')]\",
-       document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null)
-       .singleNodeValue.click()")
-4. get_page_text로 투자 이력 추출
-```
+
+TheVC JSON API(`/api/information/organizations/profiles/{slug}`)에서 직접 추출.
+출력: 기본 정보, CEO, 투자 라운드(이름/날짜/유형), 투자자 수, 키워드, 서비스.
+
+> **주의 — 투자 금액은 신뢰 불가**: TheVC API의 `totalAmount` 값은 스크램블(난독화)되어 있음.
+> 비율만 보존되고 절대값은 실제와 다름. CLI 출력에 금액이 포함되지 않는 이유.
+> 실제 투자 금액은 뉴스 기사(ZDNet, 벤처스퀘어 등) 또는 DART 공시에서 보완.
+
+> **주의 — WebFetch 차단**: TheVC는 WebFetch를 403으로 차단. CLI가 `UrllibHttpClient`(기본 브라우저 UA)로 접근.
+
+> **참고**: TheVC는 Nuxt 3 기반(`__NUXT_DATA__`). Next.js의 `__NEXT_DATA__`가 아님.
+
+**Step 2: 브라우저 (로그인/구독 데이터 — 선택)**
+
+CLI로 추출 불가한 데이터만 브라우저로 보완:
+- 투자사 이름 (PLAN:BASIC+ 필요)
+- 직원 수/재무제표 (PLAN:PRO 필요)
+- 이 데이터가 필요하면 브라우저 로그인 후 수동 확인
 
 ### Phase 4: 멀티소스 검색 (회사명만 제공된 경우)
 
@@ -438,9 +452,12 @@ company validator는 `숫자+억` 패턴을 요구. "미공개"는 투자 필드
 - 국민연금/고용보험 기반 데이터
 
 ### TheVC
-- 투자 라운드 상세 이력
+- CLI `company fetch --platform thevc`로 기본 데이터 추출 (브라우저 불필요)
 - **스타트업/벤처 기업만 등록됨**
+- 투자 라운드 이력 (날짜, 유형) — 금액은 스크램블됨
 - B2G 계약, 국가 R&D, 특허 수
+- WebFetch 차단(403) — CLI 사용 필수
+- Nuxt 3 기반 (`__NUXT_DATA__`, NOT `__NEXT_DATA__`)
 
 ---
 
