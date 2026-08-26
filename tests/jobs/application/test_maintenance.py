@@ -544,6 +544,21 @@ def test_check_closed_individual_keys_apply_updates_status(tmp_path: Path) -> No
     assert service.repository.get(stored.record.key).record.posting_status is PostingStatus.CLOSED
 
 
+def test_check_closed_individual_keys_deduplicates(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    http = FakeHttpClient(json_queue=[_wanted_status('close')])
+    service = JobsMaintenanceService(workspace=workspace, http=http)
+    service.repository.create(JobRecord('wanted', '1', 'Acme', 'Backend'), jd_markdown='# JD')
+
+    result = service.check_closed(
+        dry_run=True, delay=0.0,
+        keys=(JobKey('wanted', '1'), JobKey('wanted', '1')),
+    )
+
+    assert result.closed_keys == ('wanted:1',)
+    assert len(http.requests) == 1
+
+
 def test_check_closed_keys_and_platforms_raises(tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     http = FakeHttpClient(json_queue=[])

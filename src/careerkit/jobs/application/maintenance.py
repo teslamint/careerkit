@@ -515,7 +515,12 @@ class JobsMaintenanceService:
 
         if keys is not None:
             records = []
+            seen_keys: set[tuple[str, str]] = set()
             for key in keys:
+                dedup_key = (key.platform, key.job_id)
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
                 stored = self.repository.find(key)
                 if stored is None:
                     unknown_keys.append(f"{key.platform}:{key.job_id}")
