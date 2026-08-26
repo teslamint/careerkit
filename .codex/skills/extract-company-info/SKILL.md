@@ -21,7 +21,7 @@ Codex 환경에는 브라우저 도구가 없다. CLI와 HTTP 요청만으로 �
 
 | 도구 | 용도 |
 |------|------|
-| `career-jobs company fetch` | Remember, Saramin, Wanted 구조화 추출 |
+| `career-jobs company fetch` | Remember, Saramin, TheVC, Wanted 구조화 추출 |
 | `career-jobs company validate` | 저장 후 검증 (필수) |
 
 브라우저 전용 데이터(Wanted 경력별 제보 연봉, TheVC 투자 세부)는 이 환경에서 추출 불가.
@@ -42,17 +42,17 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id 
 # Saramin (JSON 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id {csn} --json
 
-# TheVC (마크다운 출력)
-UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id}
-
-# TheVC (JSON 출력)
-UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id} --json
-
 # Wanted (마크다운 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform wanted --id {company_id}
 
 # Wanted (JSON 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform wanted --id {company_id} --json
+
+# TheVC (마크다운 출력 — slug은 thevc.kr/{slug} URL에서 추출)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_slug}
+
+# TheVC (JSON 출력)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_slug} --json
 
 # 검증 (필수)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {slug}.md --fix
@@ -157,14 +157,18 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id 
 
 #### TheVC
 
-Codex에서는 기본 페이지만 curl로 접근 가능. 투자 세부 금액은 로그인 필요.
+TheVC 스타트업 정보는 CLI가 JSON API에서 직접 추출한다. TheVC는 WebFetch를 403으로 차단해 CLI가 `UrllibHttpClient`(기본 브라우저 UA)로 접근한다.
 
 ```bash
-curl -s 'https://thevc.kr/{company_slug}' | \
-  grep -oP '(Series [A-Z]|Seed|Pre-A|누적 투자|억원)' | head -10
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_slug}
 ```
 
-제한적 추출만 가능. 상세 데이터가 필요하면 사용자에게 안내.
+slug은 thevc.kr/{slug} URL에서 추출. `--json` 플래그로 구조화 데이터도 가능.
+출력: 기본 정보, CEO, 투자 라운드(이름/날짜/유형), 투자자 수, 키워드, 서비스.
+
+> **주의 — 투자 금액은 신뢰 불가**: TheVC API의 `totalAmount` 값은 스크램블(난독화)되어 있어 CLI 출력에 금액이 포함되지 않는다. 실제 금액은 뉴스 기사(ZDNet, 벤처스퀘어 등)나 DART 공시로 보완.
+
+투자사명(PLAN:BASIC+), 직원수/재무(PLAN:PRO) 등 로그인/구독 데이터는 이 환경에서 추출 불가 — 필요하면 사용자에게 Claude Code 환경에서 추출하도록 안내.
 
 ### Phase 4: 데이터 병합 → 마크다운 작성
 
