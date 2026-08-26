@@ -232,6 +232,7 @@ tests/jobs/platforms/test_groupby_company.py
 tests/jobs/platforms/test_platform_adapters.py
 tests/jobs/platforms/test_remember_company.py
 tests/jobs/platforms/test_saramin.py
+tests/jobs/platforms/test_thevc_company.py
 tests/jobs/platforms/test_wanted_company.py
 tests/jobs/storage/test_activation.py
 tests/jobs/storage/test_cutover.py

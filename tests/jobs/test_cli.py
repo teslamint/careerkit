@@ -3422,3 +3422,62 @@ def test_queue_prescreened_screen_is_silent_without_include_legacy(
     assert cli.main(['queue', 'prescreened', '--screen', '--limit', '1', '--json']) == 0
 
     assert json.loads(capsys.readouterr().out)['notice'] is None
+
+def test_cli_company_fetch_thevc_prints_json_with_lists(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import thevc as thevc_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    fake_info = thevc_mod.TheVCCompanyInfo(
+        name='포지큐브',
+        name_en='POSICUBE',
+        founded_on='2017-05-23',
+        ceo_name='오성조',
+        ceo_is_founder=True,
+        keywords=('AI기술', '인공지능'),
+        products=('robi리셉션', 'AI에이전트'),
+        last_round='Series B',
+        last_funded_on='2021-11-09',
+        total_funding_count=4,
+        investor_count_total=9,
+        funding_rounds=(
+            thevc_mod.TheVCFundingRound(round_name='Series B', funded_on='2021-11-09', funding_type='시리즈 B'),
+        ),
+        slug='posicube',
+    )
+    monkeypatch.setattr(thevc_mod, 'thevc_company_http', lambda slug, **kw: fake_info)
+
+    assert cli.main(['company', 'fetch', '--platform', 'thevc', '--id', 'posicube', '--json']) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data['name'] == '포지큐브'
+    assert data['slug'] == 'posicube'
+    assert data['last_funded_on'] == '2021-11-09'
+    assert data['keywords'] == ['AI기술', '인공지능']
+    assert data['products'] == ['robi리셉션', 'AI에이전트']
+    assert data['funding_rounds'] == [
+        {'round_name': 'Series B', 'funded_on': '2021-11-09', 'funding_type': '시리즈 B'}
+    ]
+
+
+def test_cli_company_fetch_thevc_error_returns_1(monkeypatch, capsys) -> None:
+    from careerkit.jobs.adapters.platforms import thevc as thevc_mod
+
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+
+    def _fail(slug: str, **kw):
+        raise ValueError('company not found')
+
+    monkeypatch.setattr(thevc_mod, 'thevc_company_http', _fail)
+
+    assert cli.main(['company', 'fetch', '--platform', 'thevc', '--id', 'ghost']) == 1
+    err = capsys.readouterr().err
+    assert 'error' in err.lower()
+    assert 'company not found' in err
