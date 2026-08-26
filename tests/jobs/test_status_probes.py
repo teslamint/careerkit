@@ -114,8 +114,9 @@ def test_jumpit_active():
 
 
 def test_jumpit_closed():
+    past = (datetime.now(timezone(timedelta(hours=9))) - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     http = FakeHttpClient(
-        json_queue=[{"code": "C001", "result": {"alwaysOpen": False, "closedAt": "2026-02-04 23:59:59"}}]
+        json_queue=[{"code": "C001", "result": {"alwaysOpen": False, "closedAt": past}}]
     )
     assert probe_posting_status("jumpit", "52739569", http, sleep=_no_sleep) is ProbeOutcome.CLOSED
 
@@ -245,14 +246,14 @@ def test_greeting_rejects_malformed_ports():
 
 
 def test_saramin_active_future_deadline():
-    html = "모집 - 사람인 마감일:2026-08-31"
-    http = FakeHttpClient(text_queue=[html])
+    future = (datetime.now(timezone(timedelta(hours=9))).date() + timedelta(days=30)).isoformat()
+    http = FakeHttpClient(text_queue=[f"모집 - 사람인 마감일:{future}"])
     assert probe_posting_status("saramin", "54352654", http, sleep=_no_sleep) is ProbeOutcome.ACTIVE
 
 
 def test_saramin_closed_past_deadline():
-    html = "모집 - 사람인 마감일:2025-02-28"
-    http = FakeHttpClient(text_queue=[html])
+    past = (datetime.now(timezone(timedelta(hours=9))).date() - timedelta(days=30)).isoformat()
+    http = FakeHttpClient(text_queue=[f"모집 - 사람인 마감일:{past}"])
     assert probe_posting_status("saramin", "50000000", http, sleep=_no_sleep) is ProbeOutcome.CLOSED
 
 
