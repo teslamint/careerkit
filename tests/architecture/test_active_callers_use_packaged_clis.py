@@ -58,7 +58,7 @@ def test_active_callers_do_not_reference_legacy_entrypoints() -> None:
 _EXTRACT_COMPANY_INFO_SHARED_START = "<!-- shared-contract:start -->"
 _EXTRACT_COMPANY_INFO_SHARED_END = "<!-- shared-contract:end -->"
 _EXTRACT_COMPANY_INFO_REQUIRED_LINES = (
-    "UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|wanted} --id {id}",
+    "UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|thevc|wanted} --id {id}",
     "UV_CACHE_DIR=.uv-cache uv run career-jobs company apply --company-name {company_name} --input {candidate.md}",
     "UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {company_slug}.md",
     "Store company information only under `private/company_info/`.",
