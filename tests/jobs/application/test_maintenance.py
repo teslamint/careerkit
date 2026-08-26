@@ -15,7 +15,7 @@ import yaml
 from careerkit.jobs.adapters.http import HttpError
 from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.search import SearchResult
-from careerkit.jobs.domain.model import ApplicationStatus, JobRecord, PostingStatus, ScreeningVerdict
+from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus, ScreeningVerdict
 from careerkit.workspace import WorkspacePaths
 
 
@@ -504,6 +504,56 @@ def test_check_closed_recheck_groupby_active_demotes_to_unknown_never_reopens(tm
     assert result.reopened_keys == ()
     assert result.changed is False
     assert service.repository.get(stored.record.key).record.posting_status is PostingStatus.CLOSED
+
+
+def test_check_closed_individual_keys_probes_only_specified_records(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    http = FakeHttpClient(json_queue=[_wanted_status('close')])
+    service = JobsMaintenanceService(workspace=workspace, http=http)
+    service.repository.create(JobRecord('wanted', '1', 'Acme', 'Backend'), jd_markdown='# JD')
+    service.repository.create(JobRecord('wanted', '2', 'Acme', 'Frontend'), jd_markdown='# JD')
+
+    result = service.check_closed(dry_run=True, delay=0.0, keys=(JobKey('wanted', '1'),))
+
+    assert result.closed_keys == ('wanted:1',)
+    assert len(http.requests) == 1
+
+
+def test_check_closed_individual_keys_missing_record_goes_to_unknown(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    http = FakeHttpClient(json_queue=[])
+    service = JobsMaintenanceService(workspace=workspace, http=http)
+
+    result = service.check_closed(dry_run=True, delay=0.0, keys=(JobKey('wanted', '999'),))
+
+    assert result.unknown_keys == ('wanted:999',)
+    assert result.closed_keys == ()
+    assert len(http.requests) == 0
+
+
+def test_check_closed_individual_keys_apply_updates_status(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    http = FakeHttpClient(json_queue=[_wanted_status('close')])
+    service = JobsMaintenanceService(workspace=workspace, http=http)
+    stored = service.repository.create(JobRecord('wanted', '1', 'Acme', 'Backend'), jd_markdown='# JD')
+
+    result = service.check_closed(dry_run=False, delay=0.0, keys=(JobKey('wanted', '1'),))
+
+    assert result.closed_keys == ('wanted:1',)
+    assert result.changed is True
+    assert service.repository.get(stored.record.key).record.posting_status is PostingStatus.CLOSED
+
+
+def test_check_closed_keys_and_platforms_raises(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    http = FakeHttpClient(json_queue=[])
+    service = JobsMaintenanceService(workspace=workspace, http=http)
+
+    with pytest.raises(ValueError, match='mutually exclusive'):
+        service.check_closed(
+            dry_run=True, delay=0.0,
+            keys=(JobKey('wanted', '1'),), platforms=('wanted',),
+        )
 
 
 def test_search_uses_rejected_records_and_configured_semantic_settings(tmp_path: Path, monkeypatch) -> None:
