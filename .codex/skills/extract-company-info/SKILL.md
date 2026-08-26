@@ -8,7 +8,7 @@ description: This skill should be used when the user asks to "extract company in
 <!-- shared-contract:start -->
 ## Shared Contract: packaged writer, storage, and privacy
 
-- Fetch supported source candidates only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|wanted} --id {id}`.
+- Fetch supported source candidates only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform {remember|saramin|thevc|wanted} --id {id}`.
 - Persist candidates only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company apply --company-name {company_name} --input {candidate.md}`.
 - Validate the resulting private file only with `UV_CACHE_DIR=.uv-cache uv run career-jobs company validate --file {company_slug}.md`.
 - Store company information only under `private/company_info/`.
@@ -41,6 +41,12 @@ UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id 
 
 # Saramin (JSON 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform saramin --id {csn} --json
+
+# TheVC (마크다운 출력)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id}
+
+# TheVC (JSON 출력)
+UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform thevc --id {company_id} --json
 
 # Wanted (마크다운 출력)
 UV_CACHE_DIR=.uv-cache uv run career-jobs company fetch --platform wanted --id {company_id}
