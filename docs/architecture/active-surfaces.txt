@@ -162,6 +162,7 @@ tests/architecture/test_active_callers_use_packaged_clis.py
 tests/architecture/test_active_surface_manifest.py
 tests/architecture/test_architecture_doc_cli_boundaries.py
 tests/architecture/test_canonical_path_access.py
+tests/architecture/test_entry_point_wiring.py
 tests/architecture/test_external_caller_checklist.py
 tests/architecture/test_import_boundaries.py
 tests/architecture/test_legacy_parity_audit.py
