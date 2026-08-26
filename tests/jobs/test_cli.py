@@ -1135,15 +1135,12 @@ def test_cli_record_check_closed_individual_keys(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
 
     assert cli.main(['record', 'check-closed', 'wanted:123', 'remember:456']) == 0
-    assert maintenance.check_closed_calls is not None
-    call = maintenance.check_closed_calls[-1]
-    assert call['keys'] is not None
-    assert len(call['keys']) == 2
-    assert call['keys'][0].platform == 'wanted'
-    assert call['keys'][0].job_id == '123'
-    assert call['keys'][1].platform == 'remember'
-    assert call['keys'][1].job_id == '456'
-    assert call['platforms'] is None
+    assert maintenance.check_closed_calls == [
+        {
+            'dry_run': True, 'delay': 1.0, 'platforms': None, 'recheck': False,
+            'keys': (JobKey('wanted', '123'), JobKey('remember', '456')),
+        }
+    ]
 
 
 def test_cli_record_check_closed_individual_keys_with_apply(monkeypatch, capsys) -> None:
@@ -1158,10 +1155,12 @@ def test_cli_record_check_closed_individual_keys_with_apply(monkeypatch, capsys)
     monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
 
     assert cli.main(['record', 'check-closed', 'wanted:123', '--apply']) == 0
-    call = maintenance.check_closed_calls[-1]
-    assert call['dry_run'] is False
-    assert call['keys'] is not None
-    assert len(call['keys']) == 1
+    assert maintenance.check_closed_calls == [
+        {
+            'dry_run': False, 'delay': 1.0, 'platforms': None, 'recheck': False,
+            'keys': (JobKey('wanted', '123'),),
+        }
+    ]
 
 
 def test_cli_record_check_closed_keys_and_platform_raises(monkeypatch, capsys) -> None:
