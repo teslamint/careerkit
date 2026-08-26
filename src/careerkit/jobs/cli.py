@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     company_apply.add_argument("--json", action="store_true")
     company_apply.set_defaults(handler=_handle_company_apply)
     company_fetch = company_subparsers.add_parser("fetch", help="Fetch company info from platform API")
-    company_fetch.add_argument("--platform", required=True, choices=["remember", "saramin", "wanted"])
+    company_fetch.add_argument("--platform", required=True, choices=["remember", "saramin", "thevc", "wanted"])
     company_fetch.add_argument("--id", required=True, dest="company_id")
     company_fetch.add_argument("--json", action="store_true")
     company_fetch.set_defaults(handler=_handle_company_fetch)
@@ -846,6 +846,22 @@ def _handle_company_fetch(args: argparse.Namespace, workspace: WorkspacePaths, s
             _print_json(asdict(info))
         else:
             print(format_company_markdown(info))
+    elif args.platform == "thevc":
+        from careerkit.jobs.adapters.platforms.thevc import format_thevc_company_markdown, thevc_company_http
+
+        try:
+            info = thevc_company_http(args.company_id)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            result = asdict(info)
+            result["keywords"] = list(result["keywords"])
+            result["products"] = list(result["products"])
+            result["funding_rounds"] = [dict(r) for r in result["funding_rounds"]]
+            _print_json(result)
+        else:
+            print(format_thevc_company_markdown(info))
     elif args.platform == "wanted":
         from careerkit.jobs.adapters.platforms.wanted import format_wanted_company_markdown, wanted_company_http
 

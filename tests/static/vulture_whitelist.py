@@ -57,6 +57,9 @@ _.queue_case_count
 _.incomplete_error_code
 build_gold_dataset
 
+# TheVCCompanyInfo dataclass fields are consumed by CLI JSON serialization.
+_.last_funded_on
+
 # Wanted and GroupBy company discovery utilities are reserved for the approved follow-up.
 wanted_search_company_id
 groupby_company_from_position
