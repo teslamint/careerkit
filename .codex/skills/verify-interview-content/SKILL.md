@@ -15,6 +15,13 @@ Verify that interview sheet answers are grounded in the actual resume. Catches w
 
 ## Procedure
 
+Read `private/portfolio-research/AGENTS.md` when it exists. Follow its evidence ID links. Omit concrete claims that lack supporting evidence IDs.
+
+For each concrete claim, resolve every referenced ID at
+`private/portfolio-research/evidence/<evidence-id>.md` and confirm that the record supports the
+claim. A keyword match alone is insufficient. Treat a missing, unknown, or mismatched evidence ID
+as an ungrounded claim.
+
 ### Step 0: Refresh the generated verifier config
 
 Before verification, read the current private resume, career, and portfolio sources plus the
@@ -43,9 +50,10 @@ Use `--json` for machine-readable output (CI integration).
 
 ### Step 2: Review results
 
-- **✅ verified**: Claim found in correct company section of resume — OK
+- **✅ verified**: Claim found in the correct company section and supported by a resolved evidence ID.
+  Return ✅ verified only after the final result states `ungrounded claims: 0`.
 - **⚠️ uncertain**: Claim found in a different company section — check if company attribution is correct
-- **❌ ungrounded**: Claim not found anywhere in resume — **must fix or remove**
+- **❌ ungrounded**: Claim not found anywhere in resume, or its evidence ID is missing, unknown, or mismatched — **must fix or remove**
 
 ### Step 3: Fix ungrounded claims
 
@@ -64,7 +72,7 @@ For each ❌ ungrounded claim:
 UV_CACHE_DIR=.uv-cache uv run career-resume verify-content <interview-file>.md
 ```
 
-Confirm 0 ungrounded claims.
+State `ungrounded claims: 0` explicitly. Do not return ✅ verified while any ungrounded claim remains.
 
 ## Key Rule
 

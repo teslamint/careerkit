@@ -63,3 +63,33 @@ _.last_funded_on
 # Wanted and GroupBy company discovery utilities are reserved for the approved follow-up.
 wanted_search_company_id
 groupby_company_from_position
+
+# Portfolio-research contracts are consumed by private operations and later approved units.
+_integer
+required_eval_gate
+calibrate_human_rubric
+grade_portfolio_eval_output
+compare_eval_results
+eval_activation_allowed
+render_manifest
+render_catalog
+render_evidence
+load_evidence
+render_proposal
+load_proposal
+prepare_proposal
+apply_proposal
+_.__cause__
+cleanup_stale_dispositions
+write_sanitized_t1_evidence
+_.allows_transition_to
+_.completed_targets
+EvalCase
+EvalGate
+GoldClaim
+Judgment
+CalibrationResult
+ComprehensiveEvalResult
+_.input_token_regression
+_.output_token_regression
+_.p95_latency_regression

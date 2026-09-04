@@ -99,6 +99,8 @@ remote keeps whatever was already pushed.
 
 ## Resume Content Integrity
 
+Read `private/portfolio-research/AGENTS.md` when it exists. Do this before drafting resume or interview claims. Follow its evidence ID links. Omit concrete claims that lack supporting evidence IDs.
+
 Override content must not add technologies, roles, or achievements absent from base `private/companies/` or `private/profile/` files.
 
 **Inflation patterns to reject:**

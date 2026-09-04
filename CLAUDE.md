@@ -13,6 +13,10 @@ workspace repository holds the resume sources, the job-search data under
 `ROADMAP.md`, `LESSONS.md`, `.release-loop/`). Neither side commits the other's
 material. See [AGENTS.md](AGENTS.md) for the same rule in the shared guide.
 
+Before drafting resume or interview claims, read `private/portfolio-research/AGENTS.md`
+when it exists. Follow its index-to-narrative-to-evidence read order and omit concrete
+claims without supporting evidence IDs.
+
 ## Skills Quick Reference
 
 | Skill | Purpose | Output |
