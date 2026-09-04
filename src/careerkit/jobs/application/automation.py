@@ -62,6 +62,7 @@ PROFILE_CONTEXT_FILES = (
     "summary-job.md",
     "skills-job.md",
     "core-competencies.md",
+    "education.md",
 )
 
 
