@@ -539,7 +539,16 @@ def _linked_worktrees(tmp_path: Path) -> tuple[Path, Path, Path]:
     (primary / "fixture.txt").write_text("fixture\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(primary), "add", "fixture.txt"], check=True)
     subprocess.run(
-        ["git", "-C", str(primary), "commit", "-m", "fixture"],
+        [
+            "git",
+            "-C",
+            str(primary),
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "fixture",
+        ],
         check=True,
         capture_output=True,
     )

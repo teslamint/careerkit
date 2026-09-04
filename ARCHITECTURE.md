@@ -42,6 +42,7 @@ Dependency rules:
 | Queue and run state | `private/jd/runtime/` | mutable runtime state, never canonical content |
 | Index and summary | `private/jd/derived/` | disposable views rebuilt from canonical records |
 | Public examples | `example/` | synthetic tracked fixtures only |
+| Portfolio research inputs and catalog | `private/portfolio-research/` | private authority; journaled writes and internal validation only |
 
 JD identity is always the compound `(platform, job_id)`. Screening verdict, application status,
 and posting status are independent axes; directory movement does not encode them.
@@ -52,6 +53,23 @@ and posting status are independent axes; directory movement does not encode them
 
 `career-resume` resolves the workspace, loads Markdown sources, applies variant/target rules, and sends
 the normalized document to product-owned output adapters. Markdown remains the source of truth.
+
+Portfolio research keeps the code checkout and private source-owning workspace separate. An uninstalled
+module runner performs bounded Git observation and aggregate-only validation. The private wrapper derives
+the source workspace from Git's absolute common directory and verifies the approved planning-input digest.
+Git output limits apply while stdout and stderr stream. A timeout, overflow, malformed result, or ordinary
+Git failure blocks publication. Published logical IDs remain stable when the exact occurrence membership
+does not change; remote identity and reachable commit sets still determine clone grouping for new catalogs.
+Reconciliation cleanup intersects corrected catalog absence, superseded-journal ownership, and an approved
+private inventory. It snapshots digest-matched generated files, then journal-replaces them with canonical
+empty documents. It never deletes files or edits historical release evidence.
+The validator loads journals before their targets. It then compares the accepted catalog with current
+recursive discovery, refs, reachable commit unions, attribution, periods, dispositions, and refresh state.
+It discovers each approved root independently and rejects every out-of-root occurrence. It also requires
+four strict lane records and globally unique disposition keys. Ref ancestry uses the full reachable graph;
+qualifying commits remain a separate candidate set.
+Transaction reruns verify the exact write contract and output bytes. A nonterminal journal compensates
+before the caller can use a new transaction ID.
 
 ### Jobs
 
