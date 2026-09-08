@@ -752,6 +752,28 @@ class TestSaraminAdapter:
         assert result.stop_reason == "api_end"
 
 
+def test_search_reports_progress_and_partial_error(caplog):
+    caplog.set_level("INFO")
+    http = StubSearchHttp([
+        {"count": "3", "innerHTML": SEARCH_CARD_HTML},
+        RuntimeError("page unavailable"),
+    ])
+    result = SaraminAdapter().search("backend", config=_config(http), state=None)
+    assert len(result.items) == 3
+    assert result.stop_reason == "request_error"
+    assert "page=1 collected=3" in caplog.text
+    assert "page unavailable" in caplog.text
+    assert "stop=request_error" in caplog.text
+
+
+def test_search_reports_normal_completion(caplog):
+    caplog.set_level("INFO")
+    http = StubSearchHttp([{"count": "0", "innerHTML": ""}])
+    result = SaraminAdapter().search("backend", config=_config(http), state=None)
+    assert result.complete
+    assert "stop=api_end" in caplog.text
+
+
 class TestCompanyInfo:
     def test_parse_jsonld(self) -> None:
         from careerkit.jobs.adapters.platforms.saramin import _parse_company_jsonld
