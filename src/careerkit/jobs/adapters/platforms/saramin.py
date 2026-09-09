@@ -4,6 +4,7 @@ import base64
 from collections.abc import Mapping
 import html as html_lib
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ SARAMIN_HEADERS = {
 }
 _MAX_PAGES = 1000
 _MAX_SECONDS = 600
+_LOGGER = logging.getLogger(__name__)
 _EXPERIENCE_RE = re.compile(
     r"경력\s*(\d+)\s*[~-]\s*(\d+)\s*년"
     r"|신입[·\s]*경력"
@@ -296,6 +298,7 @@ class SaraminAdapter:
         counts_valid = True
 
         def result(*, complete: bool, stop_reason: StopReason) -> PaginatedItems:
+            _LOGGER.info("Saramin search finished query=%r pages=%d collected=%d stop=%s", query, pages_fetched, len(all_items), stop_reason)
             total_count = observed_count if saw_count and counts_valid else None
             return PaginatedItems(
                 items=tuple(self._to_candidate(item, platform.base_url) for item in all_items),
@@ -329,7 +332,8 @@ class SaraminAdapter:
                     headers=SARAMIN_HEADERS,
                     timeout=request_timeout,
                 )
-            except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+                _LOGGER.warning("Saramin search failed query=%r page=%d: %s", query, page, exc)
                 if not all_items:
                     raise
                 return result(complete=False, stop_reason="request_error")
@@ -370,6 +374,7 @@ class SaraminAdapter:
             if not new_items:
                 return result(complete=False, stop_reason="no_new_items")
             all_items.extend(new_items)
+            _LOGGER.info("Saramin search query=%r page=%d collected=%d interval=%.1fs", query, page, len(all_items), float(config.rate_limits.get(self.name, 0.0)))
             page += 1
             if pages_fetched >= _MAX_PAGES:
                 return result(complete=False, stop_reason="safety_page_limit")
