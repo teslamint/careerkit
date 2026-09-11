@@ -87,6 +87,13 @@ def _target_suffix(target: str | None) -> str:
     return f"-{target}" if target else ""
 
 
+def _document_title(service: ResumeBuildService, variant: str, fallback: str) -> str:
+    configured = service.adapter.load_target_config(service.adapter.target, variant).get("document_title")
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return fallback
+
+
 def _ensure_valid_target(target: str | None) -> None:
     if target and not TARGET_PATTERN.match(target):
         raise ValueError("invalid target name; only alphanumeric, hyphen, underscore")
@@ -179,6 +186,7 @@ def _render_full_bundle(service: ResumeBuildService, variant: str, prefix: Path)
         html_path=prefix.with_suffix(".html"),
         pdf_path=prefix.with_suffix(".pdf"),
         css_filename="style.css",
+        title=_document_title(service, variant, "Résumé"),
         plain_text_path=prefix.with_name(prefix.name + "-remember.txt"),
         render_markdown_content=service.build_full_pdf(variant),
         css_path=target_css,
@@ -188,7 +196,13 @@ def _render_full_bundle(service: ResumeBuildService, variant: str, prefix: Path)
 def _render_short_bundle(service: ResumeBuildService, variant: str, prefix: Path) -> None:
     markdown_content = service.build_short(variant)
     write_text_output(prefix.with_suffix(".md"), markdown_content)
-    render_pdf_markdown(service.build_short_pdf(variant), html_path=prefix.with_suffix(".html"), pdf_path=prefix.with_suffix(".pdf"), css_filename="style-short.css")
+    render_pdf_markdown(
+        service.build_short_pdf(variant),
+        html_path=prefix.with_suffix(".html"),
+        pdf_path=prefix.with_suffix(".pdf"),
+        css_filename="style-short.css",
+        title=_document_title(service, variant, "Résumé"),
+    )
 
 
 def _render_career_bundle(service: ResumeBuildService, variant: str, prefix: Path) -> None:
@@ -198,6 +212,7 @@ def _render_career_bundle(service: ResumeBuildService, variant: str, prefix: Pat
         html_path=prefix.with_suffix(".html"),
         pdf_path=prefix.with_suffix(".pdf"),
         css_filename="style-career.css",
+        title=_document_title(service, variant, "Career Description"),
         render_markdown_content=build_career(service.adapter, variant, format_type="pdf"),
     )
 

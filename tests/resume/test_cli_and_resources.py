@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from careerkit.resume.adapters.document_renderer import theme_css_path
+from careerkit.resume.adapters.document_renderer import markdown_to_html, theme_css_path
 from careerkit.resume.adapters.filesystem import ResumeWorkspaceAdapter
 from careerkit.resume.application.build import ResumeBuildService
 from careerkit.resume.cli import main
@@ -47,6 +47,37 @@ def test_theme_resources_resolve() -> None:
     assert theme_css_path("style.css").read_text(encoding="utf-8").startswith("@page")
     assert theme_css_path("style-short.css").exists()
     assert theme_css_path("style-career.css").exists()
+
+
+def test_markdown_to_html_uses_explicit_document_title(tmp_path: Path) -> None:
+    markdown_path = tmp_path / "render.md"
+    output_path = tmp_path / "resume.html"
+    css_path = tmp_path / "style.css"
+    _write(markdown_path, "# Résumé\n")
+    _write(css_path, "body {}\n")
+
+    markdown_to_html(markdown_path, output_path, css_path=css_path, title="Example Résumé")
+
+    assert "<title>Example Résumé</title>" in output_path.read_text(encoding="utf-8")
+
+
+def test_target_short_build_uses_configured_document_title(tmp_path: Path) -> None:
+    root = _workspace(tmp_path)
+    base = root / "private"
+    _write_json(base / "variant_config.json", {"public": {"companies": []}, "job": {"companies": []}})
+    _write(base / "profile/contact.md", "# Contact\n\n- Name: Example User\n")
+    _write(base / "profile/summary-public.md", "# Example User\n\nBackend Engineer\n")
+    _write(base / "profile/skills-public.md", "# Skills\n\n- Python\n")
+    _write(base / "profile/education.md", "# Education\n")
+    _write_json(
+        base / "overrides/github/config.json",
+        {"public": {"document_title": "Example User — Backend Engineer"}},
+    )
+
+    assert main(["--workspace", str(root), "build", "public", "short", "--target", "github"]) == 0
+
+    html = (base / "build/resume-public-github-short.html").read_text(encoding="utf-8")
+    assert "<title>Example User — Backend Engineer</title>" in html
 
 
 def test_cli_build_example_full_writes_expected_outputs(tmp_path: Path) -> None:
