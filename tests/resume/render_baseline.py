@@ -165,6 +165,7 @@ def _build_example_outputs(workspace_root: Path, *, now: datetime | None = None)
         html_path=full_prefix.with_suffix(".html"),
         pdf_path=full_prefix.with_suffix(".pdf"),
         css_filename="style.css",
+        title="Résumé",
         plain_text_path=build_dir / "resume-example-remember.txt",
     )
 
@@ -175,6 +176,7 @@ def _build_example_outputs(workspace_root: Path, *, now: datetime | None = None)
         html_path=short_prefix.with_suffix(".html"),
         pdf_path=short_prefix.with_suffix(".pdf"),
         css_filename="style-short.css",
+        title="Résumé",
     )
 
     write_text_output(build_dir / "resume-example-wanted.txt", service.build_wanted("public", now=now))
@@ -186,6 +188,7 @@ def _build_example_outputs(workspace_root: Path, *, now: datetime | None = None)
         html_path=career_prefix.with_suffix(".html"),
         pdf_path=career_prefix.with_suffix(".pdf"),
         css_filename="style-career.css",
+        title="Career Description",
         render_markdown_content=build_career(service.adapter, "public", format_type="pdf", now=now),
     )
 

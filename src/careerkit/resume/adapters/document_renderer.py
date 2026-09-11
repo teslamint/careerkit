@@ -37,10 +37,15 @@ def markdown_to_plain(markdown_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-def markdown_to_html(markdown_path: Path, output_path: Path, *, css_path: Path) -> Path:
+def markdown_to_html(markdown_path: Path, output_path: Path, *, css_path: Path, title: str) -> Path:
     pandoc = ensure_command("pandoc")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run([pandoc, str(markdown_path), "-o", str(output_path), "--standalone", f"--css={css_path}"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [pandoc, str(markdown_path), "-o", str(output_path), "--standalone", f"--css={css_path}", f"--metadata=pagetitle:{title}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return output_path
 
 
@@ -58,6 +63,7 @@ def render_markdown_bundle(
     html_path: Path,
     pdf_path: Path | None,
     css_filename: str,
+    title: str,
     plain_text_path: Path | None = None,
     render_markdown_content: str | None = None,
     css_path: Path | None = None,
@@ -71,7 +77,7 @@ def render_markdown_bundle(
         render_source.write_text(render_markdown_content, encoding="utf-8")
     try:
         selected_css = css_path or theme_css_path(css_filename)
-        markdown_to_html(render_source, html_path, css_path=selected_css)
+        markdown_to_html(render_source, html_path, css_path=selected_css, title=title)
         if pdf_path is not None:
             html_to_pdf(html_path, pdf_path)
         if plain_text_path is not None:
@@ -81,10 +87,17 @@ def render_markdown_bundle(
             temporary_directory.cleanup()
 
 
-def render_pdf_markdown(markdown_content: str, *, html_path: Path, pdf_path: Path, css_filename: str) -> None:
+def render_pdf_markdown(
+    markdown_content: str,
+    *,
+    html_path: Path,
+    pdf_path: Path,
+    css_filename: str,
+    title: str,
+) -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_markdown = Path(temp_dir) / "render.md"
         temp_markdown.write_text(markdown_content, encoding="utf-8")
         css_path = theme_css_path(css_filename)
-        markdown_to_html(temp_markdown, html_path, css_path=css_path)
+        markdown_to_html(temp_markdown, html_path, css_path=css_path, title=title)
         html_to_pdf(html_path, pdf_path)
