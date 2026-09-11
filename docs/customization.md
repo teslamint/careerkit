@@ -52,6 +52,7 @@ private/overrides/
 ```json
 {
   "job": {
+    "document_title": "Your Name — Backend Engineer",
     "companies": ["techcorp", "startup1"],
     "company_detail": {
       "startup1": "summary"
@@ -60,6 +61,8 @@ private/overrides/
   }
 }
 ```
+
+`document_title`은 HTML 브라우저 제목과 PDF 문서 제목을 설정합니다.
 
 ### 파일 오버라이드
 

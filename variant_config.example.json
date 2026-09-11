@@ -1,11 +1,13 @@
 {
   "public": {
     "companies": ["techcorp"],
+    "document_title": "Your Name — Backend Engineer",
     "include_certificates": true,
     "company_detail": {}
   },
   "job": {
     "companies": ["techcorp"],
+    "document_title": "Your Name — Backend Engineer",
     "include_certificates": false,
     "company_detail": {}
   }

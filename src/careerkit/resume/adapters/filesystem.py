@@ -86,6 +86,7 @@ class ResumeWorkspaceAdapter:
             base_config["company_detail"] = merged
         for key in (
             "companies",
+            "document_title",
             "include_certificates",
             "include_awards",
             "include_languages",
