@@ -275,6 +275,7 @@ tests/resume/test_example_render_baseline.py
 tests/resume/test_headhunter.py
 tests/resume/test_notes.py
 tests/resume/test_pdf_visual_equivalence.py
+tests/resume/test_submission_guard.py
 tests/resume/test_verify_content.py
 tests/static/vulture_whitelist.py
 verify_content_config.example.json

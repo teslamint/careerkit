@@ -22,11 +22,11 @@ CLI는 `career-resume`과 `career-jobs` 둘입니다.
 
 ```bash
 # macOS
-brew install python pandoc uv
+brew install python pandoc uv poppler
 pip3 install uv weasyprint
 
 # Ubuntu/Debian
-sudo apt-get install python3 pandoc
+sudo apt-get install python3 pandoc poppler-utils
 pip3 install uv weasyprint
 ```
 

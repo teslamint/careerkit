@@ -10,18 +10,19 @@
 - **uv** - Python 환경 및 명령 실행
 - **Pandoc** - Markdown을 HTML로 변환
 - **WeasyPrint** - HTML을 PDF로 변환
+- **Poppler (`pdftotext`)** - 최종 PDF의 검토 메모 유입 검사. 미설치, 추출 실패 또는 빈 텍스트이면 PDF 빌드를 중단합니다.
 
 ### macOS
 
 ```bash
-brew install python pandoc uv
+brew install python pandoc uv poppler
 pip3 install uv weasyprint
 ```
 
 ### Ubuntu/Debian
 
 ```bash
-sudo apt-get install python3 pandoc
+sudo apt-get install python3 pandoc poppler-utils
 pip3 install uv weasyprint
 ```
 
