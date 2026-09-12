@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -35,6 +36,7 @@ from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService
 from careerkit.jobs.application.screening import run_screening
+from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
 from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
@@ -878,12 +880,16 @@ class JobsScreeningStage:
         llm_provider: LLMProvider | None = None,
         candidate_context: str | None = None,
         quick_filters: Mapping[str, Any] | None = None,
+        semantic_validator: CalibratedSemanticValidator | None = None,
+        require_semantic_validation: bool = False,
     ) -> None:
         self.workspace = workspace
         self.repository = repository
         self.llm_provider = llm_provider
         self.candidate_context = candidate_context
         self.quick_filters = dict(quick_filters) if quick_filters is not None else None
+        self.semantic_validator = semantic_validator
+        self.require_semantic_validation = require_semantic_validation
 
     def screen(
         self,
@@ -920,7 +926,8 @@ class JobsScreeningStage:
         )
         screening_only = extraction.metadata.get("mode") == "screening_only"
         for record in extraction.records:
-            logger.debug("screening: %s:%s", record.record.platform, record.record.job_id)
+            logger.info("screening: %s:%s", record.record.platform, record.record.job_id)
+            started = time.monotonic()
             item_id = f"{record.record.platform}:{record.record.job_id}"
             context = extraction.company_contexts.get(item_id)
             try:
@@ -970,10 +977,18 @@ class JobsScreeningStage:
                     llm_provider=self.llm_provider,
                     repository=None if dry_run else self.repository,
                     candidate_context=self.candidate_context,
+                    semantic_validator=self.semantic_validator,
+                    require_semantic_validation=self.require_semantic_validation,
                 )
             except (FileNotFoundError, RuntimeError, ValueError) as exc:
                 failures.append({"job_key": item_id, "error": str(exc)})
+                logger.info("screening failed: %s error=%s elapsed_s=%.3f",
+                            item_id, type(exc).__name__, time.monotonic() - started)
                 continue
+            logger.info(
+                "screening finished: %s provider=%s fallback=%s elapsed_s=%.3f",
+                item_id, result.provider, getattr(result, "fallback_reason", None), time.monotonic() - started,
+            )
             item_ids.append(item_id)
             verdict_counts[result.verdict] += 1
             providers[result.provider] += 1

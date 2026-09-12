@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import shlex
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from typing import Any, Protocol
 import urllib.request
 
@@ -32,6 +35,22 @@ _ENV_ALLOWLIST = {
     "OPENAI_PROJECT",
 }
 _REDACTED = "[redacted]"
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _observe_attempt(provider: str, timeout: int):
+    started = time.monotonic()
+    state = {"status": "ok"}
+    logger.info("provider=%s start timeout_s=%s", provider, timeout)
+    try:
+        yield state
+    except BaseException as exc:
+        state["status"] = type(exc).__name__
+        raise
+    finally:
+        logger.info("provider=%s finish status=%s elapsed_s=%.3f",
+                    provider, state["status"], time.monotonic() - started)
 
 
 class LocalLLMConfigError(RuntimeError):
@@ -110,13 +129,14 @@ class CLIProvider:
         # failures this telemetry exists to show. run_screening resets per screening.
         for provider, cmd in resolve_commands(self.environment):
             try:
-                returncode, stdout, stderr = run_provider_command(
-                    provider,
-                    cmd,
-                    prompt,
-                    timeout,
-                    env,
-                )
+                with _observe_attempt(provider, timeout) as attempt:
+                    returncode, stdout, stderr = run_provider_command(
+                        provider, cmd, prompt, timeout, env,
+                    )
+                    if returncode != 0:
+                        attempt["status"] = f"exit_{returncode}"
+                    elif not stdout.strip():
+                        attempt["status"] = "empty_output"
             except FileNotFoundError:
                 errors.append(self._record(provider, f"{provider}: command not found"))
                 continue
@@ -167,14 +187,10 @@ class CLIProvider:
                 errors.append(self._record(label, f"{label}: LOCAL_LLM_MODEL not set"))
             else:
                 try:
-                    output, prompt_tokens = run_local_llm(
-                        label,
-                        url,
-                        model,
-                        extra_options,
-                        prompt,
-                        resolved_local_timeout,
-                    )
+                    with _observe_attempt(label, resolved_local_timeout):
+                        output, prompt_tokens = run_local_llm(
+                            label, url, model, extra_options, prompt, resolved_local_timeout,
+                        )
                 except Exception as exc:
                     errors.append(
                         self._record(

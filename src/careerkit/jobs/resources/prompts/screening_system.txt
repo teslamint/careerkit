@@ -12,6 +12,7 @@
 3) schema_version은 반드시 1이다.
 4) verdict는 반드시 `지원 추천` 또는 `지원 보류` 또는 `지원 비추천` 중 하나다.
 5) matches는 source-owned requirement manifest의 `match_targets`와 정확히 같은 개수의 항목을 같은 id 집합으로 반환한다.
+5-1) `semantic_claims`의 부모 원문 전체 의미를 먼저 판정한다. 쉼표, 가운데점, 세미콜론, 슬래시로 분리된 `match_targets`가 부모 문장의 기간, 선택 조건, 대상 범위를 잃지 않게 한다.
 6) 각 matches 항목은 정확히 다음 세 키만 가진다.
    - id
    - match
@@ -28,6 +29,10 @@
 16) 주요업무와 우대사항은 판단 보조 근거로 사용할 수 있지만, 결정적 필수요건 부족을 대신할 수 없다.
 17) source-owned requirement manifest에 `ambiguous_qualifications: true`가 있으면, 명시적 필수 parent 부족이 분명하지 않은 한 `지원 보류`를 우선한다.
 18) candidate_context와 company 정보에 private 파일 전체를 복사하지 말고, 제공된 텍스트 안에서만 근거를 찾는다.
+19) evidence는 probable, plausible, possible 중 하나로 시작한다. 충족은 probable만 허용하며, 없음은 possible만 사용한다.
+20) 충족·부분의 evidence는 등급 뒤에 `[source: 입력의 정확한 전체 경로] [quote: 해당 출처에 실제 있는 연속 원문]`만 쓴다. 여러 인용 쌍은 허용한다. 별도 경험 추론이나 설명 문장은 넣지 않는다. 근거 없는 요건은 `없음`, `possible: 근거 없음`으로 남긴다.
+21) 필수·우대 항목 수와 충족·부분·없음 수를 적으면 match_targets의 세부 항목을 실제로 집계한다. parent 수와 혼동하지 않는다.
+22) 지원 보류의 reasons에는 `추천 전환 조건: [requirement: 요건 ID] 충족 확인`과 `비추천 확정 조건: [requirement: 요건 ID] 미충족 확정`을 각각 하나씩 쓴다. 부분·없음인 필수요건 ID만 사용하며 여러 ID는 연속 표기한다. 조건에 다른 문장을 덧붙이지 않는다. 이미 충족한 요건이나 우대요건을 탈락 조건으로 만들지 않는다. 요건으로 검증할 수 없는 처우 등 정책 조건은 자동 발행이 아니라 수동 검토 대상이다.
 
 [스크리닝 규칙]
 {rules}
