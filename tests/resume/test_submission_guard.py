@@ -1,4 +1,5 @@
 from pathlib import Path
+import errno
 import subprocess
 
 import pytest
@@ -101,6 +102,46 @@ def test_bundle_renderers_preserve_outputs_on_pdf_failure(tmp_path, monkeypatch,
             )
 
     assert all(output.read_text() == "previous" for output in outputs)
+
+
+def test_bundle_stages_each_output_on_destination_filesystem(tmp_path, monkeypatch):
+    markdown = tmp_path / "markdown" / "resume.md"
+    html = tmp_path / "html" / "resume.html"
+    pdf = tmp_path / "pdf" / "resume.pdf"
+    plain = tmp_path / "plain" / "resume.txt"
+    monkeypatch.setattr(renderer, "ensure_command", lambda name: name)
+
+    def run(args, **kwargs):
+        if args[0] == "pdftotext":
+            return subprocess.CompletedProcess(args, 0, "Safe output", "")
+        destination = Path(args[args.index("-o") + 1]) if "-o" in args else Path(args[-1])
+        destination.write_text("Safe output")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    original_replace = Path.replace
+
+    def replace(source, target):
+        source_root = source.relative_to(tmp_path).parts[0]
+        target_root = Path(target).relative_to(tmp_path).parts[0]
+        if source_root != target_root:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(renderer.subprocess, "run", run)
+    monkeypatch.setattr(Path, "replace", replace)
+    renderer.render_markdown_bundle(
+        "Safe markdown",
+        markdown_path=markdown,
+        html_path=html,
+        pdf_path=pdf,
+        css_filename="style.css",
+        title="Resume",
+        plain_text_path=plain,
+        css_path=tmp_path / "style.css",
+    )
+
+    assert markdown.read_text() == "Safe markdown"
+    assert all(output.read_text() == "Safe output" for output in (html, pdf, plain))
 
 
 def test_submission_keeps_ordinary_citations(tmp_path):
