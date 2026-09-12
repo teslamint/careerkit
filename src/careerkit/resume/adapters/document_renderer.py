@@ -23,7 +23,13 @@ class _SubmissionTextParser(HTMLParser):
 
 def validate_submission_content(content: str) -> None:
     """Reject explicit research material, not ordinary citations or technical caveats."""
-    decoded = unescape(unquote(content)).replace("\\", "/")
+    decoded = content
+    while True:
+        next_decoded = unescape(unquote(decoded))
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    decoded = decoded.replace("\\", "/")
     normalized = "".join(
         character for character in unicodedata.normalize("NFKC", decoded)
         if unicodedata.category(character) != "Cf"

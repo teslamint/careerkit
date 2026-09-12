@@ -31,6 +31,7 @@ def test_cli_rejects_contaminated_submission_in_every_mode(tmp_path, capsys, mod
     "private/companies/sample/profile.md",
     "private/profile/summary.md",
     "private/profi\u200ble/summary.md",
+    "private%252Fprofile%252Fsummary.md",
     "<span>evidence-</span>lane3-04",
 ])
 def test_submission_rejects_review_material_without_overwriting(tmp_path, content):
