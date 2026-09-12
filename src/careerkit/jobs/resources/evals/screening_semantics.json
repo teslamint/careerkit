@@ -1,0 +1,23 @@
+{"schema_version":1,"cases":[
+{"id":"parent-001","group":"parent-control","requirement":"Spring Boot 기반 백엔드 서비스 개발 경험","declared_match":"충족","evidence_spans":["Spring Boot 주문 API 개발"],"expected_label":"entails","decision_driving":true},
+{"id":"parent-002","group":"parent-control","requirement":"Kafka를 사용한 비동기 처리 경험","declared_match":"충족","evidence_spans":["Kafka 이벤트 소비자 운영"],"expected_label":"entails","decision_driving":true},
+{"id":"parent-003","group":"parent-control","requirement":"데이터 플랫폼 서비스 개발과 분산 처리 시스템 구축 경험 6년 이상","declared_match":"부분","evidence_spans":["백엔드 개발 8년"],"expected_label":"entails","decision_driving":true},
+{"id":"parent-004","group":"parent-control","requirement":"로그, 메트릭, 트레이싱을 이용한 관측성 운영 경험","declared_match":"부분","evidence_spans":["Prometheus 메트릭과 Grafana 대시보드 운영"],"expected_label":"partial","decision_driving":false},
+{"id":"parent-005","group":"parent-control","requirement":"AWS 환경의 서비스 운영 경험","declared_match":"충족","evidence_spans":["AWS ECS 운영"],"expected_label":"entails","decision_driving":false},
+{"id":"parent-006","group":"parent-control","requirement":"영어 기술 문서 독해와 작성 능력","declared_match":"부분","evidence_spans":["영문 API 문서 독해"],"expected_label":"partial","decision_driving":false},
+{"id":"parent-007","group":"parent-control","requirement":"대규모 트래픽 처리와 장애 대응 경험","declared_match":"부분","evidence_spans":["서비스 장애 대응 당번 운영"],"expected_label":"partial","decision_driving":true},
+{"id":"parent-008","group":"parent-control","requirement":"테스트 자동화와 지속적 통합 경험","declared_match":"충족","evidence_spans":["지속적 통합 파이프라인인 GitHub Actions에서 단위 테스트 자동 실행"],"expected_label":"entails","decision_driving":false},
+{"id":"parent-009","group":"parent-control","requirement":"관계형 데이터베이스 설계 및 튜닝 경험","declared_match":"부분","evidence_spans":["PostgreSQL 인덱스 튜닝"],"expected_label":"partial","decision_driving":true},
+{"id":"parent-010","group":"parent-control","requirement":"팀 관리보다 개별 기여자 역할을 선호","declared_match":"없음","evidence_spans":["백엔드 엔지니어로 기능 개발"],"expected_label":"unsupported","decision_driving":false},
+{"id":"parent-011","group":"parent-control","requirement":"온프레미스 또는 폐쇄망 배포 경험","declared_match":"없음","evidence_spans":["Ansible 서버 구성 자동화"],"expected_label":"unsupported","decision_driving":false},
+{"id":"parent-012","group":"parent-control","requirement":"금융권 보안 제품에서 고객 요구사항을 반영한 경험","declared_match":"부분","evidence_spans":["일반 SaaS 고객 요청을 백로그에 반영"],"expected_label":"partial","decision_driving":false},
+{"id":"parent-013","group":"parent-control","requirement":"Python 또는 Go로 운영 도구를 개발한 경험","declared_match":"충족","evidence_spans":["Python 배포 도구 개발"],"expected_label":"entails","decision_driving":false},
+{"id":"parent-014","group":"parent-control","requirement":"야간 당직에 참여할 수 있음","declared_match":"충족","evidence_spans":["야간 당직 참여가 불가능함"],"expected_label":"contradicted","decision_driving":true},
+{"id":"overclaim-001","group":"known-overclaim","requirement":"인프라 자동화에 흥미가 있음","declared_match":"충족","evidence_spans":["Terraform 모듈 작성"],"expected_label":"unsupported","decision_driving":false},
+{"id":"overclaim-002","group":"known-overclaim","requirement":"관리보다 개별 기여자 역할에 끌림","declared_match":"충족","evidence_spans":["개별 기능 구현 담당"],"expected_label":"unsupported","decision_driving":false},
+{"id":"overclaim-003","group":"known-overclaim","requirement":"플랫폼 서비스 개발 경험 6년 이상","declared_match":"충족","evidence_spans":["전체 경력 10년","플랫폼 프로젝트 2년"],"expected_label":"partial","decision_driving":true},
+{"id":"overclaim-004","group":"known-overclaim","requirement":"분산 시스템 운영 경험","declared_match":"충족","evidence_spans":["단일 서버 애플리케이션 운영"],"expected_label":"unsupported","decision_driving":true},
+{"id":"overclaim-005","group":"known-overclaim","requirement":"온프레미스, 프라이빗 클라우드 또는 폐쇄망 배포 경험","declared_match":"충족","evidence_spans":["Ansible과 RADIUS 사용"],"expected_label":"unsupported","decision_driving":false},
+{"id":"overclaim-006","group":"known-overclaim","requirement":"금융권 또는 보안 제품에서 고객의 보안·운영 요구사항을 반영한 경험","declared_match":"충족","evidence_spans":["일반 서비스 운영 안정화"],"expected_label":"unsupported","decision_driving":false},
+{"id":"overclaim-007","group":"known-overclaim","requirement":"새 도메인을 빠르게 학습하는 일을 선호","declared_match":"충족","evidence_spans":["여러 도메인의 프로젝트에 배정됨"],"expected_label":"unsupported","decision_driving":false}
+]}

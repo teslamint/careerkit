@@ -89,17 +89,17 @@ GOLDEN_ASSESSMENT_JSON = json.dumps(
             {
                 "id": "required-001",
                 "match": "충족",
-                "evidence": "[source: synthetic/profile.md] Python 근거",
+                "evidence": "probable [source: synthetic/profile.md] [quote: Python]",
             },
             {
                 "id": "required-002",
                 "match": "충족",
-                "evidence": "[source: synthetic/profile.md] API 근거",
+                "evidence": "probable [source: synthetic/profile.md] [quote: API]",
             },
             {
                 "id": "preferred-001",
                 "match": "충족",
-                "evidence": "[source: synthetic/profile.md] 검색 경험 근거",
+                "evidence": "probable [source: synthetic/profile.md] [quote: 검색 경험]",
             },
         ],
         "verdict": "지원 추천",
@@ -1425,14 +1425,14 @@ def test_screening_stage_enriches_before_prescreen_branching(tmp_path: Path, mon
     }
 
 
-def test_screening_stage_logs_each_record_at_debug(tmp_path: Path, caplog) -> None:
+def test_screening_stage_logs_each_record_at_info(tmp_path: Path, caplog) -> None:
     workspace = _make_workspace(tmp_path)
     repository = JDRecordRepository(tmp_path / "private/jd/records")
     closed = repository.create(
         JobRecord("wanted", "1", "Closed Co", "Backend"),
         jd_markdown="# JD\n\n채용 마감\n",
     )
-    caplog.set_level(logging.DEBUG, logger="careerkit.jobs.application.automation")
+    caplog.set_level(logging.INFO, logger="careerkit.jobs.application.automation")
 
     JobsScreeningStage(workspace=workspace, repository=repository).screen(
         ExtractionBatch(("closed",), ("wanted:1",), (closed,), {}),
@@ -1441,6 +1441,32 @@ def test_screening_stage_logs_each_record_at_debug(tmp_path: Path, caplog) -> No
     )
 
     assert "screening: wanted:1" in caplog.messages
+
+
+def test_screening_timeout_logs_outcome_and_continues(tmp_path, caplog):
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    records = tuple(repository.create(
+        JobRecord("wanted", key, "Synthetic Co", "Backend"),
+        jd_markdown="# JD\n\n## 자격요건\n- Python 개발 경험\n",
+    ) for key in ("901", "902"))
+    class TimedOutProvider:
+        calls = 0
+        def run(self, prompt, timeout, local_timeout=None):
+            self.calls += 1
+            raise TimeoutError("synthetic timeout")
+    provider = TimedOutProvider()
+    with caplog.at_level(logging.INFO):
+        result = JobsScreeningStage(workspace=workspace, repository=repository, llm_provider=provider).screen(
+            ExtractionBatch(("a", "b"), ("wanted:901", "wanted:902"), records, {"mode": "screening_only"}),
+            dry_run=False, llm_timeout=1, local_llm_timeout=2,
+        )
+    assert provider.calls == 2
+    assert result.metadata["fallback_count"] == 2
+    assert repository.get(JobKey("wanted", "902")).record.screening_verdict is ScreeningVerdict.HOLD
+    assert "screening finished: wanted:901 provider=fallback" in caplog.text
+    assert "screening finished: wanted:902 provider=fallback" in caplog.text
+    assert "elapsed_s=" in caplog.text
 
 
 def _screening_result(**overrides):
@@ -2671,7 +2697,7 @@ def test_run_auto_real_services_extract_screen_classify_and_clear_resume_state(t
             workspace=workspace,
             repository=repository,
             llm_provider=FakeProvider(GOLDEN_ASSESSMENT_JSON, provider_name="fake"),
-            candidate_context="[source: synthetic/profile.md] fixed candidate context",
+            candidate_context="[source: synthetic/profile.md] Python API 검색 경험",
         ),
         completion_stage=JobsCompletionStage(
             pipeline=pipeline,
@@ -2755,7 +2781,7 @@ def test_run_auto_and_queue_rescreen_share_the_same_structured_manifest_contract
     assessment = json.loads(GOLDEN_ASSESSMENT_JSON)
     for match in assessment["matches"]:
         match["evidence"] = (
-            f"[source: private/profile/skills-job.md] {match['id']} 근거"
+            match["evidence"].replace("synthetic/profile.md", "private/profile/skills-job.md")
         )
     assessment_json = json.dumps(assessment, ensure_ascii=False)
     auto_provider = CapturingFakeProvider(assessment_json, provider_name="local")

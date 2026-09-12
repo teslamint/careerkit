@@ -29,6 +29,8 @@ from careerkit.jobs.application.screening_assessment import (
     render_screening_markdown,
 )
 from careerkit.jobs.application.storage_migration import extract_metadata_from_jd
+from careerkit.jobs.application.screening_quality import ScreeningQualityError, count_quality_issues, validate_assessment_quality
+from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
 from careerkit.jobs.domain.verdict import (
     VERDICT_PRIORITY,
     parse_verdict_candidates,
@@ -132,6 +134,15 @@ def _serialize_manifest(manifest: RequirementManifest) -> str:
     payload = {
         "schema_version": 1,
         "decision_basis_parent_ids": [item.id for item in manifest.parents],
+        "semantic_claims": [
+            {
+                "id": item.id,
+                "text": item.text,
+                "kind": item.kind.value,
+                "decisive": item.decisive,
+            }
+            for item in manifest.parents
+        ],
         "match_targets": [
             {
                 "id": item.id,
@@ -542,6 +553,8 @@ def run_screening(
     repository: JDRecordRepository | None = None,
     candidate_context: str | None = None,
     require_strong_provider: bool = False,
+    semantic_validator: CalibratedSemanticValidator | None = None,
+    require_semantic_validation: bool = False,
 ) -> ScreeningResult:
     jd_content = jd.jd_markdown
     rules = load_screening_rules(workspace)
@@ -622,6 +635,11 @@ def run_screening(
         if not valid:
             raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
+        validate_assessment_quality(assessment, filtered, candidate_context_text)
+        if require_semantic_validation and semantic_validator is None:
+            raise ScreeningQualityError("screening-quality: semantic-validator-required")
+        if semantic_validator is not None:
+            semantic_validator.validate(filtered, assessment, screening_provider=provider)
         normalized_output = render_screening_markdown(jd, jd_content, filtered, assessment)
         if filtered.ambiguous_qualifications and not filtered.parents:
             normalized_output = _inject_ambiguous_placeholder_row(normalized_output)
@@ -648,6 +666,16 @@ def run_screening(
                 rows, demotion_error = parse_match_table(normalized_output)
                 if demotion_error:
                     raise RuntimeError(f"강등 적용 후 표 파싱 실패: {demotion_error}")
+                # Summary counts describe final leaf states, not the model's
+                # pre-demotion claims. Reject stale prose before publication.
+                effective_matches = {item.id: item.match for item in assessment.matches}
+                for parent, row in zip(filtered.parents, rows, strict=True):
+                    if row.index in report.demoted_indices:
+                        for leaf in filtered.leaves:
+                            if leaf.id == parent.id or leaf.parent_id == parent.id:
+                                effective_matches[leaf.id] = "없음"
+                if count_quality_issues(assessment, filtered, effective_matches):
+                    raise ScreeningQualityError("screening-quality: count-mismatch-after-demotion")
         else:
             evidence_violations = {
                 "missing_source_path": 0,

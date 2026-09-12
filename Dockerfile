@@ -10,7 +10,7 @@ FROM python:3.12-slim
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      pandoc weasyprint fonts-noto-cjk && \
+      pandoc poppler-utils weasyprint fonts-noto-cjk && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /dist /dist
 RUN python -m pip install --no-cache-dir /dist/careerkit-*.whl && rm -rf /dist
