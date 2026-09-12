@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import ExitStack
 from importlib import resources
 from html import unescape
 from html.parser import HTMLParser
@@ -130,13 +129,9 @@ def html_to_pdf(html_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-def _stage_output(stack: ExitStack, output: Path) -> Path:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    directory = stack.enter_context(tempfile.TemporaryDirectory(dir=output.parent))
-    return Path(directory) / output.name
-
-
 def _publish_staged_outputs(outputs: tuple[tuple[Path, Path], ...]) -> None:
+    for _, output in outputs:
+        output.parent.mkdir(parents=True, exist_ok=True)
     for staged, output in outputs:
         staged.replace(output)
 
@@ -156,23 +151,25 @@ def render_markdown_bundle(
     validate_submission_content(markdown_content)
     if render_markdown_content is not None:
         validate_submission_content(render_markdown_content)
-    with ExitStack() as stack:
-        staged_markdown = _stage_output(stack, markdown_path)
-        staged_html = _stage_output(stack, html_path)
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=markdown_path.parent) as directory:
+        staging = Path(directory)
+        staged_markdown = staging / "document.md"
+        staged_html = staging / "document.html"
         write_text_output(staged_markdown, markdown_content)
         render_source = staged_markdown
         if render_markdown_content is not None:
-            render_source = staged_markdown.with_name("render.md")
+            render_source = staging / "render.md"
             write_text_output(render_source, render_markdown_content)
         selected_css = css_path or theme_css_path(css_filename)
         markdown_to_html(render_source, staged_html, css_path=selected_css, title=title)
         outputs = [(staged_markdown, markdown_path), (staged_html, html_path)]
         if pdf_path is not None:
-            staged_pdf = _stage_output(stack, pdf_path)
+            staged_pdf = staging / "document.pdf"
             html_to_pdf(staged_html, staged_pdf)
             outputs.append((staged_pdf, pdf_path))
         if plain_text_path is not None:
-            staged_plain = _stage_output(stack, plain_text_path)
+            staged_plain = staging / "document.txt"
             markdown_to_plain(staged_markdown, staged_plain)
             outputs.append((staged_plain, plain_text_path))
         _publish_staged_outputs(tuple(outputs))
@@ -187,10 +184,12 @@ def render_pdf_markdown(
     title: str,
 ) -> None:
     validate_submission_content(markdown_content)
-    with ExitStack() as stack:
-        staged_html = _stage_output(stack, html_path)
-        staged_pdf = _stage_output(stack, pdf_path)
-        staged_markdown = staged_html.with_name("render.md")
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=html_path.parent) as directory:
+        staging = Path(directory)
+        staged_markdown = staging / "render.md"
+        staged_html = staging / "document.html"
+        staged_pdf = staging / "document.pdf"
         write_text_output(staged_markdown, markdown_content)
         css_path = theme_css_path(css_filename)
         markdown_to_html(staged_markdown, staged_html, css_path=css_path, title=title)
