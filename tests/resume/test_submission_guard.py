@@ -60,6 +60,49 @@ def test_empty_pdf_extraction_preserves_output(tmp_path, monkeypatch):
     assert output.read_text() == "previous"
 
 
+@pytest.mark.parametrize("kind", ["bundle", "pdf-only"])
+def test_bundle_renderers_preserve_outputs_on_pdf_failure(tmp_path, monkeypatch, kind):
+    markdown = tmp_path / "resume.md"
+    html = tmp_path / "resume.html"
+    pdf = tmp_path / "resume.pdf"
+    plain = tmp_path / "resume.txt"
+    for output in (markdown, html, pdf, plain):
+        output.write_text("previous")
+    monkeypatch.setattr(renderer, "ensure_command", lambda name: name)
+
+    def run(args, **kwargs):
+        if args[0] == "pdftotext":
+            return subprocess.CompletedProcess(args, 0, "\f\n", "")
+        destination = Path(args[args.index("-o") + 1]) if "-o" in args else Path(args[-1])
+        destination.write_text("new output")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(renderer.subprocess, "run", run)
+    outputs = (markdown, html, pdf, plain) if kind == "bundle" else (html, pdf)
+    with pytest.raises(ValueError, match="PDF"):
+        if kind == "bundle":
+            renderer.render_markdown_bundle(
+                "new markdown",
+                markdown_path=markdown,
+                html_path=html,
+                pdf_path=pdf,
+                css_filename="style.css",
+                title="Resume",
+                plain_text_path=plain,
+                css_path=tmp_path / "style.css",
+            )
+        else:
+            renderer.render_pdf_markdown(
+                "new markdown",
+                html_path=html,
+                pdf_path=pdf,
+                css_filename="style.css",
+                title="Resume",
+            )
+
+    assert all(output.read_text() == "previous" for output in outputs)
+
+
 def test_submission_keeps_ordinary_citations(tmp_path):
     output = tmp_path / "resume.txt"
     content = "Evidence-based development. 검증 테스트를 추가했습니다. [1] https://example.org/research"

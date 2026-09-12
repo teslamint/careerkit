@@ -129,6 +129,13 @@ def html_to_pdf(html_path: Path, output_path: Path) -> Path:
     return output_path
 
 
+def _publish_staged_outputs(outputs: tuple[tuple[Path, Path], ...]) -> None:
+    for _, output in outputs:
+        output.parent.mkdir(parents=True, exist_ok=True)
+    for staged, output in outputs:
+        staged.replace(output)
+
+
 def render_markdown_bundle(
     markdown_content: str,
     *,
@@ -144,23 +151,28 @@ def render_markdown_bundle(
     validate_submission_content(markdown_content)
     if render_markdown_content is not None:
         validate_submission_content(render_markdown_content)
-    write_text_output(markdown_path, markdown_content)
-    render_source = markdown_path
-    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
-    if render_markdown_content is not None:
-        temporary_directory = tempfile.TemporaryDirectory()
-        render_source = Path(temporary_directory.name) / "render.md"
-        render_source.write_text(render_markdown_content, encoding="utf-8")
-    try:
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=markdown_path.parent) as directory:
+        staging = Path(directory)
+        staged_markdown = staging / "document.md"
+        staged_html = staging / "document.html"
+        write_text_output(staged_markdown, markdown_content)
+        render_source = staged_markdown
+        if render_markdown_content is not None:
+            render_source = staging / "render.md"
+            write_text_output(render_source, render_markdown_content)
         selected_css = css_path or theme_css_path(css_filename)
-        markdown_to_html(render_source, html_path, css_path=selected_css, title=title)
+        markdown_to_html(render_source, staged_html, css_path=selected_css, title=title)
+        outputs = [(staged_markdown, markdown_path), (staged_html, html_path)]
         if pdf_path is not None:
-            html_to_pdf(html_path, pdf_path)
+            staged_pdf = staging / "document.pdf"
+            html_to_pdf(staged_html, staged_pdf)
+            outputs.append((staged_pdf, pdf_path))
         if plain_text_path is not None:
-            markdown_to_plain(markdown_path, plain_text_path)
-    finally:
-        if temporary_directory is not None:
-            temporary_directory.cleanup()
+            staged_plain = staging / "document.txt"
+            markdown_to_plain(staged_markdown, staged_plain)
+            outputs.append((staged_plain, plain_text_path))
+        _publish_staged_outputs(tuple(outputs))
 
 
 def render_pdf_markdown(
@@ -172,9 +184,14 @@ def render_pdf_markdown(
     title: str,
 ) -> None:
     validate_submission_content(markdown_content)
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_markdown = Path(temp_dir) / "render.md"
-        temp_markdown.write_text(markdown_content, encoding="utf-8")
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=html_path.parent) as directory:
+        staging = Path(directory)
+        staged_markdown = staging / "render.md"
+        staged_html = staging / "document.html"
+        staged_pdf = staging / "document.pdf"
+        write_text_output(staged_markdown, markdown_content)
         css_path = theme_css_path(css_filename)
-        markdown_to_html(temp_markdown, html_path, css_path=css_path, title=title)
-        html_to_pdf(html_path, pdf_path)
+        markdown_to_html(staged_markdown, staged_html, css_path=css_path, title=title)
+        html_to_pdf(staged_html, staged_pdf)
+        _publish_staged_outputs(((staged_html, html_path), (staged_pdf, pdf_path)))
