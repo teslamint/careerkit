@@ -28,6 +28,9 @@ from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService, PrescreenedListing
 from careerkit.jobs.adapters.screening.cli_provider import resolve_commands
 from careerkit.jobs.application.screening import STRONG_PROVIDER_LABELS, is_fallback_document, run_screening, validate_screening_structure
+from careerkit.jobs.application.requirement_manifest import extract_requirement_manifest, without_main_duty
+from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+from careerkit.jobs.application.screening_quality import validate_assessment_quality
 from careerkit.jobs.application.storage_migration import get_platform_from_url
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
 from careerkit.jobs.adapters.storage.link_store import LinkStore
@@ -337,6 +340,9 @@ def build_parser() -> argparse.ArgumentParser:
     screening_validate = screening_subparsers.add_parser("validate", help="Validate one screening markdown file")
     screening_validate.add_argument("path", type=Path)
     screening_validate.add_argument("--json", action="store_true")
+    screening_validate.add_argument("--assessment-json", action="store_true", help="Validate model JSON against JD and candidate sources")
+    screening_validate.add_argument("--jd", type=Path, help="JD markdown for assessment validation")
+    screening_validate.add_argument("--candidate", type=Path, help="Candidate context with source markers")
     screening_validate.set_defaults(handler=_handle_screening_validate)
     screening_run = screening_subparsers.add_parser("run", help="Run screening for one canonical record")
     screening_run.add_argument("job_key")
@@ -1656,7 +1662,21 @@ def _handle_stale_screenings(
 
 def _handle_screening_validate(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     content = args.path.read_text(encoding="utf-8")
-    valid, reason = validate_screening_structure(content)
+    scope = "assessment-quality" if args.assessment_json else "markdown-structure"
+    if args.assessment_json:
+        try:
+            if args.jd is None or args.candidate is None:
+                raise ValueError("--assessment-json requires --jd and --candidate")
+            manifest = without_main_duty(extract_requirement_manifest(args.jd.read_text(encoding="utf-8")))
+            assessment = parse_screening_assessment(content, manifest)
+            validate_assessment_quality(assessment, manifest, args.candidate.read_text(encoding="utf-8"))
+            valid, reason = True, ""
+        except ValueError as exc:
+            valid, reason = False, str(exc)
+    elif args.jd is not None or args.candidate is not None:
+        valid, reason = False, "--jd and --candidate require --assessment-json"
+    else:
+        valid, reason = validate_screening_structure(content)
     if args.json:
         payload = _base_payload("screening validate", workspace)
         payload.update(
@@ -1664,11 +1684,12 @@ def _handle_screening_validate(args: argparse.Namespace, workspace: WorkspacePat
                 "path": services.maintenance.relative_path(args.path),
                 "valid": valid,
                 "reason": reason or None,
+                "validation_scope": scope,
             }
         )
         _print_json(payload)
     else:
-        print(f"path={services.maintenance.relative_path(args.path)} valid={valid}")
+        print(f"path={services.maintenance.relative_path(args.path)} valid={valid} scope={scope}")
         if reason:
             print(reason)
     return 0 if valid else 2

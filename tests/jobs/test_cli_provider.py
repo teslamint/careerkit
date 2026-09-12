@@ -74,6 +74,22 @@ def test_resolve_local_llm_defaults() -> None:
     assert extra == {"num_ctx": 32768}
 
 
+def test_attempt_logs_timeout_and_next_provider_without_payload(monkeypatch, caplog):
+    monkeypatch.setattr(cli_provider, "resolve_commands", lambda env: [("claude", ["claude"])])
+    def timed_out(*args):
+        raise subprocess.TimeoutExpired("secret-command", 2)
+    monkeypatch.setattr(cli_provider, "run_provider_command", timed_out)
+    install_urlopen(monkeypatch, {"choices": [{"message": {"content": "secret-response"}}]})
+    provider = CLIProvider(environment={"LOCAL_LLM_BASE_URL": "http://localhost:8000/v1", "LOCAL_LLM_MODEL": "model"})
+    with caplog.at_level("INFO"):
+        assert provider.run("secret-prompt", timeout=2, local_timeout=3) == ("local", "secret-response")
+    assert "provider=claude start timeout_s=2" in caplog.text
+    assert "provider=claude finish status=TimeoutExpired" in caplog.text
+    assert "provider=local start timeout_s=3" in caplog.text
+    assert "provider=local finish status=ok elapsed_s=" in caplog.text
+    assert "secret-" not in caplog.text
+
+
 def test_resolve_local_llm_strips_trailing_slash() -> None:
     ollama_resolved = resolve_local_llm({"OLLAMA_BASE_URL": "http://box:11434/"})
     assert ollama_resolved is not None

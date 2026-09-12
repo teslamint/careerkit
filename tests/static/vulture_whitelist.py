@@ -57,6 +57,9 @@ _.queue_case_count
 _.incomplete_error_code
 build_gold_dataset
 
+# HTMLParser dispatches this callback by name.
+_.handle_data
+
 # TheVCCompanyInfo dataclass fields are consumed by CLI JSON serialization.
 _.last_funded_on
 

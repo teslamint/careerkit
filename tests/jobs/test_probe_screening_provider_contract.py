@@ -35,8 +35,8 @@ def _build_valid_assessment_payload(
     matches = [
         {
             "id": item.id,
-            "match": "충족",
-            "evidence": f"[source: private/profile/skills-job.md] {item.text} 근거",
+            "match": "부분" if item.id == "required-002" else "충족",
+            "evidence": f"{'plausible' if item.id == 'required-002' else 'probable'} [source: private/profile/skills-job.md] [quote: {item.text.split()[0]}]",
         }
         for item in manifest.leaves
         if item.assessable
@@ -46,13 +46,11 @@ def _build_valid_assessment_payload(
             "schema_version": 1,
             "matches": matches,
             "verdict": "지원 보류",
-            "decision_basis": [
-                item.id for item in manifest.parents if item.kind.value == "필수"
-            ],
+            "decision_basis": [],
             "screening_summary": ["구조화 계약으로 평가를 완료했다"],
             "reasons": [
-                "필수 요건 근거를 확인했다",
-                "주요 업무 근거를 확인했다",
+                "추천 전환 조건: [requirement: required-002] 충족 확인",
+                "비추천 확정 조건: [requirement: required-002] 미충족 확정",
                 "우대 요건 근거를 확인했다",
             ],
         },

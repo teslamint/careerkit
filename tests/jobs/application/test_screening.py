@@ -18,7 +18,6 @@ from careerkit.jobs.application.screening import (
     validate_screening_structure,
 )
 from careerkit.jobs.domain.model import JobKey, JobRecord, ScreeningVerdict
-from careerkit.jobs.domain.verdict import parse_verdict_candidates
 from careerkit.workspace import resolve_workspace
 
 
@@ -96,7 +95,9 @@ def _assessment_json(
                 "match": match_overrides.get(item.id, "충족"),
                 "evidence": evidence_overrides.get(
                     item.id,
-                    f"[source: private/profile/skills-job.md] {item.text} 근거",
+                    ("possible: 직접 근거 없음" if match_overrides.get(item.id) == "없음" else
+                     f"{'plausible' if match_overrides.get(item.id) == '부분' else 'probable'} "
+                     f"[source: private/profile/skills-job.md] [quote: {item.text.split()[0]}]"),
                 ),
             }
         )
@@ -175,6 +176,100 @@ def test_run_screening_publishes_rendered_markdown_and_metadata(tmp_path: Path) 
     assert result.evidence_violations["unevidenced_main_duty"] == 0
 
 
+def test_required_semantic_gate_preserves_record_when_validator_is_missing(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    repository.update_screening_result(
+        stored.record.key,
+        screening_markdown="Existing reviewed result",
+        screening_verdict=ScreeningVerdict.HOLD,
+        screening_provider="manual",
+    )
+    before = repository.get(stored.record.key)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+
+    with pytest.raises(ValueError, match="semantic-validator-required"):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            llm_provider=SequenceProvider([_assessment_json(manifest)]),
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+            require_semantic_validation=True,
+        )
+
+    after = repository.get(stored.record.key)
+    assert after.record == before.record
+    assert after.screening_markdown == before.screening_markdown
+
+
+@pytest.mark.parametrize("defect", ["count", "citation", "quote", "grade", "condition", "missing-condition", "valid", "borrowed-quote", "extra-claim", "unstructured-condition", "extra-condition", "post-demotion-count"])
+def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    repository.update_screening_result(
+        stored.record.key, screening_markdown="Existing reviewed result",
+        screening_verdict=ScreeningVerdict.HOLD, screening_provider="manual",
+    )
+    before = repository.get(stored.record.key)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = json.loads(_assessment_json(manifest, verdict="지원 보류"))
+    raw["matches"] = [
+        {"id": "required-001", "match": "충족", "evidence": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]"},
+        {"id": "required-002", "match": "없음", "evidence": "possible: Kafka 직접 근거 없음"},
+        {"id": "preferred-001", "match": "부분", "evidence": "plausible [source: private/profile/skills-job.md] [quote: AWS]"},
+    ]
+    raw["screening_summary"] = ["필수 2항목: 충족 1, 부분 0, 없음 1", "우대 1항목: 충족 0, 부분 1, 없음 0"]
+    raw["reasons"] = [
+        "추천 전환 조건: [requirement: required-002] 충족 확인",
+        "비추천 확정 조건: [requirement: required-002] 미충족 확정",
+        "서류 검토에서 직접 경험 확인 필요",
+    ]
+    if defect == "count":
+        raw["screening_summary"][0] = "필수 3항목: 충족 2, 부분 0, 없음 1"
+    elif defect == "citation":
+        raw["matches"][0]["evidence"] = "probable Spring Boot 경험"
+    elif defect == "quote":
+        raw["matches"][0]["evidence"] = "probable [source: private/profile/skills-job.md] [quote: 폐쇄망 배포]"
+    elif defect == "grade":
+        raw["matches"][0]["evidence"] = "plausible [source: private/profile/skills-job.md] [quote: Spring Boot]"
+    elif defect == "condition":
+        raw["reasons"][1] = "비추천 확정 조건: [requirement: required-001] 경험 필수 확인"
+    elif defect == "missing-condition":
+        raw["reasons"][1] = "처우 확인 필요"
+    elif defect == "borrowed-quote":
+        raw["matches"][0]["evidence"] = "probable [source: private/profile/other.md] [quote: Spring Boot]"
+    elif defect == "extra-claim":
+        raw["matches"][0]["evidence"] += " 폐쇄망 배포 경험 있음"
+    elif defect == "unstructured-condition":
+        raw["reasons"][1] = "비추천 확정 조건: 연봉 하한 미달"
+    elif defect == "extra-condition":
+        raw["reasons"][1] += " 또는 처음부터 설계가 필수일 때"
+    elif defect == "post-demotion-count":
+        raw["matches"][1] = {"id": "required-002", "match": "충족", "evidence": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]"}
+        raw["verdict"] = "지원 추천"
+        raw["screening_summary"][0] = "필수 2항목: 충족 2, 부분 0, 없음 0"
+        raw["reasons"] = ["직접 근거", "운영 경험", "백엔드 직무"]
+    if defect == "valid":
+        result = run_screening(
+            workspace=workspace, jd=stored, company_file=None,
+            llm_provider=SequenceProvider([json.dumps(raw, ensure_ascii=False)]),
+            repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot, AWS",
+        )
+        assert result.published is True
+        assert result.used_fallback is False
+        assert repository.get(stored.record.key).screening_markdown != before.screening_markdown
+        return
+    with pytest.raises(ValueError, match="screening-quality"):
+        run_screening(
+            workspace=workspace, jd=stored, company_file=None,
+            llm_provider=SequenceProvider([json.dumps(raw, ensure_ascii=False)]),
+            repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot, AWS\n[source: private/profile/other.md] Ansible",
+        )
+    after = repository.get(stored.record.key)
+    assert after.record == before.record
+    assert after.screening_markdown == before.screening_markdown
+
+
 def test_build_prompt_embeds_source_owned_manifest_and_json_contract(tmp_path: Path) -> None:
     workspace, _, stored = _create_record(tmp_path)
     manifest = extract_requirement_manifest(stored.jd_markdown)
@@ -189,6 +284,8 @@ def test_build_prompt_embeds_source_owned_manifest_and_json_contract(tmp_path: P
     )
 
     assert "JSON 객체 하나만 허용" in prompt
+    assert '"semantic_claims"' in prompt
+    assert '"text": "Spring Boot 백엔드 개발 경험 필수"' in prompt
     assert '"match_targets"' in prompt
     assert '"id": "required-001"' in prompt
     assert '"kind": "주요업무"' in prompt
@@ -203,13 +300,11 @@ def test_run_screening_does_not_send_private_profile_or_company_files_by_default
     (tmp_path / "private/companies/acme/profile.md").write_text("PRIVATE_COMPANY_SENTINEL", encoding="utf-8")
     provider = SequenceProvider([_assessment_json(without_main_duty(extract_requirement_manifest(stored.jd_markdown)))])
 
-    run_screening(
-        workspace=workspace,
-        jd=stored,
-        company_file=None,
-        dry_run=True,
-        llm_provider=provider,
-    )
+    with pytest.raises(ValueError, match="screening-quality"):
+        run_screening(
+            workspace=workspace, jd=stored, company_file=None,
+            dry_run=True, llm_provider=provider,
+        )
 
     assert "PRIVATE_PROFILE_SENTINEL" not in provider.prompts[0]
     assert "PRIVATE_COMPANY_SENTINEL" not in provider.prompts[0]
@@ -227,7 +322,7 @@ def test_invalid_first_response_gets_contract_specific_retry(tmp_path: Path) -> 
         company_file=None,
         dry_run=True,
         llm_provider=provider,
-        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka",
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
     )
 
     assert provider.calls == 2
@@ -301,29 +396,27 @@ def test_non_required_only_decision_basis_publishes_hold(tmp_path: Path) -> None
     workspace, repository, stored = _create_record(tmp_path)
     manifest = extract_requirement_manifest(stored.jd_markdown)
     filtered = without_main_duty(manifest)
-    result = run_screening(
-        workspace=workspace,
-        jd=stored,
-        company_file=None,
-        dry_run=False,
-        llm_provider=SequenceProvider(
-            [
-                _assessment_json(
-                    filtered,
-                    verdict="지원 비추천",
-                    decision_basis=[],
-                    summary=["비결정적 근거만으로 비추천을 시도했다"],
-                )
-            ]
-        ),
-        repository=repository,
-        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영",
-    )
+    with pytest.raises(ValueError, match="screening-quality"):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            dry_run=False,
+            llm_provider=SequenceProvider(
+                [
+                    _assessment_json(
+                        filtered,
+                        verdict="지원 비추천",
+                        decision_basis=[],
+                        summary=["비결정적 근거만으로 비추천을 시도했다"],
+                    )
+                ]
+            ),
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영",
+        )
 
-    persisted = repository.get(JobKey("wanted", "100002"))
-    assert result.verdict == "지원 보류"
-    assert result.evidence_violations["unsupported_not_recommended"] == 1
-    assert persisted.record.screening_verdict is ScreeningVerdict.HOLD
+    assert repository.get(stored.record.key).screening_markdown is None
 
 
 @pytest.mark.parametrize(
@@ -349,23 +442,18 @@ def test_conservative_guard_forces_hold_and_synchronizes_published_verdict(
 ) -> None:
     workspace, repository, stored = _create_record(tmp_path, jd_markdown=jd_markdown)
     manifest = extract_requirement_manifest(stored.jd_markdown)
-    result = run_screening(
-        workspace=workspace,
-        jd=stored,
-        company_file=None,
-        dry_run=False,
-        llm_provider=SequenceProvider([provider_output(without_main_duty(manifest))]),
-        repository=repository,
-        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영",
-    )
+    with pytest.raises(ValueError, match="screening-quality"):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            dry_run=False,
+            llm_provider=SequenceProvider([provider_output(without_main_duty(manifest))]),
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영",
+        )
 
-    persisted = repository.get(JobKey("wanted", "100002"))
-    assert result.verdict == "지원 보류", expected_reason
-    assert persisted.record.screening_verdict is ScreeningVerdict.HOLD
-    assert persisted.screening_markdown is not None
-    assert set(parse_verdict_candidates(persisted.screening_markdown)) == {"지원 보류"}
-    if expected_reason == "policy-only":
-        assert result.evidence_violations["unsupported_not_recommended"] == 1
+    assert repository.get(stored.record.key).screening_markdown is None
 
 
 def test_decisive_missing_parent_allows_not_recommended(tmp_path: Path) -> None:
@@ -432,18 +520,18 @@ def test_duplicate_parent_text_does_not_borrow_missing_match_for_not_recommended
         ]
     )
 
-    result = run_screening(
-        workspace=workspace,
-        jd=stored,
-        company_file=None,
-        dry_run=False,
-        llm_provider=provider,
-        repository=repository,
-        candidate_context="[source: private/profile/skills-job.md] Python 경험",
-    )
+    with pytest.raises(ValueError, match="screening-quality"):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            dry_run=False,
+            llm_provider=provider,
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Python 경험",
+        )
 
-    assert result.verdict == "지원 보류"
-    assert result.evidence_violations["unsupported_not_recommended"] == 1
+    assert repository.get(stored.record.key).screening_markdown is None
 
 
 def test_unknown_requirement_ids_cannot_publish(tmp_path: Path) -> None:
@@ -1108,14 +1196,14 @@ def test_gate_fails_closed_when_demotion_breaks_the_table(
                     _assessment_json(
                         without_main_duty(manifest),
                         evidence_overrides={
-                            "required-001": "있다고 주장",
-                            "required-002": "있다고 주장",
+                            "required-001": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]",
+                            "required-002": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]",
                         },
                     )
                 ],
                 provider_name="codex",
             ),
-            candidate_context="[source: private/profile/skills-job.md] Spring Boot",
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, AWS",
         )
 
 

@@ -108,6 +108,8 @@ src/careerkit/jobs/application/requirement_manifest.py
 src/careerkit/jobs/application/screening.py
 src/careerkit/jobs/application/screening_assessment.py
 src/careerkit/jobs/application/screening_lint.py
+src/careerkit/jobs/application/screening_quality.py
+src/careerkit/jobs/application/screening_semantics.py
 src/careerkit/jobs/application/search.py
 src/careerkit/jobs/application/semantic_eval.py
 src/careerkit/jobs/application/status.py
@@ -130,6 +132,8 @@ src/careerkit/jobs/domain/verdict.py
 src/careerkit/jobs/probe_prescreen_confirmation.py
 src/careerkit/jobs/probe_screening_provider_contract.py
 src/careerkit/jobs/resources/__init__.py
+src/careerkit/jobs/resources/evals/__init__.py
+src/careerkit/jobs/resources/evals/screening_semantics.json
 src/careerkit/jobs/resources/prompts/__init__.py
 src/careerkit/jobs/resources/prompts/screening_system.txt
 src/careerkit/resume/__init__.py
@@ -220,6 +224,7 @@ tests/jobs/application/test_pipeline.py
 tests/jobs/application/test_requirement_manifest.py
 tests/jobs/application/test_screening.py
 tests/jobs/application/test_screening_assessment.py
+tests/jobs/application/test_screening_semantics.py
 tests/jobs/application/test_title_filter.py
 tests/jobs/console/test_console_e2e.py
 tests/jobs/console/test_server.py
@@ -270,6 +275,7 @@ tests/resume/test_example_render_baseline.py
 tests/resume/test_headhunter.py
 tests/resume/test_notes.py
 tests/resume/test_pdf_visual_equivalence.py
+tests/resume/test_submission_guard.py
 tests/resume/test_verify_content.py
 tests/static/vulture_whitelist.py
 verify_content_config.example.json

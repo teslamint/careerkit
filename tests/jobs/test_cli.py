@@ -1592,6 +1592,41 @@ def test_cli_screening_validate_reports_json(monkeypatch, capsys, tmp_path: Path
     assert payload['path'] == str(screening_file)
 
 
+def test_cli_screening_validate_assessment_checks_evidence(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+    jd = tmp_path / 'jd.md'
+    candidate = tmp_path / 'candidate.md'
+    answer = tmp_path / 'answer.json'
+    jd.write_text('## 자격 요건\n- Python 경험 필수', encoding='utf-8')
+    candidate.write_text('[source: profile.md] Python 서비스 운영', encoding='utf-8')
+    payload = {
+        'schema_version': 1,
+        'matches': [{'id': 'required-001', 'match': '충족',
+                     'evidence': 'probable [source: profile.md] [quote: Python 서비스 운영]'}],
+        'verdict': '지원 추천', 'decision_basis': [],
+        'screening_summary': ['필수 1항목: 충족 1, 부분 0, 없음 0'],
+        'reasons': ['직접 운영 경험', '백엔드 직무', '필수 요건 확인'],
+    }
+    answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    args = ['screening', 'validate', str(answer), '--assessment-json', '--jd', str(jd), '--candidate', str(candidate), '--json']
+    try:
+        code = cli.main(args)
+    except SystemExit as exc:
+        code = exc.code
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)['validation_scope'] == 'assessment-quality'
+    payload['matches'][0]['evidence'] = 'probable [source: profile.md] [quote: 폐쇄망 배포]'
+    answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    assert cli.main(args) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['valid'] is False
+    assert 'evidence-quote-not-in-source' in result['reason']
+
+
 def test_cli_screening_lint_file_reports_screening_structure(monkeypatch, capsys, tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     records_root = tmp_path / 'private/jd/records'
