@@ -128,6 +128,8 @@ def load_semantic_eval_cases() -> tuple[SemanticEvalCase, ...]:
     ) for item in payload["cases"])
     if len({case.id for case in cases}) != len(cases):
         raise SemanticJudgeError("semantic-eval-duplicate-id")
+    if any(not isinstance(case.decision_driving, bool) for case in cases):
+        raise SemanticJudgeError("semantic-eval-dataset-contract")
     group_counts = tuple(sum(case.group == group for case in cases) for group in ("parent-control", "known-overclaim"))
     label_counts = tuple(sum(case.expected_label == label for case in cases) for label in _LABELS)
     adverse_decisions = sum(

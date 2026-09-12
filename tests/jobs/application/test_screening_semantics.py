@@ -110,6 +110,19 @@ def test_semantic_eval_loader_rejects_empty_dataset(tmp_path, monkeypatch) -> No
         load_semantic_eval_cases()
 
 
+def test_semantic_eval_loader_rejects_non_boolean_decision_flag(tmp_path, monkeypatch) -> None:
+    package = screening_semantics.resources.files("careerkit.jobs.resources.evals")
+    raw = package.joinpath("screening_semantics.json").read_text(encoding="utf-8")
+    (tmp_path / "screening_semantics.json").write_text(
+        raw.replace('"decision_driving":true', '"decision_driving":1', 1),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(screening_semantics.resources, "files", lambda _package: tmp_path)
+
+    with pytest.raises(SemanticJudgeError, match="semantic-eval-dataset-contract"):
+        load_semantic_eval_cases()
+
+
 def test_semantic_validation_rejects_same_provider_and_scope_overclaim() -> None:
     manifest = extract_requirement_manifest("## 우대사항\n- 온프레미스 또는 폐쇄망 배포 경험\n")
     assessment = parse_screening_assessment(json.dumps({
