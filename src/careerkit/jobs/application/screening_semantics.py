@@ -57,7 +57,7 @@ class SemanticJudgment:
 
 
 @dataclass(frozen=True)
-class SemanticEvalReport:
+class SemanticJudgeCalibration:
     provider: str
     runs: int
     adverse_recall: float
@@ -72,7 +72,7 @@ class CalibratedSemanticValidator:
 
     judge: SemanticJudge
     timeout: int = 120
-    report: SemanticEvalReport | None = None
+    report: SemanticJudgeCalibration | None = None
 
     def validate(
         self,
@@ -220,7 +220,7 @@ def evaluate_semantic_judge(
     *, timeout: int,
     runs: int = 3,
     batch_size: int = 7,
-) -> SemanticEvalReport:
+) -> SemanticJudgeCalibration:
     if runs != 3:
         raise ValueError("semantic-eval-runs must be 3")
     if batch_size < 1:
@@ -250,7 +250,7 @@ def evaluate_semantic_judge(
     supported_acceptance = sum(all_predicted[i] in _SUPPORTED for i in supported) / len(supported)
     macro_f1 = sum(_f1(all_expected, all_predicted, label) for label in _LABELS) / len(_LABELS)
     passed = adverse_recall == 1.0 and decision_recall == 1.0 and supported_acceptance >= 0.95 and macro_f1 >= 0.90
-    return SemanticEvalReport(
+    return SemanticJudgeCalibration(
         provider=provider_family or "unknown", runs=runs,
         adverse_recall=adverse_recall,
         supported_acceptance=supported_acceptance, macro_f1=macro_f1,

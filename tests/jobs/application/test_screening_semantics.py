@@ -8,7 +8,7 @@ from careerkit.jobs.application.requirement_manifest import extract_requirement_
 from careerkit.jobs.application.screening_assessment import parse_screening_assessment
 from careerkit.jobs.application.screening_semantics import (
     CalibratedSemanticValidator,
-    SemanticEvalReport,
+    SemanticJudgeCalibration,
     SemanticJudgeError,
     build_semantic_claims,
     evaluate_semantic_judge,
@@ -106,7 +106,7 @@ def test_semantic_validation_rejects_same_provider_and_scope_overclaim() -> None
 
 def test_failed_calibration_blocks_runtime_judge_call() -> None:
     judge = SequenceJudge(["unused"])
-    validator = CalibratedSemanticValidator(judge, report=SemanticEvalReport(
+    validator = CalibratedSemanticValidator(judge, report=SemanticJudgeCalibration(
         provider="codex", runs=3, adverse_recall=1.0,
         supported_acceptance=0.90, macro_f1=0.89, passed=False,
     ))
