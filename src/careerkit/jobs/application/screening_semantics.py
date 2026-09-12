@@ -88,6 +88,7 @@ class CalibratedSemanticValidator:
         return validate_semantic_assessment(
             manifest, assessment, screening_provider=screening_provider,
             judge=self.judge, timeout=self.timeout,
+            expected_judge_provider=self.report.provider,
         )
 
 
@@ -144,7 +145,7 @@ def _prompt(items: tuple[SemanticClaim | SemanticEvalCase, ...]) -> str:
         "contradicted는 근거가 요건을 명시적으로 부정할 때 사용한다. "
         "JSON 객체 하나만 출력한다. 최상위 키는 schema_version과 judgments만 사용한다. "
         "claims 키를 출력하지 않는다. judgments의 각 항목은 id, label, evidence_spans, reason을 포함한다. "
-        "evidence_spans에는 입력에 있는 문자열을 하나 이상 그대로 복사한다.\n"
+        "evidence_spans에는 입력 문자열을 그대로 복사한다. 입력 배열이 비어 있으면 빈 배열을 출력한다.\n"
         "출력 형태: {\"schema_version\":1,\"judgments\":[{\"id\":\"...\",\"label\":\"entails\",\"evidence_spans\":[\"...\"],\"reason\":\"...\"}]}\n"
         + json.dumps({"schema_version": 1, "claims": claims}, ensure_ascii=False)
     )
@@ -178,7 +179,17 @@ def _parse_judgments(
         if not isinstance(reason, str) or not reason.strip():
             raise SemanticJudgeError(f"reason-required:{item_id}")
         spans = raw_item["evidence_spans"]
-        if not isinstance(spans, list) or not spans or any(not isinstance(span, str) for span in spans):
+        if (
+            not isinstance(spans, list)
+            or any(not isinstance(span, str) for span in spans)
+            or (
+                not spans
+                and (
+                    expected[item_id].evidence_spans
+                    or expected[item_id].declared_match != "없음"
+                )
+            )
+        ):
             raise SemanticJudgeError(f"evidence-span-required:{item_id}")
         if any(span not in set(expected[item_id].evidence_spans) for span in spans):
             raise SemanticJudgeError(f"evidence-span-not-in-input:{item_id}")
@@ -265,9 +276,15 @@ def validate_semantic_assessment(
     screening_provider: str,
     judge: SemanticJudge,
     timeout: int,
+    expected_judge_provider: str | None = None,
 ) -> tuple[SemanticJudgment, ...]:
     claims = build_semantic_claims(manifest, assessment)
     judge_provider, judgments = _invoke(judge, claims, timeout=timeout)
+    if (
+        expected_judge_provider is not None
+        and _provider_family(judge_provider) != _provider_family(expected_judge_provider)
+    ):
+        raise SemanticJudgeError("semantic-judge-provider-drift")
     if _provider_family(judge_provider) == _provider_family(screening_provider):
         raise SemanticJudgeError("independent-provider-required")
     allowed = {

@@ -41,6 +41,19 @@ def _judgments(labels: dict[str, str], spans: dict[str, list[str]]) -> str:
     }, ensure_ascii=False)
 
 
+def _single_claim_assessment(match: str, evidence: str):
+    manifest = extract_requirement_manifest("## 자격요건\n- Spring Boot 개발 경험\n")
+    assessment = parse_screening_assessment(json.dumps({
+        "schema_version": 1,
+        "matches": [{"id": "required-001", "match": match, "evidence": evidence}],
+        "verdict": "지원 보류",
+        "decision_basis": [],
+        "screening_summary": [f"필수 1항목: {match} 1"],
+        "reasons": ["근거 확인", "요건 확인", "판정 완료"],
+    }, ensure_ascii=False), manifest)
+    return manifest, assessment
+
+
 def test_semantic_claims_preserve_unsplit_parent_meaning() -> None:
     manifest = extract_requirement_manifest(
         "## 자격요건\n- 백엔드 서비스, 분산 시스템 또는 플랫폼 개발 경험 7년 이상\n"
@@ -113,6 +126,48 @@ def test_failed_calibration_blocks_runtime_judge_call() -> None:
     with pytest.raises(SemanticJudgeError, match="semantic-eval-threshold-not-met"):
         validator.validate(None, None, screening_provider="local")  # type: ignore[arg-type]
     assert judge.calls == 0
+
+
+def test_calibrated_validator_rejects_runtime_provider_drift() -> None:
+    manifest, assessment = _single_claim_assessment(
+        "충족", "probable [source: profile.md] [quote: Spring Boot 개발]"
+    )
+    output = _judgments({"required-001": "entails"}, {"required-001": ["Spring Boot 개발"]})
+    validator = CalibratedSemanticValidator(
+        SequenceJudge([output], provider="claude"),
+        report=SemanticJudgeCalibration(
+            provider="codex", runs=3, adverse_recall=1.0,
+            supported_acceptance=1.0, macro_f1=1.0, passed=True,
+        ),
+    )
+
+    with pytest.raises(SemanticJudgeError, match="semantic-judge-provider-drift"):
+        validator.validate(manifest, assessment, screening_provider="local")
+
+
+def test_semantic_validation_accepts_empty_spans_when_claim_has_no_evidence() -> None:
+    manifest, assessment = _single_claim_assessment("없음", "possible: 직접 근거 없음")
+    output = _judgments({"required-001": "unsupported"}, {"required-001": []})
+
+    judgments = validate_semantic_assessment(
+        manifest, assessment, screening_provider="local",
+        judge=SequenceJudge([output]), timeout=30,
+    )
+
+    assert judgments[0].evidence_spans == ()
+
+
+def test_semantic_validation_requires_available_evidence_span() -> None:
+    manifest, assessment = _single_claim_assessment(
+        "충족", "probable [source: profile.md] [quote: Spring Boot 개발]"
+    )
+    output = _judgments({"required-001": "entails"}, {"required-001": []})
+
+    with pytest.raises(SemanticJudgeError, match="evidence-span-required"):
+        validate_semantic_assessment(
+            manifest, assessment, screening_provider="local",
+            judge=SequenceJudge([output]), timeout=30,
+        )
 
 
 def test_semantic_validation_joins_judgments_by_id_not_response_order() -> None:
