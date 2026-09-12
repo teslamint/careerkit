@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from careerkit.jobs.application import screening_semantics
 from careerkit.jobs.application.requirement_manifest import extract_requirement_manifest
 from careerkit.jobs.application.screening_assessment import parse_screening_assessment
 from careerkit.jobs.application.screening_semantics import (
@@ -83,6 +84,11 @@ def test_semantic_eval_dataset_and_thresholds() -> None:
     assert sum(case.group == "parent-control" for case in cases) == 14
     assert sum(case.group == "known-overclaim" for case in cases) == 7
     assert {case.expected_label for case in cases} == {"entails", "partial", "unsupported", "contradicted"}
+    assert {
+        label: sum(case.expected_label == label for case in cases)
+        for label in ("entails", "partial", "unsupported", "contradicted")
+    } == {"entails": 6, "partial": 6, "unsupported": 8, "contradicted": 1}
+    assert sum(case.decision_driving for case in cases if case.expected_label in {"unsupported", "contradicted"}) == 2
     labels = {case.id: case.expected_label for case in cases}
     spans = {case.id: [case.evidence_spans[0]] for case in cases}
     report = evaluate_semantic_judge(
@@ -93,6 +99,15 @@ def test_semantic_eval_dataset_and_thresholds() -> None:
     assert report.adverse_recall == report.supported_acceptance == report.macro_f1 == 1.0
     with pytest.raises(ValueError, match="semantic-eval-runs"):
         evaluate_semantic_judge(SequenceJudge([]), timeout=30, runs=2)
+
+
+def test_semantic_eval_loader_rejects_empty_dataset(tmp_path, monkeypatch) -> None:
+    eval_file = tmp_path / "screening_semantics.json"
+    eval_file.write_text('{"schema_version":1,"cases":[]}', encoding="utf-8")
+    monkeypatch.setattr(screening_semantics.resources, "files", lambda _package: tmp_path)
+
+    with pytest.raises(SemanticJudgeError, match="semantic-eval-dataset-contract"):
+        load_semantic_eval_cases()
 
 
 def test_semantic_validation_rejects_same_provider_and_scope_overclaim() -> None:
