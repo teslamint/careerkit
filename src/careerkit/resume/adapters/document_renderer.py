@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from urllib.parse import unquote
 
 
@@ -22,7 +23,11 @@ class _SubmissionTextParser(HTMLParser):
 
 def validate_submission_content(content: str) -> None:
     """Reject explicit research material, not ordinary citations or technical caveats."""
-    normalized = unescape(unquote(content)).replace("\\", "/")
+    decoded = unescape(unquote(content)).replace("\\", "/")
+    normalized = "".join(
+        character for character in unicodedata.normalize("NFKC", decoded)
+        if unicodedata.category(character) != "Cf"
+    )
     parser = _SubmissionTextParser()
     parser.feed(normalized)
     visible = "".join(parser.parts)
