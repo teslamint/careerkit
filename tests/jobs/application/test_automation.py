@@ -3356,7 +3356,7 @@ def test_jobs_extraction_stage_saramin_plain_text_headings_build_manifest(tmp_pa
                     body_html=(
                         "<div>모집분야</div>"
                         "<div>📋 주요업무</div><div>• API 개발</div>"
-                        "<div>📋 자격요건</div><div>• Python 경험</div>"
+                        "<div>📋 자격요건</div><div>ㆍ Python 경험</div>"
                         "<div>🏠 근무조건</div><div>• 정규직</div>"
                     ),
                     detail_pairs=(),
