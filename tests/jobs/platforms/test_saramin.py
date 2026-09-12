@@ -919,7 +919,7 @@ class TestSaraminSectionExtraction:
             job_id="123",
             encoded_body=_encode_body(
                 "<h2>주요업무</h2><ul><li>서비스 운영</li><li>품질 개선</li></ul>"
-                "<h2>자격요건</h2><p>문서화 역량</p><p>ㆍ 학사 이상</p><p>협업 역량</p>"
+                "<h2>자격요건</h2><p>문서화 역량</p><p>ㆍ학사 이상</p><p>협업 역량</p>"
                 "<h2>우대사항</h2><p>커뮤니케이션</p><br>테스트 자동화"
             ),
         )
