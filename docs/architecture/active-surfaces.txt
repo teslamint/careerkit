@@ -177,6 +177,7 @@ tests/architecture/test_optional_dependency_isolation.py
 tests/architecture/test_test_disposition.py
 tests/contract/__init__.py
 tests/contract/_u8_final_proof.py
+tests/contract/conftest.py
 tests/contract/test_clean_candidate_export.py
 tests/contract/test_cli_installation.py
 tests/contract/test_distribution_contents.py

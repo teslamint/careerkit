@@ -5,11 +5,8 @@ import zipfile
 from pathlib import Path
 
 
-def test_distribution_allowlists() -> None:
-    root = Path(__file__).resolve().parents[2]
-    dist = root / "dist"
-    wheel = next(dist.glob("careerkit-*.whl"))
-    sdist = next(dist.glob("careerkit-*.tar.gz"))
+def test_distribution_allowlists(built_distributions: tuple[Path, Path]) -> None:
+    wheel, sdist = built_distributions
 
     with zipfile.ZipFile(wheel) as archive:
         wheel_names = set(archive.namelist())

@@ -21,11 +21,10 @@ SDIST_DENIED_FRAGMENTS = (
 )
 
 
-def test_built_distributions_do_not_expose_private_fragments() -> None:
-    root = Path(__file__).resolve().parents[2]
-    dist = root / "dist"
-    wheel = next(dist.glob("careerkit-*.whl"))
-    sdist = next(dist.glob("careerkit-*.tar.gz"))
+def test_built_distributions_do_not_expose_private_fragments(
+    built_distributions: tuple[Path, Path],
+) -> None:
+    wheel, sdist = built_distributions
 
     with zipfile.ZipFile(wheel) as archive:
         wheel_names = archive.namelist()
