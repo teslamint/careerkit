@@ -660,3 +660,123 @@ def test_extract_requirement_manifest_mixed_bullet_and_numbered() -> None:
     assert manifest.parents[1].text == "Java 개발 경험"
     assert manifest.parents[2].text == "Kafka 경험"
     assert manifest.parents[3].text == "Redis 경험"
+
+
+def test_wanted_bracket_label_experience_variant_preserves_required_section() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+
+[이런 경험이 있는 분을 찾습니다]
+- Python 개발 경험 3년 이상
+- CI/CD 파이프라인 운영 경험
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == [
+        "Python 개발 경험 3년 이상",
+        "CI/CD 파이프라인 운영 경험",
+    ]
+    assert all(p.kind == RequirementKind.REQUIRED for p in manifest.parents)
+    assert manifest.ambiguous_qualifications is False
+
+
+def test_wanted_bracket_label_join_variant_preserves_main_duty_section() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 주요 업무
+
+[합류하시면 이런 역할을 합니다]
+- 서비스 백엔드 설계 및 구현
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == ["서비스 백엔드 설계 및 구현"]
+    assert manifest.parents[0].kind == RequirementKind.MAIN_DUTY
+
+
+def test_extract_requirement_manifest_parses_black_square_bullet() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+■ Python 개발 경험 3년 이상
+■ 장애 대응 경험
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == [
+        "Python 개발 경험 3년 이상",
+        "장애 대응 경험",
+    ]
+    assert all(p.kind == RequirementKind.REQUIRED for p in manifest.parents)
+    assert manifest.ambiguous_qualifications is False
+
+
+def test_extract_requirement_manifest_black_square_parent_with_dash_children() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+■ 컨테이너 운영 경험
+  - 배포 파이프라인 운영 경험이 필요합니다
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == ["컨테이너 운영 경험"]
+    children = [item for item in manifest.items if item.parent_id is not None]
+    assert [child.text for child in children] == [
+        "배포 파이프라인 운영 경험이 필요합니다"
+    ]
+
+
+def test_filled_square_section_header_switches_kind_instead_of_becoming_item() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+■ Python 개발 경험 3년 이상
+
+■ 우대사항
+■ Kafka 운영 경험
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == [
+        "Python 개발 경험 3년 이상",
+        "Kafka 운영 경험",
+    ]
+    assert manifest.parents[0].kind == RequirementKind.REQUIRED
+    assert manifest.parents[1].kind == RequirementKind.PREFERRED
+
+
+def test_filled_square_section_header_opens_section_without_markdown_heading() -> None:
+    manifest = extract_requirement_manifest(
+        """
+■ 자격요건
+- Python 개발 경험 3년 이상
+
+■ 우대사항
+- Kafka 운영 경험
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == [
+        "Python 개발 경험 3년 이상",
+        "Kafka 운영 경험",
+    ]
+    assert manifest.parents[0].kind == RequirementKind.REQUIRED
+    assert manifest.parents[1].kind == RequirementKind.PREFERRED
+
+
+def test_dash_bullet_named_like_section_stays_a_requirement_item() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+- 우대사항
+- Python 개발 경험 3년 이상
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == [
+        "우대사항",
+        "Python 개발 경험 3년 이상",
+    ]
+    assert all(p.kind == RequirementKind.REQUIRED for p in manifest.parents)
