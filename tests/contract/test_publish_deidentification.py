@@ -125,6 +125,7 @@ def test_cli_commits_range_names_paths_and_exempts_own_files(tmp_path, monkeypat
         )
 
     _git("init", "-q")
+    _git("config", "commit.gpgsign", "false")
     _git("config", "user.email", "t@t")
     _git("config", "user.name", "t")
     (repo / "base.txt").write_text("base\n", encoding="utf-8")
