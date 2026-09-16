@@ -7,7 +7,6 @@ here is synthetic: no real organization name, record key, or posting sentence.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

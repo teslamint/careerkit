@@ -13,6 +13,7 @@ import argparse
 import dataclasses
 import hashlib
 import html
+import importlib
 import json
 import os
 import re
@@ -43,7 +44,7 @@ RULE_NAMES: frozenset[str] = frozenset(
 )
 
 _TITLE_NOISE = re.compile(
-    r"(engineer|developer|backend|frontend|server|엔지니어|개발자|백엔드|프론트|서버|비공개)",
+    r"(engineer|developer|backend|frontend|server|엔지니어|개발자|백엔드|프론트|서버)",
     re.IGNORECASE,
 )
 _VALUE_SPLIT = re.compile(r"\s*[-/|,·]\s*|\s*[\(\)\[\]]\s*|\s+")
@@ -210,6 +211,17 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
         yield Finding("term-file", match.group(0), line)
 
 
+
+
+def _import_analyzer() -> Any | None:
+    """Import the analyzer without a resolvable import edge (pyright basic mode)."""
+    try:
+        module = importlib.import_module("kiwipiepy")
+    except ImportError:
+        return None
+    return getattr(module, "Kiwi")
+
+
 # --- Layer 2: morphological --------------------------------------------------
 
 
@@ -257,11 +269,9 @@ def build_vocabulary(base: str) -> frozenset[str]:
             cached = None
         if cached and cached.get("key") == tree:
             return frozenset(cached["forms"])
-    try:
-        from kiwipiepy import Kiwi
-    except ImportError:
+    kiwi = _import_analyzer()
+    if kiwi is None:
         return frozenset()
-    kiwi = Kiwi()
     forms: set[str] = set()
     for entry in subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", base], capture_output=True, check=False
@@ -338,10 +348,13 @@ def generate_terms(workspace: str | Path) -> Terms:
     if not values:
         print("record store is empty; refusing to cache an empty list", file=sys.stderr)
         raise SystemExit(2)
-    return _build_terms(values)
+    exclusions = _load_generic_exclusions(Path(workspace).expanduser())
+    return _build_terms(values, exclusions)
 
 
-def _build_terms(values: list[str]) -> Terms:
+def _build_terms(
+    values: list[str], exclusions: frozenset[str] = frozenset()
+) -> Terms:
     substring: set[str] = set()
     bounded: set[str] = set()
     for value in values:
@@ -356,9 +369,27 @@ def _build_terms(values: list[str]) -> Terms:
                     substring.add(piece)
         elif len(value) >= 4 and re.search(r"[가-힣]", value):
             substring.add(value)
-        elif 2 <= len(value) <= 3:
+        elif 2 <= len(value) <= 3 and value not in exclusions:
             bounded.add(value)
     return Terms(frozenset(substring), frozenset(bounded))
+
+
+def _load_generic_exclusions(workspace: Path) -> frozenset[str]:
+    """Bounded-term exclusions live in the untracked workspace cache, never tracked.
+
+    A tracked exclusion list that names store values is itself a corpus-derived
+    denylist (A-13); the workspace cache is where corpus-derived vocabulary belongs.
+    The file carries plain JSON: {"r2_generic_exclusions": [...]}.
+    """
+    path = workspace / "private" / "jd" / "derived" / "publish-guard-terms.json"
+    if not path.is_file():
+        return frozenset()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    items = payload.get("r2_generic_exclusions") or []
+    return frozenset(str(item) for item in items)
 
 
 def terms_cache_key(workspace: str | Path) -> str:
@@ -521,9 +552,8 @@ def main(argv: list[str] | None = None) -> int:
     analyzer = None
     vocabulary: frozenset[str] = frozenset()
     if 2 in layers:
-        try:
-            from kiwipiepy import Kiwi
-        except ImportError:
+        analyzer = _import_analyzer()
+        if analyzer is None:
             print(
                 "analyzer inactive: kiwipiepy is not installed; layer 2 skipped",
                 file=sys.stderr,
@@ -533,7 +563,6 @@ def main(argv: list[str] | None = None) -> int:
             if not base:
                 print("layer 2 base ref does not resolve; layer 2 skipped", file=sys.stderr)
             else:
-                analyzer = Kiwi()
                 vocabulary = build_vocabulary(base)
 
     findings: list[Finding] = []

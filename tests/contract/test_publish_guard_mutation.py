@@ -55,7 +55,7 @@ def assert_mutation_breaks_named_tests(anchor: str, replacement: str, named: lis
     assert anchor in source, f"mutation anchor missing: {anchor[:70]}"
     mutant = source.replace(anchor, replacement, 1)
     assert mutant != source
-    code, output, failed = run_suite(mutant)
+    _code, output, failed = run_suite(mutant)
     for test in named:
         assert test in failed, (
             f"mutation '{anchor[:40]}...' did not break {test}; "
@@ -119,7 +119,7 @@ def test_quoted_prose_min_length_dropped_breaks_the_short_test() -> None:
         1,
     )
     assert mutant != source
-    code, output, failed = run_suite(mutant)
+    _code, output, failed = run_suite(mutant)
     assert "test_quoted_corpus_prose_ignores_short_and_question_forms" in failed, output[-400:]
 
 
@@ -137,15 +137,15 @@ def test_layer2_base_ref_replaced_by_head_is_observable() -> None:
 
     assert callable(_merge_base_ref)
     base = _merge_base_ref()
-    assert base  # the shipped predicate resolves a base in this checkout
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, check=False
-    ).stdout.decode().strip()
-    # The mutant (base = HEAD) equals the shipped base only when HEAD is the merge base.
-    # The named behavioral contract lives in the hook exercise (unit 4); here we pin
-    # that the shipped base is NOT HEAD whenever the push upstream exists.
-    if base:
-        assert base != ""
+    has_commit = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "HEAD"], capture_output=True, check=False
+    ).returncode == 0
+    if has_commit:
+        assert base, "a checkout with history must resolve a merge base"
+    else:
+        # a candidate repo with zero commits has no merge base; resolution must be
+        # the empty string, and layer 2 then reports inactive rather than scanning.
+        assert base == ""
 
 
 def test_the_suite_itself_is_not_decorative() -> None:
