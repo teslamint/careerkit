@@ -3470,13 +3470,13 @@ def test_cli_company_fetch_thevc_prints_json_with_lists(monkeypatch, capsys) -> 
     ))
 
     fake_info = thevc_mod.TheVCCompanyInfo(
-        name='포지큐브',
-        name_en='POSICUBE',
+        name='테크베이스',
+        name_en='TECHBASE',
         founded_on='2017-05-23',
-        ceo_name='오성조',
+        ceo_name='김한길',
         ceo_is_founder=True,
         keywords=('AI기술', '인공지능'),
-        products=('robi리셉션', 'AI에이전트'),
+        products=('데이터커넥터', 'AI에이전트'),
         last_round='Series B',
         last_funded_on='2021-11-09',
         total_funding_count=4,
@@ -3484,17 +3484,17 @@ def test_cli_company_fetch_thevc_prints_json_with_lists(monkeypatch, capsys) -> 
         funding_rounds=(
             thevc_mod.TheVCFundingRound(round_name='Series B', funded_on='2021-11-09', funding_type='시리즈 B'),
         ),
-        slug='posicube',
+        slug='techbase',
     )
     monkeypatch.setattr(thevc_mod, 'thevc_company_http', lambda slug, **kw: fake_info)
 
-    assert cli.main(['company', 'fetch', '--platform', 'thevc', '--id', 'posicube', '--json']) == 0
+    assert cli.main(['company', 'fetch', '--platform', 'thevc', '--id', 'techbase', '--json']) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data['name'] == '포지큐브'
-    assert data['slug'] == 'posicube'
+    assert data['name'] == '테크베이스'
+    assert data['slug'] == 'techbase'
     assert data['last_funded_on'] == '2021-11-09'
     assert data['keywords'] == ['AI기술', '인공지능']
-    assert data['products'] == ['robi리셉션', 'AI에이전트']
+    assert data['products'] == ['데이터커넥터', 'AI에이전트']
     assert data['funding_rounds'] == [
         {'round_name': 'Series B', 'funded_on': '2021-11-09', 'funding_type': '시리즈 B'}
     ]

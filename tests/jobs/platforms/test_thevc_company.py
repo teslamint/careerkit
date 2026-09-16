@@ -16,16 +16,16 @@ from careerkit.jobs.adapters.platforms.thevc import (
 
 
 SAMPLE_API_RESPONSE = {
-    "name": "포지큐브",
-    "nameEn": "POSICUBE",
+    "name": "테크베이스",
+    "nameEn": "TECHBASE",
     "foundedOn": "2017-05-22T15:00:00.000Z",
     "corpType": "주식회사",
     "status": "비상장",
     "address": "서울특별시 강남구 역삼로7길 5",
-    "website": "http://posicube.com",
+    "website": "http://techbase.com",
     "members": [
         {
-            "name": "오성조",
+            "name": "김한길",
             "position": "대표이사",
             "isCEO": True,
             "isFounder": True,
@@ -33,7 +33,7 @@ SAMPLE_API_RESPONSE = {
     ],
     "relatedKeywords": ["AI기술", "인공지능", "고객센터"],
     "products": [
-        {"name": "robi리셉션", "desc": "AI 기반 고객센터 솔루션"},
+        {"name": "데이터커넥터", "desc": "AI 기반 고객센터 솔루션"},
         {"name": "AI에이전트", "desc": ""},
     ],
     "lastRound": "Series B",
@@ -121,27 +121,27 @@ class TestSafeInt:
 class TestThevcCompanyHttp:
     def test_parses_basic_info(self):
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
-        assert info.name == "포지큐브"
-        assert info.name_en == "POSICUBE"
+        assert info.name == "테크베이스"
+        assert info.name_en == "TECHBASE"
         assert info.founded_on == "2017-05-23"
         assert info.corp_type == "주식회사"
         assert info.status == "비상장"
         assert info.address == "서울특별시 강남구 역삼로7길 5"
-        assert info.website == "http://posicube.com"
-        assert info.slug == "posicube"
+        assert info.website == "http://techbase.com"
+        assert info.slug == "techbase"
 
     def test_parses_ceo(self):
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
-        assert info.ceo_name == "오성조"
+        assert info.ceo_name == "김한길"
         assert info.ceo_is_founder is True
 
     def test_parses_funding_rounds(self):
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
         assert info.last_round == "Series B"
         assert info.last_funded_on == "2021-11-09"
@@ -152,7 +152,7 @@ class TestThevcCompanyHttp:
 
     def test_parses_investor_count(self):
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
         assert info.investor_count_total == 9
 
@@ -162,7 +162,7 @@ class TestThevcCompanyHttp:
             "members": [{"name": "홍길동", "position": "대표이사", "isCEO": True, "isFounder": False}],
         }
         client = _FakeHttpClient(response)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
         assert info.ceo_name == "홍길동"
         assert info.ceo_is_founder is False
@@ -185,16 +185,16 @@ class TestThevcCompanyHttp:
     def test_investor_count_paywall_yields_zero(self):
         response = {**SAMPLE_API_RESPONSE, "investorCount": {"requirements": ["PLAN:PRO"]}}
         client = _FakeHttpClient(response)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
         assert info.investor_count_total == 0
 
     def test_parses_keywords_and_products(self):
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
 
         assert info.keywords == ("AI기술", "인공지능", "고객센터")
-        assert "robi리셉션 — AI 기반 고객센터 솔루션" in info.products
+        assert "데이터커넥터 — AI 기반 고객센터 솔루션" in info.products
         assert "AI에이전트" in info.products
 
     def test_404_raises_value_error(self):
@@ -297,7 +297,7 @@ class TestFormatThevcCompanyMarkdown:
 
     def test_no_amount_in_output(self):
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
-        info = thevc_company_http("posicube", http=client)
+        info = thevc_company_http("techbase", http=client)
         md = format_thevc_company_markdown(info)
 
         assert "19646" not in md

@@ -67,7 +67,7 @@ test("2-column basic info table", function () {
     "",
     "| 항목 | 내용 |",
     "|------|------|",
-    "| 회사명 | 페이히어 |",
+    "| 회사명 | 가람데이터 |",
     "| 포지션 | 서버 엔지니어 |",
   ].join("\n");
   var result = parse(md);
