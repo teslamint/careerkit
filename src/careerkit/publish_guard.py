@@ -117,7 +117,7 @@ _RECORD_KEY = re.compile(
     r"(?![\w/-])"
 )
 _POSTING_URL = re.compile(
-    r"https?://[^\s]*?(?:wanted\.kr|saramin\.co\.kr|jobkorea\.co\.kr|jumpit\.co\.kr"
+    r"https?://[^\s]*?(?:wanted\.co\.kr|saramin\.co\.kr|jobkorea\.co\.kr|jumpit\.co\.kr"
     r"|rememberapp\.co\.kr|groupby\.co\.kr|offercent\.kr|greeting\.hr)[^\s]*",
     re.IGNORECASE,
 )
@@ -150,10 +150,14 @@ _TERM_FILE = re.compile(r"publish-guard-terms\.json")
 
 
 def _layer1(text: str, line: int) -> Iterator[Finding]:
+    private_spans: set[tuple[int, int]] = set()
     for match in _PRIVATE_NARROW.finditer(text):
         yield Finding("private-path", match.group(0), line)
+        private_spans.add(match.span())
     for match in re.finditer(r"(?:~|/Users/|/home/)[^\s]*", text):
-        if "private" in match.group(0):
+        if "private" in match.group(0) and not any(
+            start <= match.start() < end for start, end in private_spans
+        ):
             yield Finding("private-path", match.group(0), line)
     for match in re.finditer(
         r"(?<![\w/-])(?P<platform>[a-z][a-z0-9]*)/(?P<key>[0-9]{2,}|[A-Za-z0-9-]{20,})(?![\w/-])",
@@ -161,12 +165,7 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
     ):
         if match.group("platform") in platform_names():
             yield Finding("record-key", match.group(0), line)
-    for match in re.finditer(
-        r"https?://[^\s]*?(?:wanted\.kr|saramin\.co\.kr|jobkorea\.co\.kr|jumpit\.co\.kr"
-        r"|rememberapp\.co\.kr|groupby\.co\.kr|offercent\.kr|greeting\.hr)[^\s]*",
-        text,
-        re.IGNORECASE,
-    ):
+    for match in _POSTING_URL.finditer(text):
         yield Finding("posting-url", match.group(0), line)
     for match in _EMAIL.finditer(text):
         if not _EMAIL_EXEMPT.match(match.group(0)):
@@ -178,18 +177,31 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
     ):
         yield Finding("legal-suffix", match.group(0), line)
     for match in re.finditer(
-        r"[가-힣A-Za-z0-9]{1,20}\s*(?:그룹|홀딩스|인더스트리|테크|랩스|웍스|컴퍼니)", text
+        r"(?:[가-힣]{2,19}|[A-Za-z0-9]{2,19})(?:그룹|홀딩스|인더스트리|테크|랩스|웍스|컴퍼니)",
+        text,
     ):
         head = re.match(r"[가-힣A-Za-z0-9]+", match.group(0))
-        if head and head.group(0) not in _GENERIC_SUBJECTS:
-            yield Finding("entity-suffix", match.group(0), line)
+        if not head or head.group(0) in _GENERIC_SUBJECTS:
+            continue
+        before = text[max(0, match.start() - 4) : match.start()]
+        if re.search(r"(?:주식회사|㈜|\(주\)|Ltd\.?|Inc\.)\s*$", before):
+            continue
+        yield Finding("entity-suffix", match.group(0), line)
     for match in _ENTITY_POSITION.finditer(text):
         prefix = text[max(0, match.start() - 24) : match.start()]
+        suffix = text[match.end() : match.end() + 5]
+        if _QUESTION_ENDINGS.search(suffix):
+            continue
         if not any(word in prefix for word in _GENERIC_SUBJECTS):
             yield Finding("entity-position", match.group(0), line)
     for match in _QUOTED.finditer(text):
         fragment = match.group(1)
-        if len(fragment) >= 12 and _KOREAN_ENDINGS.search(fragment) and not _QUESTION_ENDINGS.search(fragment):
+        if (
+            len(fragment) >= 12
+            and re.search(r"[가-힣]", fragment)
+            and _KOREAN_ENDINGS.search(fragment)
+            and not _QUESTION_ENDINGS.search(fragment)
+        ):
             yield Finding("quoted-corpus-prose", match.group(0), line)
     for match in _TERM_FILE.finditer(text):
         yield Finding("term-file", match.group(0), line)
