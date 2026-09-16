@@ -109,11 +109,9 @@ def test_r1_admitting_short_fragments_breaks_the_fragment_test() -> None:
 
 
 def test_quoted_prose_min_length_dropped_breaks_the_short_test() -> None:
-    """Dropping the 12-char minimum (regex quantifier plus the length check) at once."""
+    """Dropping the code-side 12-char minimum lets the short-form test fail."""
     source = MODULE_SOURCE
-    anchor = [line.strip() for line in source.splitlines() if "{12,})" in line][0]
-    mutant = source.replace(anchor, anchor.replace("{12,}", "{1,}"), 1)
-    mutant = mutant.replace(
+    mutant = source.replace(
         "            len(fragment) >= 12\n",
         "            len(fragment) >= 1\n",
         1,

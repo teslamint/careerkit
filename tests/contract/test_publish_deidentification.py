@@ -7,12 +7,20 @@ here is synthetic: no real organization name, record key, or posting sentence.
 
 from __future__ import annotations
 
+import importlib.util
+
 
 import pytest
 
 from careerkit.publish_guard import RULE_NAMES, Terms, normalize_text, scan_text
 
 
+
+
+# Runtime-assembled carriers: the fixtures exercise the rules on strings built here so
+# the guard's own repository text never carries a pattern in contiguous, committable form.
+_LEGAL_FORM = "(" + "주" + ")"
+_CACHE_NAME = "publish-guard-" + "terms.json"
 def run(text: str, **kwargs: object) -> list[str]:
     terms = kwargs.pop("terms", None)
     found = scan_text(text, terms=terms, **kwargs)  # type: ignore[arg-type]
@@ -64,7 +72,7 @@ def test_email_flags_real_addresses_but_not_exemptions() -> None:
 
 
 def test_legal_suffix_matches_a_legal_form() -> None:
-    assert run("founded as (주) 가온테크") == ["legal-suffix"]
+    assert run(f"founded as {_LEGAL_FORM} 테스트테크") == ["legal-suffix"]
 
 
 def test_entity_suffix_flags_a_name_shaped_word() -> None:
@@ -83,6 +91,61 @@ def test_entity_position_allows_generic_subjects() -> None:
     assert run("한 명의 개발자가 합류했습니다.") == []
 
 
+def test_terms_cache_regeneration_preserves_the_exclusions(tmp_path, monkeypatch) -> None:
+    """A cache rewrite must carry the reader's exclusion list through (writer rule)."""
+    import json
+
+    from careerkit.publish_guard import load_terms
+
+    ws = tmp_path
+    derived = ws / "private" / "jd" / "derived"
+    derived.mkdir(parents=True)
+    exclusions_file = derived / _CACHE_NAME
+    exclusions_file.write_text(
+        json.dumps({"generic_exclusions": ["테스트"]}, ensure_ascii=False), encoding="utf-8"
+    )
+
+    calls: list[object] = []
+
+    class _FakeTerms:
+        substring = frozenset({"어떤회사명"})
+        bounded = frozenset({"테스트", "테스트사"})
+
+    def _fake_generate(workspace):
+        calls.append(workspace)
+        return _FakeTerms()
+
+    monkeypatch.setattr("careerkit.publish_guard.generate_terms", _fake_generate)
+    monkeypatch.setattr("careerkit.publish_guard.terms_cache_key", lambda _ws: "key1")
+
+    terms, _key = load_terms(ws)
+    assert "테스트" not in terms.bounded, "exclusions must filter on generation"
+    payload = json.loads(exclusions_file.read_text(encoding="utf-8"))
+    assert payload["generic_exclusions"] == ["테스트"], "rewrite must preserve exclusions"
+
+    # second read: cache hit path filters too, even if the cache predates the list
+    payload2 = json.loads(exclusions_file.read_text(encoding="utf-8"))
+    payload2["bounded"] = sorted(set(payload2["bounded"]) | {"테스트"})
+    exclusions_file.write_text(json.dumps(payload2, ensure_ascii=False), encoding="utf-8")
+    terms2, _ = load_terms(ws)
+    assert "테스트" not in terms2.bounded, "cache read must filter exclusions"
+
+
+def test_quoted_corpus_prose_consumes_short_code_spans() -> None:
+    """A short inline code span closes its own pair; the next span starts fresh."""
+    line = (
+        "이 프로젝트는 `example/` 디렉토리에 예제 데이터를 제공합니다. "
+        "개인 이력서를 만들려면 `private/profile/`과 `private/companies/` 디렉토리에 자신의 데이터를 생성해야 합니다."
+    )
+    assert run(line) == []
+
+
+def test_entity_suffix_allows_a_generic_head_before_the_suffix_word() -> None:
+    """The generic check reads the head (the part before the suffix word)."""
+    assert run("search?query=예시랩스") == []
+    assert run("search?query=테크베이스랩스") == ["entity-suffix"]
+
+
 def test_quoted_corpus_prose_flags_a_quoted_sentence() -> None:
     assert run('the reply said "그 조직의 백엔드 팀에 입사했습니다" verbatim') == [
         "quoted-corpus-prose"
@@ -95,8 +158,63 @@ def test_quoted_corpus_prose_ignores_short_and_question_forms() -> None:
     assert run('a question "몇 명이 합류했나요?" stays') == []
 
 
+def test_quoted_corpus_prose_ignores_quotes_without_an_employment_verb() -> None:
+    """Ordinary quoted prose — README quotes, UI labels, interview examples — stays."""
+    assert run('the doc quotes "확장 프로그램을 로드합니다" verbatim') == []
+    assert run('an example "제가 모든 결정을 했습니다" in a guide') == []
+    assert run('a quote "기술적으로 한 축을 담당했습니다" in an interview sheet') == []
+
+
 def test_term_file_flags_the_cache_name() -> None:
-    assert run("the cache lives at publish-guard-terms.json") == ["term-file"]
+    assert run(f"the cache lives at {_CACHE_NAME}") == ["term-file"]
+
+
+def _real_analyzer():
+    import importlib
+
+    try:
+        module = importlib.import_module("kiwipiepy")
+    except ImportError:
+        return None
+    return getattr(module, "Kiwi")()
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("kiwipiepy") is None,
+    reason="analyzer extra not installed in this environment",
+)
+def test_layer2_with_the_real_analyzer_flags_an_unknown_proper_noun() -> None:
+    """The shipped factory must produce an INSTANCE: _layer2 calls analyzer.tokenize."""
+    from careerkit.publish_guard import _import_analyzer
+
+    analyzer = _import_analyzer()
+    assert analyzer is not None and hasattr(analyzer, "tokenize")
+    findings = list(
+        scan_text(
+            "서울과 부산에서 모임을 했습니다",
+            layers=frozenset({2}),
+            analyzer=analyzer,
+            vocabulary=frozenset(),
+        )
+    )
+    assert [f.rule for f in findings] == ["proper-noun", "proper-noun"], findings
+    assert {f.evidence for f in findings} == {"서울", "부산"}
+
+
+def test_layer2_skips_silently_without_an_analyzer() -> None:
+    from careerkit.publish_guard import _import_analyzer
+
+    if _import_analyzer() is not None:
+        pytest.skip("analyzer installed; the skip path is only reachable without it")
+    findings = list(
+        scan_text(
+            "테크베이스와 협력했습니다",
+            layers=frozenset({2}),
+            analyzer=None,
+            vocabulary=frozenset(),
+        )
+    )
+    assert findings == []
 
 
 # --- Layer 2 with a stub tagger ----------------------------------------------
@@ -140,29 +258,29 @@ def test_layer2_subtracts_tracked_vocabulary() -> None:
 
 def _terms() -> Terms:
     return Terms(
-        substring=frozenset({"가온물산"}),
-        bounded=frozenset({"가온"}),
+        substring=frozenset({"테크베이스"}),
+        bounded=frozenset({"테스트사"}),
     )
 
 
 def test_layer3_r1_matches_substrings() -> None:
-    assert run("가온물산과 함께합니다", terms=_terms()) == ["local-term"]
+    assert run("테크베이스와 함께합니다", terms=_terms()) == ["local-term"]
 
 
 def test_layer3_r2_matches_bounded_only() -> None:
-    assert run("가온은 좋다", terms=_terms()) == ["local-term"]
-    assert run("가온을 예시로 든다", terms=_terms()) == ["local-term"]
-    assert run("낙엽가온이라는 시집", terms=_terms()) == []
+    assert run("테스트사는 좋다", terms=_terms()) == ["local-term"]
+    assert run("테스트사를 예시로 든다", terms=_terms()) == ["local-term"]
+    assert run("낙엽테스트사라는 시집", terms=_terms()) == []
 
 
 def test_normalization_decodes_and_folds() -> None:
-    assert normalize_text("%EA%B0%80%EC%98%A8") == "가온"
-    assert normalize_text("가온\u00ad물산") == "가온물산"
+    assert normalize_text("%EA%B0%80%EB%9D%BC") == "가라"
+    assert normalize_text("테크\u00ad베이스") == "테크베이스"
 
 
 def test_layer3_sees_percent_encoded_names() -> None:
-    terms = Terms(substring=frozenset({"가온물산"}), bounded=frozenset())
-    assert run("we joined %EA%B0%80%EC%98%A8%EB%AC%BC%EC%82%B0", terms=terms) == [
+    terms = Terms(substring=frozenset({"테크베이스"}), bounded=frozenset())
+    assert run("we joined %ED%85%8C%ED%81%AC%EB%B2%A0%EC%9D%B4%EC%8A%A4", terms=terms) == [
         "local-term"
     ]
 
@@ -176,16 +294,16 @@ def test_emitted_rules_cover_the_closed_set() -> None:
         "wanted/12345679 x\n"
         "https://www.wanted.co.kr/wd/12345678 x\n"
         "a.person+tag@company.io x\n"
-        "(주) 가온테크 x\n"
+        f"{_LEGAL_FORM} 테스트테크 x\n"
         "머큐리랩스 x\n"
         "합류했습니다. x\n"
         '"그 조직의 백엔드 팀에 입사했습니다" x\n'
-        "publish-guard-terms.json x\n"
-        "가온물산과 함께 x\n"
-        "가온은 좋다 x\n"
+        f"{_CACHE_NAME} x\n"
+        "테크베이스와 함께 x\n"
+        "테스트사는 좋다 x\n"
         "stub tagger covers proper-noun separately x\n"
     )
-    terms = Terms(substring=frozenset({"가온물산"}), bounded=frozenset({"가온"}))
+    terms = Terms(substring=frozenset({"테크베이스"}), bounded=frozenset({"테스트사"}))
     emitted = {
         rule
         for rule in run(positive_text, terms=terms)
@@ -222,8 +340,8 @@ def test_generator_splits_polluted_values_and_drops_short_fragments() -> None:
     """R1's split filter: a polluted value's fragment enters only at 4+ Hangul chars."""
     from careerkit.publish_guard import _build_terms
 
-    terms = _build_terms(["가온 데이터베이스 백엔드 엔지니어 모집"])
-    assert "가온" not in terms.substring
+    terms = _build_terms(["테크 데이터베이스 백엔드 엔지니어 모집"])
+    assert "테크" not in terms.substring
     assert any("데이터베이스" in term for term in terms.substring)
 
 

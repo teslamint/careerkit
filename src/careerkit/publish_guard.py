@@ -132,9 +132,10 @@ _LEGAL_SUFFIX = re.compile(
 _ENTITY_SUFFIX = re.compile(
     r"[가-힣A-Za-z0-9]{1,20}\s*(?:그룹|홀딩스|인더스트리|테크|랩스|웍스|컴퍼니)"
 )
+_EMPLOYMENT = re.compile(r"합류|입사|이직|재직|영입|스카웃|계약")
 _ENTITY_POSITION = re.compile(r"(?:합류|스카웃|영입|이직|재직)\s*(?:했|하|해)")
 _QUOTED = re.compile(
-    r"[`\"'\u201c\u2018]([^`\"'\u201d\u2019]{12,})[`\"'\u201d\u2019]"
+    r"[`\"'\u201c\u2018]([^`\"'\u201d\u2019]+)[`\"'\u201d\u2019]"
 )
 _KOREAN_ENDINGS = re.compile(
     r"(합류|입사|재직|합니다|입니다|싶어요|좋아요|주세요|드립니다|였습니다|했습니다)"
@@ -145,6 +146,7 @@ _GENERIC_SUBJECTS = frozenset(
     {
         "개발자", "엔지니어", "디자이너", "매니저", "기획자", "회사", "팀",
         "동료", "사람", "사용자", "고객", "개발", "서비스", "프로덕트", "조직",
+        "예시", "샘플", "테스트", "더미",
     }
 )
 _TERM_FILE = re.compile(r"publish-guard-terms\.json")
@@ -178,11 +180,11 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
     ):
         yield Finding("legal-suffix", match.group(0), line)
     for match in re.finditer(
-        r"(?:[가-힣]{2,19}|[A-Za-z0-9]{2,19})(?:그룹|홀딩스|인더스트리|테크|랩스|웍스|컴퍼니)",
+        r"(?P<head>[가-힣]{2,19}|[A-Za-z0-9]{2,19})(?P<word>그룹|홀딩스|인더스트리|테크|랩스|웍스|컴퍼니)",
         text,
     ):
-        head = re.match(r"[가-힣A-Za-z0-9]+", match.group(0))
-        if not head or head.group(0) in _GENERIC_SUBJECTS:
+        head = match.group("head")
+        if not head or head in _GENERIC_SUBJECTS:
             continue
         before = text[max(0, match.start() - 4) : match.start()]
         if re.search(r"(?:주식회사|㈜|\(주\)|Ltd\.?|Inc\.)\s*$", before):
@@ -205,6 +207,9 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
             and re.search(r"[가-힣]", fragment)
             and _KOREAN_ENDINGS.search(fragment)
             and not _QUESTION_ENDINGS.search(fragment)
+            # Quoted Korean prose is ordinary documentation; require an employment
+            # carrier inside the fragment so README quotes and UI labels stay quiet.
+            and _EMPLOYMENT.search(fragment)
         ):
             yield Finding("quoted-corpus-prose", match.group(0), line)
     for match in _TERM_FILE.finditer(text):
@@ -214,12 +219,16 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
 
 
 def _import_analyzer() -> Any | None:
-    """Import the analyzer without a resolvable import edge (pyright basic mode)."""
+    """Import and construct the analyzer without a resolvable import edge.
+
+    Returns an instance so no caller can pass the class where a tokenizer is expected;
+    pyright basic mode cannot resolve the class through importlib anyway.
+    """
     try:
         module = importlib.import_module("kiwipiepy")
     except ImportError:
         return None
-    return getattr(module, "Kiwi")
+    return getattr(module, "Kiwi")()
 
 
 # --- Layer 2: morphological --------------------------------------------------
@@ -245,58 +254,94 @@ def _merge_base_ref(git_cwd: Path | None = None) -> str:
     return ""
 
 
-def vocabulary_cache_path() -> Path | None:
+def vocabulary_cache_path(repo: Path | None = None) -> Path | None:
+    cwd = repo or Path.cwd()
     common = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"], capture_output=True, check=False
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
     ).stdout.decode("utf-8", errors="replace").strip()
     if not common:
         return None
     return Path(common) / "publish-guard-vocabulary"
 
 
-def build_vocabulary(base: str) -> frozenset[str]:
-    """NNP forms of the merge-base tree object plus that base's commit messages."""
+def _vocab_cache_key(tree: str) -> str:
+    """Cache key folds the build algorithm version and the analyzer version."""
+    try:
+        analyzer_version = importlib.import_module("kiwipiepy").__version__
+    except (ImportError, AttributeError):
+        analyzer_version = "none"
+    return f"v2:{analyzer_version}:{tree}"
+
+
+def build_vocabulary(base: str, repo: Path | None = None) -> frozenset[str]:
+    """NNP forms of the merge-base tree object plus that base's commit messages.
+
+    ``repo`` scopes every git call and the cache to the checkout under scan; the
+    default (None) uses the process CWD, which is how the hooks run.
+    """
+    cwd = repo or Path.cwd()
     if not base:
         raise SystemExit("layer 2 base ref does not resolve; refusing an empty vocabulary")
-    cache = vocabulary_cache_path()
+    cache = vocabulary_cache_path(cwd)
     tree = subprocess.run(
-        ["git", "rev-parse", f"{base}^{{tree}}"], capture_output=True, check=False
+        ["git", "rev-parse", f"{base}^{{tree}}"],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
     ).stdout.decode("utf-8", errors="replace").strip()
     if cache and cache.is_file():
         try:
             cached = json.loads(cache.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             cached = None
-        if cached and cached.get("key") == tree:
+        if cached and cached.get("key") == _vocab_cache_key(tree):
             return frozenset(cached["forms"])
     kiwi = _import_analyzer()
     if kiwi is None:
         return frozenset()
     forms: set[str] = set()
     for entry in subprocess.run(
-        ["git", "ls-tree", "-r", "--name-only", base], capture_output=True, check=False
+        ["git", "ls-tree", "-r", "--name-only", base],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
     ).stdout.decode("utf-8", errors="replace").splitlines():
         rel = entry.strip()
         if not rel or Path(rel).suffix.lower() not in _TEXT_SUFFIXES:
             continue
         blob = subprocess.run(
-            ["git", "show", f"{base}:{rel}"], capture_output=True, check=False
+            ["git", "show", f"{base}:{rel}"],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
         ).stdout
         try:
             blob_text = blob.decode("utf-8")
         except UnicodeDecodeError:
             continue
         if blob_text and re.search(r"[가-힣]", blob_text):
-            forms |= _nnp_forms(kiwi, blob_text)
+            # Per line, like the scanner: Kiwi's output is context-sensitive, so a
+            # whole-blob pass misses proper-noun forms the per-line scan then flags.
+            for blob_line in blob_text.splitlines():
+                if blob_line.strip():
+                    forms |= _nnp_forms(kiwi, normalize_text(blob_line))
     messages = subprocess.run(
-        ["git", "log", "-200", "--format=%B", base], capture_output=True, check=False
+        ["git", "log", "-200", "--format=%B", base],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
     ).stdout.decode("utf-8", errors="replace")
     if messages:
         forms |= _nnp_forms(kiwi, messages)
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(
-            json.dumps({"key": tree, "forms": sorted(forms)}), encoding="utf-8"
+            json.dumps(
+                {"key": _vocab_cache_key(tree), "forms": sorted(forms)}
+            ), encoding="utf-8"
         )
     return frozenset(forms)
 
@@ -365,10 +410,12 @@ def _build_terms(
                     and len(piece) >= 4
                     and not _TITLE_NOISE.search(piece)
                     and re.search(r"[가-힣]", piece)
+                    and piece not in exclusions
                 ):
                     substring.add(piece)
         elif len(value) >= 4 and re.search(r"[가-힣]", value):
-            substring.add(value)
+            if value not in exclusions:
+                substring.add(value)
         elif 2 <= len(value) <= 3 and value not in exclusions:
             bounded.add(value)
     return Terms(frozenset(substring), frozenset(bounded))
@@ -379,7 +426,7 @@ def _load_generic_exclusions(workspace: Path) -> frozenset[str]:
 
     A tracked exclusion list that names store values is itself a corpus-derived
     denylist (A-13); the workspace cache is where corpus-derived vocabulary belongs.
-    The file carries plain JSON: {"r2_generic_exclusions": [...]}.
+    The file carries plain JSON: {"generic_exclusions": [...]}.
     """
     path = workspace / "private" / "jd" / "derived" / "publish-guard-terms.json"
     if not path.is_file():
@@ -388,7 +435,7 @@ def _load_generic_exclusions(workspace: Path) -> frozenset[str]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return frozenset()
-    items = payload.get("r2_generic_exclusions") or []
+    items = payload.get("generic_exclusions") or []
     return frozenset(str(item) for item in items)
 
 
@@ -420,17 +467,27 @@ def load_terms(workspace: str | Path) -> tuple[Terms, str]:
         except (OSError, json.JSONDecodeError):
             payload = None
         if payload and payload.get("key") == key:
-            terms = Terms(frozenset(payload["substring"]), frozenset(payload["bounded"]))
+            exclusions = _load_generic_exclusions(ws)
+            terms = Terms(
+                frozenset(payload["substring"]) - exclusions,
+                frozenset(payload["bounded"]) - exclusions,
+            )
             if terms.substring or terms.bounded:
                 return terms, key
     terms = generate_terms(ws)
     cache.parent.mkdir(parents=True, exist_ok=True)
+    exclusions = _load_generic_exclusions(ws)
+    terms = Terms(
+        terms.substring - exclusions,
+        terms.bounded - exclusions,
+    )
     cache.write_text(
         json.dumps(
             {
                 "key": key,
                 "substring": sorted(terms.substring),
                 "bounded": sorted(terms.bounded),
+                "generic_exclusions": sorted(exclusions),
             },
             ensure_ascii=False,
         ),
@@ -583,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"cannot read {path}: {error}", file=sys.stderr)
             return 2
         findings = list(
-            scan_text(content, terms=terms, layers=frozenset({1, 2, 3}), analyzer=analyzer, vocabulary=vocabulary)
+            scan_text(content, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary)
         )
     elif args.staged:
         diff = _git_output(
@@ -592,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
         added = _parse_added(diff)
         for path_name, line_no, content in added:
             findings.extend(
-                scan_text(content, terms=terms, layers=frozenset({1, 2, 3}), analyzer=None, base=line_no)
+                scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no)
             )
         names = _git_output("diff", "--cached", "--name-status")
         binary_count = 0
@@ -602,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
                 binary_count += 1
                 continue
             findings.extend(
-                scan_text(normalize_text(path_name), terms=terms, layers=frozenset({1, 2, 3}), analyzer=None, base=0)
+                scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
             )
         if binary_count:
             if args.no_evidence:
@@ -625,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         messages = _git_output("log", f"{base}..{head}", "--format=%B")
         findings.extend(
-            scan_text(messages, terms=terms, layers=frozenset({1, 2, 3}), analyzer=analyzer, vocabulary=vocabulary)
+            scan_text(messages, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary)
         )
         added = _parse_added(
             _git_output(
@@ -634,11 +691,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         for path_name, line_no, content in added:
             findings.extend(
-                scan_text(content, terms=terms, layers=frozenset({1, 2, 3}), analyzer=None, base=line_no)
+                scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no)
             )
         for path_name in _added_commit_paths(base, head):
             findings.extend(
-                scan_text(normalize_text(path_name), terms=terms, layers=frozenset({1, 2, 3}), analyzer=None, base=0)
+                scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
             )
     else:
         parser.print_usage(sys.stderr)
