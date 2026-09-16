@@ -26,8 +26,7 @@ while read -r local_ref local_oid remote_ref remote_oid; do
             ;;
     esac
     if [ "$remote_oid" = "$zero" ] || ! git cat-file -e "$remote_oid" 2>/dev/null; then
-        remote_name=$(echo "$remote_ref" | cut -d/ -f3)
-        if ! uv run python -m careerkit.publish_guard --commits "${local_oid}" --not "--remotes=${remote_name}" 2>/dev/null; then
+        if ! uv run python -m careerkit.publish_guard --commits "${local_oid}" --exclude-remote "$1"; then
             fail=1
         fi
     else

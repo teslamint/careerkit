@@ -581,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--message", metavar="PATH")
     parser.add_argument("--staged", action="store_true")
     parser.add_argument("--commits", metavar="BASE..HEAD")
+    parser.add_argument("--exclude-remote", metavar="NAME", help="commits on this remote's tracking refs are already published")
     parser.add_argument("--generate-terms", metavar="WORKSPACE")
     parser.add_argument("--layers", default="1,2,3")
     parser.add_argument("--no-evidence", action="store_true")
@@ -670,9 +671,34 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
     elif args.commits:
-        if ".." not in args.commits:
-            print("--commits expects BASE..HEAD", file=sys.stderr)
+        if ".." not in args.commits and not args.exclude_remote:
+            print("--commits expects BASE..HEAD, or an oid with --exclude-remote", file=sys.stderr)
             return 2
+        if args.exclude_remote and ".." not in args.commits:
+            # Fallback for a first push: scan exactly the commits the named remote's
+            # tracking refs do not already carry, per commit so a diverged set works.
+            new_shas = _git_output(
+                "rev-list", args.commits, "--not", f"--remotes={args.exclude_remote}"
+            ).split()
+            if not new_shas:
+                return 0
+            messages = "\n".join(
+                _git_output("log", "-1", "--format=%B", sha) for sha in new_shas
+            )
+            findings.extend(
+                scan_text(messages, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary)
+            )
+            for sha in new_shas:
+                added = _parse_added(_git_output("show", "-U0", "--format=", sha))
+                for path_name, line_no, content in added:
+                    findings.extend(
+                        scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no)
+                    )
+                for path_name in _added_commit_paths(sha + "^", sha):
+                    findings.extend(
+                        scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
+                    )
+            return _report(findings, args)
         base, _, head = args.commits.partition("..")
         resolution = subprocess.run(
             ["git", "rev-parse", "--verify", base], capture_output=True, check=False
@@ -701,6 +727,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         return 2
 
+    return _report(findings, args)
+
+
+def _report(findings: list[Finding], args: Any) -> int:
     if not findings:
         return 0
     for finding in findings:
