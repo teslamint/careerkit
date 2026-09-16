@@ -46,7 +46,8 @@ class _ParentDraft:
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 BRACKET_HEADING_RE = re.compile(r"^\[([^\]]+)\]\s*$")
-BULLET_RE = re.compile(r"^(?P<indent>\s*)[-*+•◦]\s+(?P<text>.*\S)\s*$")
+BULLET_RE = re.compile(r"^(?P<indent>\s*)(?P<marker>[-*+•◦■▪◼◾])\s+(?P<text>.*\S)\s*$")
+SQUARE_MARKERS = frozenset("■▪◼◾")
 NUMBERED_RE = re.compile(r"^(?P<indent>\s*)\d+[.)]\s+(?P<text>.*\S)\s*$")
 DELIMITER_RE = re.compile(r",|·|;|/")
 ATOMIC_SLASH_RE = re.compile(r"\bCI/CD\b", re.IGNORECASE)
@@ -74,6 +75,9 @@ SECTION_KINDS = {
     "이런분과함께하고싶어요": RequirementKind.REQUIRED,
     "이런분을찾고있어요": RequirementKind.REQUIRED,
     "이런분을찾아요": RequirementKind.REQUIRED,
+    "이런경험이있는분을찾습니다": RequirementKind.REQUIRED,
+    "합류하시면이런역할을합니다": RequirementKind.MAIN_DUTY,
+    "합류하시면이런일을합니다": RequirementKind.MAIN_DUTY,
     "이런일을하게됩니다": RequirementKind.MAIN_DUTY,
     "이런일을해요": RequirementKind.MAIN_DUTY,
     "이런분이면더좋습니다": RequirementKind.PREFERRED,
@@ -199,6 +203,18 @@ def extract_requirement_manifest(jd_markdown: str) -> RequirementManifest:
                 current_kind = None
             current_parent_index = None
             continue
+
+        square_match = BULLET_RE.match(line)
+        if square_match and square_match.group("marker") in SQUARE_MARKERS:
+            # `■ 우대사항` divides sections in postings that carry no `##` heading,
+            # so this runs before the `current_kind is None` guard below.
+            divider_text = square_match.group("text").strip()
+            divider_kind = SECTION_KINDS.get(_normalize_heading(divider_text))
+            if divider_kind is not None:
+                current_kind = divider_kind
+                current_heading = divider_text
+                current_parent_index = None
+                continue
 
         if current_kind is None:
             continue
