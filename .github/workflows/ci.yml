@@ -36,7 +36,7 @@ jobs:
         run: |
           UV_CACHE_DIR=.uv-cache uv run python -m careerkit.publish_guard \
             --commits "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
-            --layers 1,2 --no-evidence
+            --layers "${{ vars.GUARD_LAYERS || '1,2' }}" --no-evidence
       - name: Publish de-identification guard (push to main)
         if: github.event_name == 'push'
         run: |
@@ -48,7 +48,7 @@ jobs:
           fi
           UV_CACHE_DIR=.uv-cache uv run python -m careerkit.publish_guard \
             --commits "$RANGE" \
-            --layers 1,2 --no-evidence
+            --layers "${{ vars.GUARD_LAYERS || '1,2' }}" --no-evidence
       - uses: actions/setup-node@v7
         with:
           node-version: '24'

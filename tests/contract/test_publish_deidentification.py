@@ -110,6 +110,24 @@ def test_entity_position_allows_generic_subjects() -> None:
     assert run("한 명의 개발자가 합류했습니다.") == []
 
 
+def _init_repo(repo: pathlib.Path) -> None:
+    import subprocess
+
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True, capture_output=True)
+
+
+def _git(repo: pathlib.Path, *argv: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True, text=True)
+
+
+
+
 def test_cli_commits_range_names_paths_and_exempts_own_files(tmp_path, monkeypatch) -> None:
     """--commits scans added lines, names files, and exempts the guard's own files."""
     import subprocess
@@ -132,11 +150,13 @@ def test_cli_commits_range_names_paths_and_exempts_own_files(tmp_path, monkeypat
     _git("add", ".")
     _git("commit", "-m", "base")
     _git("checkout", "-q", "-b", "feature")
-    (repo / "doc.md").write_text(f"테크베이스와 {_EMPLOYMENT}했습니다\n", encoding="utf-8")
+    (repo / "doc.md").write_text(f"정적 줄\n테크베이스와 {_EMPLOYMENT}했습니다\n", encoding="utf-8")
     own = repo / "src" / "careerkit"
     own.mkdir(parents=True)
     (own / "publish_guard.py").write_text(own_source, encoding="utf-8")
     (repo / "other.py").write_text(own_source, encoding="utf-8")
+    (repo / "docs" / "publish_guard.py").parent.mkdir(exist_ok=True)
+    (repo / "docs" / "publish_guard.py").write_text(own_source, encoding="utf-8")
     _git("add", ".")
     _git("commit", "-m", "carries patterns")
     base_sha = subprocess.run(
@@ -149,9 +169,120 @@ def test_cli_commits_range_names_paths_and_exempts_own_files(tmp_path, monkeypat
         ["--commits", f"{base_sha}..HEAD", "--layers", "1", "--no-evidence"]
     )
     assert code == 1, stderr[-400:]
-    assert "doc.md:1" in stderr, stderr[-400:]
+    assert "doc.md:2" in stderr, stderr[-400:]
     assert "other.py:1" in stderr, stderr[-400:]
+    assert "docs/publish_guard.py" in stderr, stderr[-400:]
     assert "src/careerkit/publish_guard.py" not in stderr, stderr[-400:]
+
+
+def test_cli_staged_scans_a_quoted_nonascii_path(tmp_path, monkeypatch) -> None:
+    """+++ headers that git quotes (core.quotePath) must still be parsed and scanned."""
+    repo = tmp_path
+    _init_repo(repo)
+    (repo / "기존.md").write_text("clean line\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    # a Korean-named file carries a carrier; the +++ header will be quoted
+    (repo / "문서.md").write_text(f"테크베이스와 {_EMPLOYMENT}했습니다\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    monkeypatch.chdir(repo)
+    code, stderr = _guard_main_capturing(["--staged", "--layers", "1", "--no-evidence"])
+    assert code == 1, stderr[-300:]
+    assert "문서.md:1" in stderr, stderr[-300:]
+    assert "entity-position" in stderr, stderr[-300:]
+
+
+def test_cli_range_scans_per_commit_not_net_diff(tmp_path, monkeypatch) -> None:
+    """A line added and removed inside the same push must still fire on its commit."""
+    repo = tmp_path
+    _init_repo(repo)
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    (repo / "leak.txt").write_text("wanted/12345678 processed\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add leak")
+    (repo / "leak.txt").unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "remove leak")
+    monkeypatch.chdir(repo)
+    code, stderr = _guard_main_capturing(["--commits", "HEAD~2..HEAD", "--layers", "1", "--no-evidence"])
+    assert code == 1, stderr[-300:]
+
+
+def test_cli_commits_unresolvable_head_exits_two(tmp_path, monkeypatch) -> None:
+    repo = tmp_path
+    _init_repo(repo)
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    monkeypatch.chdir(repo)
+    code, stderr = _guard_main_capturing(["--commits", "HEAD~1..nosuchref", "--layers", "1", "--no-evidence"])
+    assert code == 2, (code, stderr[-300:])
+    code, stderr = _guard_main_capturing(["--commits", "deadbeefdeadbeef", "--exclude-remote", "origin", "--layers", "1", "--no-evidence"])
+    assert code == 2, (code, stderr[-300:])
+
+
+def test_cli_staged_skips_deletions_and_exempts_own_paths(tmp_path, monkeypatch) -> None:
+    repo = tmp_path
+    _init_repo(repo)
+    (repo / "wanted/12345678.md").parent.mkdir()
+    (repo / "wanted/12345678.md").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add leak")
+    (repo / "wanted/12345678.md").unlink()
+    _git(repo, "add", "-A")
+    monkeypatch.chdir(repo)
+    code, stderr = _guard_main_capturing(["--staged", "--layers", "1", "--no-evidence"])
+    assert code == 0, stderr[-300:]
+
+
+def test_layer2_skips_when_the_base_ref_does_not_resolve(tmp_path, monkeypatch) -> None:
+    """A live analyzer with an unresolvable base must skip layer 2, not flag every NNP."""
+    from careerkit.publish_guard import _import_analyzer
+
+    if _import_analyzer() is None:
+        pytest.skip("analyzer not installed in this environment")
+
+    repo = tmp_path
+    _init_repo(repo)
+    # no origin/main and no upstream: the resolver returns ''
+    (repo / "m.txt").write_text(f"서울과 부산에서 모임을 했습니다\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    code, stderr = _guard_main_capturing(["--message", str(repo / "m.txt"), "--layers", "1,2"])
+    assert code == 0, stderr[-300:]
+    assert "layer 2 base ref does not resolve" in stderr, stderr[-300:]
+    assert "proper-noun" not in stderr, stderr[-300:]
+
+
+def test_platform_names_are_the_reexported_known_set() -> None:
+    from careerkit.jobs.application.storage_migration import _KNOWN_PLATFORMS
+    from careerkit.publish_guard import platform_names
+
+    assert platform_names() == frozenset(_KNOWN_PLATFORMS)
+
+
+def test_record_key_matches_the_canonical_colon_form() -> None:
+    assert run("wanted:12345678") == ["record-key"]
+    assert run("wanted 12345678") == ["record-key"]
+    assert run("wanted/12345678") == ["record-key"]
+
+
+def test_fallback_scans_a_root_commit_paths(tmp_path, monkeypatch) -> None:
+    """A fresh repo's first commit adds a path with a record-key-looking name."""
+    repo = tmp_path
+    _init_repo(repo)
+    (repo / "wanted/12345678.md").parent.mkdir()
+    (repo / "wanted/12345678.md").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "root")
+    _git(repo, "remote", "add", "origin", "https://example.invalid/x.git")
+    monkeypatch.chdir(repo)
+    code, stderr = _guard_main_capturing(
+        ["--commits", "HEAD", "--exclude-remote", "origin", "--layers", "1"]
+    )
+    assert code == 1, stderr[-400:]
+    assert "wanted/12345678.md:0" in stderr, stderr[-400:]
 
 
 def test_terms_cache_regeneration_preserves_the_exclusions(tmp_path, monkeypatch) -> None:
@@ -218,7 +349,7 @@ def test_quoted_corpus_prose_flags_a_quoted_sentence() -> None:
 def test_quoted_corpus_prose_ignores_short_and_question_forms() -> None:
     assert run('a short quote "가나다" stays') == []
     assert run('a short quote "입사" stays') == []
-    assert run('a question "몇 명이 합류했나요?" stays') == []
+    assert run('a question "그 팀에 언제 합류했나요?" stays') == []
 
 
 def test_quoted_corpus_prose_ignores_quotes_without_an_employment_verb() -> None:

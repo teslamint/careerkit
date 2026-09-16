@@ -551,15 +551,19 @@ def scan_text(
     pass ``--layers 1,2`` at the CLI instead of expecting a silent skip.
     """
     normalized = normalize_text(text)
-    if 1 in layers or 3 in layers:
-        for offset, block in enumerate(normalized.splitlines() or [normalized]):
-            line = base + offset
-            if 1 in layers:
-                yield from _layer1(block, line)
-            if 3 in layers:
-                yield from _layer3(block, terms, line)
-    if 2 in layers and analyzer is not None:
-        yield from _layer2(normalized, analyzer, vocabulary, base)
+    if 2 in layers and analyzer is None:
+        layers = layers - {2}
+    for offset, block in enumerate(normalized.splitlines() or [normalized]):
+        line = base + offset
+        if 1 in layers:
+            yield from _layer1(block, line)
+        if 3 in layers:
+            yield from _layer3(block, terms, line)
+        # Per line, like the other layers: a whole-block pass attributes every
+        # proper-noun to the block's base line, so a multi-line message cannot be
+        # located from the finding.
+        if 2 in layers and analyzer is not None:
+            yield from _layer2(block, analyzer, vocabulary, line)
 
 
 # --- CLI --------------------------------------------------------------------
@@ -599,9 +603,9 @@ def _parse_added(diff: str) -> list[tuple[str, int, str]]:
     current: str | None = None
     line_no = 0
     for raw in diff.splitlines():
-        if raw.startswith("+++ b/"):
-            current = _unquote_git_path(raw[6:])
-            continue
+        if raw.startswith("+++ "):
+            quoted = _unquote_git_path(raw[4:])
+            current = quoted[2:] if quoted.startswith("b/") else quoted
         if raw.startswith("@@"):
             match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", raw)
             line_no = int(match.group(1)) if match else 0
@@ -675,8 +679,20 @@ def main(argv: list[str] | None = None) -> int:
             base = _merge_base_ref(Path.cwd())
             if not base:
                 print("layer 2 base ref does not resolve; layer 2 skipped", file=sys.stderr)
+                # An unresolvable base with a live analyzer would run layer 2 with no
+                # subtraction and flag every proper noun; skip layer 2 outright.
+                analyzer = None
             else:
                 vocabulary = build_vocabulary(base)
+
+    def _scan_path_name(path_name: str) -> list[Finding]:
+        return [
+            dataclasses.replace(finding, path=path_name)
+            for finding in scan_text(
+                normalize_text(path_name), terms=terms, layers=layers,
+                analyzer=analyzer, vocabulary=vocabulary, base=0
+            )
+        ]
 
     findings: list[Finding] = []
     if args.message:
@@ -697,7 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         for path_name, line_no, content in added:
             if _is_own_definition(path_name):
                 continue
-            for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+            for finding in scan_text(content, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary, base=line_no):
                 findings.append(dataclasses.replace(finding, path=path_name))
         names = _git_output("diff", "--cached", "--name-status")
         binary_count = 0
@@ -708,9 +724,7 @@ def main(argv: list[str] | None = None) -> int:
             if Path(path_name).suffix.lower() in _BINARY_SUFFIXES:
                 binary_count += 1
                 continue
-            findings.extend(
-                scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
-            )
+            findings.extend(_scan_path_name(path_name))
         if binary_count:
             if args.no_evidence:
                 print(f"unscannable binary paths: {binary_count}", file=sys.stderr)
@@ -751,12 +765,10 @@ def main(argv: list[str] | None = None) -> int:
                 for path_name, line_no, content in added:
                     if _is_own_definition(path_name):
                         continue
-                    for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+                    for finding in scan_text(content, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary, base=line_no):
                         findings.append(dataclasses.replace(finding, path=path_name))
-                for path_name in _added_commit_paths(sha):
-                    findings.extend(
-                        scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
-                    )
+            for path_name in _added_commit_paths(sha):
+                findings.extend(_scan_path_name(path_name))
             return _report(findings, args)
         base, _, head = args.commits.partition("..")
         resolution = subprocess.run(
@@ -779,12 +791,10 @@ def main(argv: list[str] | None = None) -> int:
             for path_name, line_no, content in added:
                 if _is_own_definition(path_name):
                     continue
-                for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+                for finding in scan_text(content, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary, base=line_no):
                     findings.append(dataclasses.replace(finding, path=path_name))
             for path_name in _added_commit_paths(sha):
-                findings.extend(
-                    scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
-                )
+                findings.extend(_scan_path_name(path_name))
     else:
         parser.print_usage(sys.stderr)
         return 2

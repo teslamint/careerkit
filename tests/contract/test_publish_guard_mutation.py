@@ -20,7 +20,7 @@ MODULE = ROOT / "src" / "careerkit" / "publish_guard.py"
 CONTRACT = "tests/contract/test_publish_deidentification.py"
 
 
-def run_suite(mutated_source: str) -> tuple[int, str, list[str]]:
+def run_suite(mutated_source: str, contract: str = CONTRACT) -> tuple[int, str, list[str]]:
     """Run the contract suite against a mutated module copy.
 
     The mutant is placed in a scratch tree that shadows ``src`` on PYTHONPATH, so the
@@ -37,12 +37,12 @@ def run_suite(mutated_source: str) -> tuple[int, str, list[str]]:
         env["CAREER_WORKSPACE"] = ""
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "--no-header",
-             "-p", "no:cacheprovider", CONTRACT],
+             "-p", "no:cacheprovider", contract],
             capture_output=True, check=False, text=True,
             env=env, cwd=str(ROOT),
         )
         failed = [
-            line.split(" ")[1].removeprefix(CONTRACT + "::")
+            line.split(" ")[1].removeprefix(contract.split("::")[0] + "::")
             for line in (result.stdout + result.stderr).splitlines()
             if line.startswith("FAILED ")
         ]
@@ -80,6 +80,34 @@ def test_email_losing_its_exemption_breaks_the_exemption_test() -> None:
         "_EMAIL_EXEMPT = re.compile(r'(?!)')",
         ["test_email_flags_real_addresses_but_not_exemptions"],
     )
+
+
+def test_merge_base_replaced_by_head_breaks_the_divergence_proof() -> None:
+    """A resolver mutant that returns HEAD must fail the divergence proof."""
+    source = MODULE_SOURCE
+    mutant = source.replace(
+        '        base = git("merge-base", "HEAD", upstream)',
+        '        base = git("rev-parse", "HEAD")',
+        1,
+    )
+    assert mutant != source
+    _code, output, failed = run_suite(
+        mutant, "tests/contract/test_publish_guard_mutation.py::test_layer2_base_ref_replaces_head_is_observable"
+    )
+    assert "test_layer2_base_ref_replaces_head_is_observable" in failed, output[-400:]
+
+
+def test_platform_names_narrowed_to_a_subset_breaks_the_equality_test() -> None:
+    """A hand-kept subset must fail the re-export equality test, not only crash."""
+    source = MODULE_SOURCE
+    mutant = source.replace(
+        "    return frozenset(_KNOWN_PLATFORMS)",
+        '    return frozenset({"wanted", "headhunter", "private"})',
+        1,
+    )
+    assert mutant != source
+    _code, output, failed = run_suite(mutant)
+    assert "test_platform_names_are_the_reexported_known_set" in failed, output[-400:]
 
 
 def test_record_key_reading_the_adapters_set_breaks_the_slug_test() -> None:
@@ -129,35 +157,40 @@ def test_normalization_reverted_to_nfc_breaks_the_jamo_test() -> None:
     )
 
 
-def test_layer2_base_ref_replaced_by_head_is_observable() -> None:
+def test_layer2_base_ref_replaces_head_is_observable(tmp_path, monkeypatch) -> None:
     """Replacing the merge-base ref with HEAD makes an amend subtract the amended name."""
+    import subprocess
+
+    def _git(*argv: str):
+        return subprocess.run(["git", *argv], cwd=tmp_path, check=True,
+                              capture_output=True, text=True)
+
+    _git("init", "-q", "-b", "main")
+    _git("config", "commit.gpgsign", "false")
+    _git("config", "user.email", "t@t")
+    _git("config", "user.name", "t")
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    _git("add", ".")
+    _git("commit", "-m", "base")
+    base_sha = _git("rev-parse", "HEAD").stdout.strip()
+    _git("checkout", "-q", "-b", "feature")
+    (tmp_path / "work.txt").write_text("work\n", encoding="utf-8")
+    _git("add", ".")
+    _git("commit", "-m", "work")
+    head_sha = _git("rev-parse", "HEAD").stdout.strip()
+    # A fake origin whose main points at the base commit; the feature branch tracks it
+    # so the shipped resolver resolves a genuine merge base rather than HEAD.
+    _git("remote", "add", "origin", "https://example.invalid/x.git")
+    _git("update-ref", "refs/remotes/origin/main", base_sha)
+    _git("config", "branch.feature.remote", "origin")
+    _git("config", "branch.feature.merge", "refs/heads/main")
+    # @{push} must resolve to origin/main so the resolver's primary branch fires; the
+    # origin/main fallback below it covers the same resolution deterministically.
+    _git("config", "push.default", "upstream")
+
+    monkeypatch.chdir(tmp_path)
     from careerkit.publish_guard import _merge_base_ref
 
-    assert callable(_merge_base_ref)
     base = _merge_base_ref()
-    has_commit = subprocess.run(
-        ["git", "rev-parse", "--verify", "-q", "HEAD"], capture_output=True, check=False
-    ).returncode == 0
-    if has_commit:
-        assert base, "a checkout with history must resolve a merge base"
-    else:
-        # a candidate repo with zero commits has no merge base; resolution must be
-        # the empty string, and layer 2 then reports inactive rather than scanning.
-        assert base == ""
-
-
-def test_the_suite_itself_is_not_decorative() -> None:
-    """The mutation module exists to prove the contract suite can fail.
-
-    Running the contract suite against an unmutated module must pass; if it stops
-    passing, the mutation anchors above are lying about what the suite asserts.
-    """
-    env = dict(os.environ)
-    env["CAREER_WORKSPACE"] = ""
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--no-header",
-         "-p", "no:cacheprovider", CONTRACT],
-        capture_output=True, check=False, text=True,
-        env=env, cwd=str(ROOT),
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert base == base_sha, "the shipped predicate must resolve the merge base"
+    assert base != head_sha, "the base must differ from HEAD on diverged branches"
