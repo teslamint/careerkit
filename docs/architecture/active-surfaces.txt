@@ -19,6 +19,12 @@
 .codex/skills/resume-build/SKILL.md
 .codex/skills/verify-interview-content/SKILL.md
 .dockerignore
+.githooks/commit-msg
+.githooks/post-checkout
+.githooks/post-merge
+.githooks/post-rewrite
+.githooks/pre-commit
+.githooks/pre-push
 .github/workflows/ci.yml
 .gitignore
 .importlinter
@@ -186,6 +192,8 @@ tests/contract/test_distribution_contents.py
 tests/contract/test_final_proof_harness.py
 tests/contract/test_merge_readiness_documentation.py
 tests/contract/test_privacy_sentinel.py
+tests/contract/test_publish_deidentification.py
+tests/contract/test_publish_guard_mutation.py
 tests/contract/test_workspace_resolution.py
 tests/contract/verify_render_baseline.py
 tests/docs/test_merge_readiness_documentation.py

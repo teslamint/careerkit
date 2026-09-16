@@ -23,6 +23,7 @@ HISTORICAL_FILES = {
 }
 
 ACTIVE_PREFIXES = (
+    ".githooks/",
     ".claude/skills/",
     ".codex/skills/",
     ".github/workflows/",

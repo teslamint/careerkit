@@ -1,0 +1,4 @@
+#!/bin/sh
+# Publish de-identification guard: commit messages are scanned verbatim.
+# Comment lines are NOT skipped: git commit -F with cleanup=whitespace publishes them.
+exec uv run python -m careerkit.publish_guard --message "$1" ${GUARD_LAYERS:+--layers "$GUARD_LAYERS"}

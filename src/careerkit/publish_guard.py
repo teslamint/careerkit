@@ -14,6 +14,7 @@ import dataclasses
 import hashlib
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -191,7 +192,10 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
         suffix = text[match.end() : match.end() + 5]
         if _QUESTION_ENDINGS.search(suffix):
             continue
-        if not any(word in prefix for word in _GENERIC_SUBJECTS):
+        if not any(
+            re.search(rf"(?<![\w가-힣]){re.escape(word)}", prefix)
+            for word in _GENERIC_SUBJECTS
+        ):
             yield Finding("entity-position", match.group(0), line)
     for match in _QUOTED.finditer(text):
         fragment = match.group(1)
@@ -621,7 +625,6 @@ def main(argv: list[str] | None = None) -> int:
     return 1
 
 
-import os  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())

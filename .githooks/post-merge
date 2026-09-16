@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refresh the layer-2 vocabulary cache outside any blocking path.
+uv run python -c "from careerkit.publish_guard import build_vocabulary, _merge_base_ref; base=_merge_base_ref(); base and build_vocabulary(base)" >/dev/null 2>&1 || true
