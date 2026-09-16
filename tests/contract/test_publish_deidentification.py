@@ -92,6 +92,7 @@ def test_quoted_corpus_prose_flags_a_quoted_sentence() -> None:
 
 def test_quoted_corpus_prose_ignores_short_and_question_forms() -> None:
     assert run('a short quote "가나다" stays') == []
+    assert run('a short quote "입사" stays') == []
     assert run('a question "몇 명이 합류했나요?" stays') == []
 
 
@@ -211,6 +212,20 @@ def test_rule_names_is_the_eleven_name_set() -> None:
             "term-file",
         }
     )
+
+
+def test_normalization_folds_halfwidth_jamo() -> None:
+    """NFKC composes halfwidth jamo; NFC would leave it uncomposed (mutation target)."""
+    assert normalize_text("\uffa1\uffc2") == "가"
+
+
+def test_generator_splits_polluted_values_and_drops_short_fragments() -> None:
+    """R1's split filter: a polluted value's fragment enters only at 4+ Hangul chars."""
+    from careerkit.publish_guard import _build_terms
+
+    terms = _build_terms(["가온 데이터베이스 백엔드 엔지니어 모집"])
+    assert "가온" not in terms.substring
+    assert any("데이터베이스" in term for term in terms.substring)
 
 
 def test_platform_symbol_covers_the_store() -> None:
