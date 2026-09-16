@@ -53,6 +53,24 @@ _R2_TRAIL = (
     r"(?:$|[\s`\"'\(\)\[\]·,/|=:]"
     r"|은|는|이|가|을|를|에|의|에서|으로|와|과|도|만|사|팀|측|라는|입니다|이다)"
 )
+# The guard's own definition files carry the rule patterns as source text; scanning
+# them would let the guard block its own implementation. The exemption is exact-path,
+# never a prefix or suffix match, and messages stay scanned everywhere.
+_OWN_DEFINITION_PATHS = frozenset(
+    {
+        "src/careerkit/publish_guard.py",
+        "tests/contract/test_publish_deidentification.py",
+        "tests/contract/test_publish_guard_mutation.py",
+    }
+)
+
+
+def _is_own_definition(path_name: str) -> bool:
+    return path_name in _OWN_DEFINITION_PATHS or path_name.replace("\\", "/") in {
+        name.replace("src/", "") for name in _OWN_DEFINITION_PATHS
+    }
+
+
 _TEXT_SUFFIXES = {
     ".md", ".py", ".txt", ".json", ".yaml", ".yml", ".toml", ".cjs", ".js", ".ts",
     ".html", ".css", ".sh", ".cfg", ".ini", ".lock", ".example", ".j2",
@@ -70,6 +88,7 @@ class Finding:
     rule: str
     evidence: str
     line: int
+    path: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -691,9 +710,10 @@ def main(argv: list[str] | None = None) -> int:
             for sha in new_shas:
                 added = _parse_added(_git_output("show", "-U0", "--format=", sha))
                 for path_name, line_no, content in added:
-                    findings.extend(
-                        scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no)
-                    )
+                    if _is_own_definition(path_name):
+                        continue
+                    for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+                        findings.append(dataclasses.replace(finding, path=path_name))
                 for path_name in _added_commit_paths(sha + "^", sha):
                     findings.extend(
                         scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
@@ -716,9 +736,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         for path_name, line_no, content in added:
-            findings.extend(
-                scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no)
-            )
+            if _is_own_definition(path_name):
+                continue
+            for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+                findings.append(dataclasses.replace(finding, path=path_name))
         for path_name in _added_commit_paths(base, head):
             findings.extend(
                 scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
@@ -734,10 +755,11 @@ def _report(findings: list[Finding], args: Any) -> int:
     if not findings:
         return 0
     for finding in findings:
+        where = f"{finding.path}:{finding.line}" if finding.path else f"line {finding.line}"
         if args.no_evidence:
-            print(f"line {finding.line}: [{finding.rule}]", file=sys.stderr)
+            print(f"{where}: [{finding.rule}]", file=sys.stderr)
         else:
-            print(f"line {finding.line}: [{finding.rule}] {finding.evidence}", file=sys.stderr)
+            print(f"{where}: [{finding.rule}] {finding.evidence}", file=sys.stderr)
     return 1
 
 

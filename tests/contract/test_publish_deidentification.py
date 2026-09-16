@@ -1,3 +1,4 @@
+
 """Rule contracts for the publish de-identification gate.
 
 One positive test per rule, the closed-set equality over the *emitted* names, negative
@@ -7,7 +8,24 @@ here is synthetic: no real organization name, record key, or posting sentence.
 
 from __future__ import annotations
 
+
+def _guard_main_capturing(argv: list[str]) -> tuple[int, str]:
+    """Run the CLI's main() capturing stderr, returning (exit code, stderr)."""
+    import contextlib
+    import io
+
+    from careerkit.publish_guard import main
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stderr(buffer):
+        code = main(argv)
+    return code, buffer.getvalue()
+
+
+
+
 import importlib.util
+import pathlib
 
 
 import pytest
@@ -21,6 +39,7 @@ from careerkit.publish_guard import RULE_NAMES, Terms, normalize_text, scan_text
 # the guard's own repository text never carries a pattern in contiguous, committable form.
 _LEGAL_FORM = "(" + "주" + ")"
 _CACHE_NAME = "publish-guard-" + "terms.json"
+_EMPLOYMENT = "합류"
 def run(text: str, **kwargs: object) -> list[str]:
     terms = kwargs.pop("terms", None)
     found = scan_text(text, terms=terms, **kwargs)  # type: ignore[arg-type]
@@ -89,6 +108,49 @@ def test_entity_position_flags_the_recruitment_grammar() -> None:
 
 def test_entity_position_allows_generic_subjects() -> None:
     assert run("한 명의 개발자가 합류했습니다.") == []
+
+
+def test_cli_commits_range_names_paths_and_exempts_own_files(tmp_path, monkeypatch) -> None:
+    """--commits scans added lines, names files, and exempts the guard's own files."""
+    import subprocess
+
+    repo = tmp_path
+    module_dir = pathlib.Path(__file__).parents[2]
+    own_source = (module_dir / "src" / "careerkit" / "publish_guard.py").read_text(
+        encoding="utf-8"
+    )
+    def _git(*argv: str):
+        subprocess.run(
+            ["git", *argv], cwd=repo, check=True, capture_output=True, text=True
+        )
+
+    _git("init", "-q")
+    _git("config", "user.email", "t@t")
+    _git("config", "user.name", "t")
+    (repo / "base.txt").write_text("base\n", encoding="utf-8")
+    _git("add", ".")
+    _git("commit", "-m", "base")
+    _git("checkout", "-q", "-b", "feature")
+    (repo / "doc.md").write_text(f"테크베이스와 {_EMPLOYMENT}했습니다\n", encoding="utf-8")
+    own = repo / "src" / "careerkit"
+    own.mkdir(parents=True)
+    (own / "publish_guard.py").write_text(own_source, encoding="utf-8")
+    (repo / "other.py").write_text(own_source, encoding="utf-8")
+    _git("add", ".")
+    _git("commit", "-m", "carries patterns")
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("CAREER_WORKSPACE", "")
+    code, stderr = _guard_main_capturing(
+        ["--commits", f"{base_sha}..HEAD", "--layers", "1", "--no-evidence"]
+    )
+    assert code == 1, stderr[-400:]
+    assert "doc.md:1" in stderr, stderr[-400:]
+    assert "other.py:1" in stderr, stderr[-400:]
+    assert "src/careerkit/publish_guard.py" not in stderr, stderr[-400:]
 
 
 def test_terms_cache_regeneration_preserves_the_exclusions(tmp_path, monkeypatch) -> None:
