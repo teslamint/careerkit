@@ -181,8 +181,10 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
             start <= match.start() < end for start, end in private_spans
         ):
             yield Finding("private-path", match.group(0), line)
+    # The repository's canonical key label is platform:job_id (career-jobs cli output);
+    # the slash and space forms appear when the same key is pasted from other tools.
     for match in re.finditer(
-        r"(?<![\w/-])(?P<platform>[a-z][a-z0-9]*)/(?P<key>[0-9]{2,}|[A-Za-z0-9-]{20,})(?![\w/-])",
+        r"(?<![\w/-])(?P<platform>[a-z][a-z0-9]*)[:/ ](?P<key>[0-9]{2,}|[A-Za-z0-9-]{20,})(?![\w/-])",
         text,
     ):
         if match.group("platform") in platform_names():
@@ -354,7 +356,9 @@ def build_vocabulary(base: str, repo: Path | None = None) -> frozenset[str]:
         check=False,
     ).stdout.decode("utf-8", errors="replace")
     if messages:
-        forms |= _nnp_forms(kiwi, messages)
+        for message_line in messages.splitlines():
+            if message_line.strip():
+                forms |= _nnp_forms(kiwi, normalize_text(message_line))
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(
@@ -488,8 +492,8 @@ def load_terms(workspace: str | Path) -> tuple[Terms, str]:
         if payload and payload.get("key") == key:
             exclusions = _load_generic_exclusions(ws)
             terms = Terms(
-                frozenset(payload["substring"]) - exclusions,
-                frozenset(payload["bounded"]) - exclusions,
+                frozenset(payload.get("substring") or []) - exclusions,
+                frozenset(payload.get("bounded") or []) - exclusions,
             )
             if terms.substring or terms.bounded:
                 return terms, key
@@ -566,13 +570,37 @@ def _git_output(*command: str) -> str:
     ).stdout.decode("utf-8", errors="replace")
 
 
+def _unquote_git_path(path: str) -> str:
+    """Decode git's C-style path quoting when core.quotePath is on."""
+    if not (path.startswith('"') and path.endswith('"')):
+        return path
+    body = path[1:-1].encode("utf-8")
+    pieces: list[bytes] = []
+    i = 0
+    while i < len(body):
+        if body[i : i + 1] == b"\\" and i + 1 < len(body):
+            token = body[i + 1 : i + 2]
+            if token in b"abtnvfr" or token.isdigit():
+                if token.isdigit():
+                    octal_digits = body[i + 1 : i + 4]
+                    pieces.append(bytes([int(octal_digits, 8)]))
+                    i += 4
+                    continue
+                pieces.append({b"n": b"\n", b"t": b"\t", b"r": b"\r", b"a": b"\a", b"b": b"\b", b"v": b"\v"}.get(token, token))
+                i += 2
+                continue
+        pieces.append(body[i : i + 1])
+        i += 1
+    return b"".join(pieces).decode("utf-8", errors="replace")
+
+
 def _parse_added(diff: str) -> list[tuple[str, int, str]]:
     lines: list[tuple[str, int, str]] = []
     current: str | None = None
     line_no = 0
     for raw in diff.splitlines():
         if raw.startswith("+++ b/"):
-            current = raw[6:]
+            current = _unquote_git_path(raw[6:])
             continue
         if raw.startswith("@@"):
             match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", raw)
@@ -584,9 +612,9 @@ def _parse_added(diff: str) -> list[tuple[str, int, str]]:
     return lines
 
 
-def _added_commit_paths(base: str, head: str) -> list[str]:
+def _added_commit_paths(*shas: str) -> list[str]:
     paths: list[str] = []
-    for sha in _git_output("rev-list", f"{base}..{head}").split():
+    for sha in shas:
         names = _git_output("show", sha, "--name-status", "--format=")
         for row in names.splitlines():
             parts = row.split("\t")
@@ -614,6 +642,14 @@ def main(argv: list[str] | None = None) -> int:
     if not layers or not layers <= {1, 2, 3}:
         print("--layers accepts a subset of 1,2,3", file=sys.stderr)
         return 2
+
+    if args.generate_terms:
+        terms, key = load_terms(args.generate_terms)
+        print(
+            f"terms: {len(terms.substring)} substring + {len(terms.bounded)} bounded; "
+            f"key {key}"
+        )
+        return 0
 
     workspace = os.environ.get("CAREER_WORKSPACE", "")
     terms: Terms | None = None
@@ -643,15 +679,6 @@ def main(argv: list[str] | None = None) -> int:
                 vocabulary = build_vocabulary(base)
 
     findings: list[Finding] = []
-    if args.generate_terms:
-        generated = generate_terms(args.generate_terms)
-        key = terms_cache_key(args.generate_terms)
-        print(
-            f"terms: {len(generated.substring)} substring + {len(generated.bounded)} bounded; "
-            f"key {key}"
-        )
-        return 0
-
     if args.message:
         path = Path(args.message)
         try:
@@ -668,13 +695,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         added = _parse_added(diff)
         for path_name, line_no, content in added:
-            findings.extend(
-                scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no)
-            )
+            if _is_own_definition(path_name):
+                continue
+            for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+                findings.append(dataclasses.replace(finding, path=path_name))
         names = _git_output("diff", "--cached", "--name-status")
         binary_count = 0
         for row in names.splitlines():
-            path_name = row.split("\t")[-1]
+            status, _, path_name = row.partition("\t")
+            if status == "D":
+                continue
             if Path(path_name).suffix.lower() in _BINARY_SUFFIXES:
                 binary_count += 1
                 continue
@@ -696,9 +726,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.exclude_remote and ".." not in args.commits:
             # Fallback for a first push: scan exactly the commits the named remote's
             # tracking refs do not already carry, per commit so a diverged set works.
-            new_shas = _git_output(
-                "rev-list", args.commits, "--not", f"--remotes={args.exclude_remote}"
-            ).split()
+            rev_list = subprocess.run(
+                ["git", "rev-list", args.commits, "--not", f"--remotes={args.exclude_remote}"],
+                capture_output=True,
+                check=False,
+            )
+            if rev_list.returncode != 0:
+                print(
+                    f"cannot resolve {args.commits} against --remotes={args.exclude_remote}",
+                    file=sys.stderr,
+                )
+                return 2
+            new_shas = rev_list.stdout.decode("utf-8", errors="replace").split()
             if not new_shas:
                 return 0
             messages = "\n".join(
@@ -714,7 +753,7 @@ def main(argv: list[str] | None = None) -> int:
                         continue
                     for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
                         findings.append(dataclasses.replace(finding, path=path_name))
-                for path_name in _added_commit_paths(sha + "^", sha):
+                for path_name in _added_commit_paths(sha):
                     findings.extend(
                         scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
                     )
@@ -723,27 +762,29 @@ def main(argv: list[str] | None = None) -> int:
         resolution = subprocess.run(
             ["git", "rev-parse", "--verify", base], capture_output=True, check=False
         )
-        if resolution.returncode != 0:
+        head_resolution = subprocess.run(
+            ["git", "rev-parse", "--verify", head], capture_output=True, check=False
+        )
+        if resolution.returncode != 0 or head_resolution.returncode != 0:
             print(f"range {base}..{head} does not resolve", file=sys.stderr)
             return 2
         messages = _git_output("log", f"{base}..{head}", "--format=%B")
         findings.extend(
             scan_text(messages, terms=terms, layers=layers, analyzer=analyzer, vocabulary=vocabulary)
         )
-        added = _parse_added(
-            _git_output(
-                "diff", f"{base}..{head}", "--no-ext-diff", "--no-color", "--no-textconv", "-U0"
-            )
-        )
-        for path_name, line_no, content in added:
-            if _is_own_definition(path_name):
-                continue
-            for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
-                findings.append(dataclasses.replace(finding, path=path_name))
-        for path_name in _added_commit_paths(base, head):
-            findings.extend(
-                scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
-            )
+        # Per commit, like the fallback: a line added in one commit and removed in a
+        # later commit of the same push still reaches public history in that commit.
+        for sha in _git_output("rev-list", f"{base}..{head}").split():
+            added = _parse_added(_git_output("show", "-U0", "--format=", sha))
+            for path_name, line_no, content in added:
+                if _is_own_definition(path_name):
+                    continue
+                for finding in scan_text(content, terms=terms, layers=layers - {2}, analyzer=None, base=line_no):
+                    findings.append(dataclasses.replace(finding, path=path_name))
+            for path_name in _added_commit_paths(sha):
+                findings.extend(
+                    scan_text(normalize_text(path_name), terms=terms, layers=layers - {2}, analyzer=None, base=0)
+                )
     else:
         parser.print_usage(sys.stderr)
         return 2
