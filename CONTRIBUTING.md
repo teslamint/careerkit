@@ -108,6 +108,12 @@ make install-hooks
   exit 2로 실패해 원인을 이름으로 말한다.
 - `post-merge`, `post-rewrite`, `post-checkout` 훅이 레이어 2의 어휘 캐시를
   차단 경로 밖에서 갱신한다.
+- 첫 푸시(리모트에 아직 이 브랜치의 커밋이 없을 때)는 `--exclude-remote`로
+  해당 리모트의 트래킹 레퍼가 이미 실은 커밋을 제외하고 정확히 새 커밋만 스캔한다.
+- 가드의 정의 파일 자체(`src/careerkit/publish_guard.py`와 두 계약 테스트)는
+  규칙 패턴을 소스 텍스트로 담고 있어서, 내용 스캔에서는 정확 경로 일치로만
+  제외된다. 다른 이름으로 복사한 파일은 여전히 스캔되며, 커밋 메시지는
+  어디에서도 제외되지 않는다.
 - 선택 분석기(`uv sync --extra analyzer`)를 설치하면 형태소 계층도 활성화된다.
   설치하지 않으면 스캔 시 stderr에 "analyzer inactive" 한 줄이 뜨고 나머지 계층이
   종료 코드를 결정한다.
