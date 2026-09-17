@@ -173,6 +173,10 @@ class CLIProvider:
             if not output:
                 errors.append(self._record(provider, f"{provider}: returned empty output"))
                 continue
+            refusal = _cli_limit_refusal(provider, output)
+            if refusal:
+                errors.append(self._record(provider, refusal))
+                continue
             self._append(provider, "ok")
             return provider, output
 
@@ -352,6 +356,27 @@ def is_codex_exec_command(cmd: list[str]) -> bool:
 
 def should_capture_codex_last_message(cmd: list[str]) -> bool:
     return is_codex_exec_command(cmd) and "--output-last-message" not in cmd and "-o" not in cmd
+
+
+_CLI_LIMIT_MARKERS = ("you've hit your", "please run /login")
+_CLI_LIMIT_NOTICE_MAX_CHARS = 400
+
+
+def _cli_limit_refusal(provider: str, output: str) -> str | None:
+    """Classify a CLI exhaustion notice that exits 0 with plain text instead of JSON.
+
+    A provider answering with a short limit or login notice has not produced an
+    assessment, so the chain moves on instead of feeding the notice to the
+    contract parser. Only short notices match; long output that merely mentions
+    a limit stays an assessment payload.
+    """
+    lowered = output.lower()
+    if len(lowered) > _CLI_LIMIT_NOTICE_MAX_CHARS:
+        return None
+    for marker in _CLI_LIMIT_MARKERS:
+        if marker in lowered:
+            return f"{provider}: {output[:MAX_FALLBACK_REASON_CHARS].rstrip()}"
+    return None
 
 
 def classify_provider_error(provider: str, detail: str, *, redactions: tuple[str, ...] = ()) -> str:

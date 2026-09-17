@@ -231,6 +231,34 @@ def test_run_aggregates_empty_content_error(
         provider.run("prompt", timeout=5)
 
 
+def test_run_treats_cli_limit_notice_as_provider_failure(monkeypatch) -> None:
+    monkeypatch.setattr(cli_provider, "resolve_commands", lambda env: [("claude", ["claude"])])
+
+    def limited(*args):
+        return 0, "You've hit your weekly limit · resets Sep 22 at 12pm (Asia/Seoul)", ""
+
+    monkeypatch.setattr(cli_provider, "run_provider_command", limited)
+    install_urlopen(monkeypatch, {"message": {"content": "결과", "thinking": "생각"}})
+
+    provider = CLIProvider(environment={})
+    assert provider.run("prompt", timeout=5) == ("ollama", "결과")
+
+
+def test_run_keeps_long_output_mentioning_a_limit(monkeypatch) -> None:
+    monkeypatch.setattr(cli_provider, "resolve_commands", lambda env: [("claude", ["claude"])])
+
+    def claims_ok(*args):
+        pad = "x" * 500
+        return 0, '{"verdict": "지원 보류", "note": "you' + "'" + 've hit your", "pad": "' + pad + '"}', ""
+
+    monkeypatch.setattr(cli_provider, "run_provider_command", claims_ok)
+    install_urlopen(monkeypatch, {"message": {"content": "ollama-result", "thinking": ""}})
+    provider = CLIProvider(environment={})
+    label, output = provider.run("prompt", timeout=5)
+    assert label == "claude"
+    assert output.startswith('{"verdict"')
+
+
 def test_run_reports_invalid_num_ctx_without_calling_ollama(
     monkeypatch: pytest.MonkeyPatch, no_cli: None
 ) -> None:
