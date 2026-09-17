@@ -19,8 +19,17 @@ careerkit
 │   ├── adapters            # platforms, storage, config, external tools
 │   ├── console             # loopback-only review UI and controlled status writes
 │   └── cli.py              # career-jobs composition root
+├── publish_guard.py        # deterministic publication de-identification gate
 └── workspace.py            # proven cross-product workspace discovery only
 ```
+
+The de-identification gate is a publication boundary, not a product: layer 1 structural
+patterns, layer 2 Korean morphology subtracted by the merge-base tree's vocabulary, and
+layer 3 reading an untracked term list from the private workspace store at run time.
+It scans commit messages and added lines on the commit, index, and push paths; pull-request
+and issue bodies stay outside because git never sees them (a human scans them with
+`--message` before posting). The guard's own definition files and their tests are exempt
+from content scans by exact path; messages are scanned everywhere.
 
 Dependency rules:
 
