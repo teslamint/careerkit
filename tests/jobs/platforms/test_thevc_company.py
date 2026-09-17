@@ -18,10 +18,10 @@ from careerkit.jobs.adapters.platforms.thevc import (
 SAMPLE_API_RESPONSE = {
     "name": "테크베이스",
     "nameEn": "TECHBASE",
-    "foundedOn": "2017-05-22T15:00:00.000Z",
+    "foundedOn": "2016-02-18T15:00:00.000Z",
     "corpType": "주식회사",
     "status": "비상장",
-    "address": "서울특별시 강남구 역삼로7길 5",
+    "address": "서울특별시 서초구 서초대로 10",
     "website": "http://techbase.com",
     "members": [
         {
@@ -31,28 +31,28 @@ SAMPLE_API_RESPONSE = {
             "isFounder": True,
         }
     ],
-    "relatedKeywords": ["AI기술", "인공지능", "고객센터"],
+    "relatedKeywords": ["AI서비스", "에이전트", "자동화"],
     "products": [
-        {"name": "데이터커넥터", "desc": "AI 기반 고객센터 솔루션"},
+        {"name": "데이터커넥터", "desc": "AI 기반 문서 자동화 솔루션"},
         {"name": "AI에이전트", "desc": ""},
     ],
     "lastRound": "Series B",
-    "lastFundedOn": "2021-11-08T15:00:00.000Z",
+    "lastFundedOn": "2020-11-08T15:00:00.000Z",
     "totalFundingCount": 4,
     "investorCount": {"total": 9, "person": 0, "organization": 9},
     "fundings": [
         {
-            "fundedOn": "2020-06-15T15:00:00.000Z",
+            "fundedOn": "2019-03-12T15:00:00.000Z",
             "round": "Series A",
             "type": "시리즈 A",
-            "totalAmount": 19646,
+            "totalAmount": 15234,
             "investors": [{"body": {"name": {"requirements": ["PLAN:BASIC"]}}}],
         },
         {
-            "fundedOn": "2021-11-08T15:00:00.000Z",
+            "fundedOn": "2020-11-08T15:00:00.000Z",
             "round": "Series B",
             "type": "시리즈 B",
-            "totalAmount": 61745,
+            "totalAmount": 42812,
             "investors": [{"body": {"name": {"requirements": ["PLAN:BASIC"]}}}],
         },
     ],
@@ -125,10 +125,10 @@ class TestThevcCompanyHttp:
 
         assert info.name == "테크베이스"
         assert info.name_en == "TECHBASE"
-        assert info.founded_on == "2017-05-23"
+        assert info.founded_on == "2016-02-19"
         assert info.corp_type == "주식회사"
         assert info.status == "비상장"
-        assert info.address == "서울특별시 강남구 역삼로7길 5"
+        assert info.address == "서울특별시 서초구 서초대로 10"
         assert info.website == "http://techbase.com"
         assert info.slug == "techbase"
 
@@ -144,7 +144,7 @@ class TestThevcCompanyHttp:
         info = thevc_company_http("techbase", http=client)
 
         assert info.last_round == "Series B"
-        assert info.last_funded_on == "2021-11-09"
+        assert info.last_funded_on == "2020-11-09"
         assert info.total_funding_count == 4
         assert len(info.funding_rounds) == 2
         assert info.funding_rounds[0].round_name == "Series A"
@@ -193,8 +193,8 @@ class TestThevcCompanyHttp:
         client = _FakeHttpClient(SAMPLE_API_RESPONSE)
         info = thevc_company_http("techbase", http=client)
 
-        assert info.keywords == ("AI기술", "인공지능", "고객센터")
-        assert "데이터커넥터 — AI 기반 고객센터 솔루션" in info.products
+        assert info.keywords == ("AI서비스", "에이전트", "자동화")
+        assert "데이터커넥터 — AI 기반 문서 자동화 솔루션" in info.products
         assert "AI에이전트" in info.products
 
     def test_404_raises_value_error(self):
@@ -248,21 +248,21 @@ class TestThevcCompanyHttp:
         assert info.keywords == ()
 
     def test_date_kst_adjustment(self):
-        response = {**SAMPLE_API_RESPONSE, "foundedOn": "2017-05-22T15:00:00.000Z"}
+        response = {**SAMPLE_API_RESPONSE, "foundedOn": "2016-02-18T15:00:00.000Z"}
         client = _FakeHttpClient(response)
         info = thevc_company_http("test", http=client)
 
-        assert info.founded_on == "2017-05-23"
+        assert info.founded_on == "2016-02-19"
 
     @pytest.mark.parametrize(
         ("utc_timestamp", "expected_kst_date"),
         [
-            ("2017-05-22T14:59:59.999Z", "2017-05-22"),  # KST 23:59:58.999 — same day
-            ("2017-05-22T15:00:00.000Z", "2017-05-23"),  # KST 00:00:00 — next day
-            ("2017-05-22T16:00:00Z", "2017-05-23"),  # KST 01:00 — next day
-            ("2017-05-22T23:59:00Z", "2017-05-23"),  # KST 08:59 next day
-            ("2017-05-22T01:00:00Z", "2017-05-22"),  # KST 10:00 — same day
-            ("2017-05-22T00:00:00Z", "2017-05-22"),  # KST 09:00 — same day
+            ("2016-02-18T14:59:59.999Z", "2016-02-18"),  # KST 23:59:58.999 — same day
+            ("2016-02-18T15:00:00.000Z", "2016-02-19"),  # KST 00:00:00 — next day
+            ("2016-02-18T16:00:00Z", "2016-02-19"),  # KST 01:00 — next day
+            ("2016-02-18T23:59:00Z", "2016-02-19"),  # KST 08:59 next day
+            ("2016-02-18T01:00:00Z", "2016-02-18"),  # KST 10:00 — same day
+            ("2016-02-18T00:00:00Z", "2016-02-18"),  # KST 09:00 — same day
         ],
     )
     def test_date_kst_day_boundary(self, utc_timestamp: str, expected_kst_date: str):
@@ -300,8 +300,8 @@ class TestFormatThevcCompanyMarkdown:
         info = thevc_company_http("techbase", http=client)
         md = format_thevc_company_markdown(info)
 
-        assert "19646" not in md
-        assert "61745" not in md
+        assert "15234" not in md
+        assert "42812" not in md
         assert "totalAmount" not in md
 
     def test_source_url(self):

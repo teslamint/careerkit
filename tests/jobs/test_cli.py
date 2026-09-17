@@ -3472,17 +3472,17 @@ def test_cli_company_fetch_thevc_prints_json_with_lists(monkeypatch, capsys) -> 
     fake_info = thevc_mod.TheVCCompanyInfo(
         name='테크베이스',
         name_en='TECHBASE',
-        founded_on='2017-05-23',
+        founded_on='2016-02-19',
         ceo_name='김한길',
         ceo_is_founder=True,
-        keywords=('AI기술', '인공지능'),
+        keywords=('AI서비스', '에이전트'),
         products=('데이터커넥터', 'AI에이전트'),
         last_round='Series B',
-        last_funded_on='2021-11-09',
+        last_funded_on='2020-11-09',
         total_funding_count=4,
         investor_count_total=9,
         funding_rounds=(
-            thevc_mod.TheVCFundingRound(round_name='Series B', funded_on='2021-11-09', funding_type='시리즈 B'),
+            thevc_mod.TheVCFundingRound(round_name='Series B', funded_on='2020-11-09', funding_type='시리즈 B'),
         ),
         slug='techbase',
     )
@@ -3492,11 +3492,11 @@ def test_cli_company_fetch_thevc_prints_json_with_lists(monkeypatch, capsys) -> 
     data = json.loads(capsys.readouterr().out)
     assert data['name'] == '테크베이스'
     assert data['slug'] == 'techbase'
-    assert data['last_funded_on'] == '2021-11-09'
-    assert data['keywords'] == ['AI기술', '인공지능']
+    assert data['last_funded_on'] == '2020-11-09'
+    assert data['keywords'] == ['AI서비스', '에이전트']
     assert data['products'] == ['데이터커넥터', 'AI에이전트']
     assert data['funding_rounds'] == [
-        {'round_name': 'Series B', 'funded_on': '2021-11-09', 'funding_type': '시리즈 B'}
+        {'round_name': 'Series B', 'funded_on': '2020-11-09', 'funding_type': '시리즈 B'}
     ]
 
 
