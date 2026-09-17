@@ -203,6 +203,31 @@ def test_required_semantic_gate_preserves_record_when_validator_is_missing(tmp_p
     assert after.screening_markdown == before.screening_markdown
 
 
+def test_conditions_accept_several_requirement_ids_in_one_marker(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    workspace, _, stored = _create_record(tmp_path)
+    assert workspace is not None
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    candidate_context = "[source: private/profile/skills-job.md] Spring Boot"
+    raw = json.loads(_assessment_json(manifest, verdict="지원 보류"))
+    raw["matches"] = [
+        {"id": "required-001", "match": "부분", "evidence": "plausible [source: private/profile/skills-job.md] [quote: Spring Boot]"},
+        {"id": "required-002", "match": "없음", "evidence": "possible: Kafka 직접 근거 없음"},
+        {"id": "preferred-001", "match": "없음", "evidence": "possible: AWS 직접 근거 없음"},
+    ]
+    raw["screening_summary"] = ["필수 2항목: 충족 0, 부분 1, 없음 1", "우대 1항목: 충족 0, 부분 0, 없음 1"]
+    raw["reasons"] = [
+        "추천 전환 조건: [requirement: required-001, required-002] 충족 확인",
+        "비추천 확정 조건: [requirement: required-001, required-002] 미충족 확정",
+        "서류 검토에서 직접 경험 확인 필요",
+    ]
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    assert assessment_quality_issues(assessment, manifest, candidate_context) == ()
+
+
 @pytest.mark.parametrize("defect", ["count", "citation", "quote", "grade", "condition", "missing-condition", "valid", "borrowed-quote", "extra-claim", "unstructured-condition", "extra-condition", "post-demotion-count"])
 def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> None:
     workspace, repository, stored = _create_record(tmp_path)

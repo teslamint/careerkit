@@ -121,13 +121,18 @@ def assessment_quality_issues(
     targets = {item.id: item for item in (*manifest.parents, *manifest.leaves)}
     values = {**parent_matches, **matches}
     for line in (*promote, *reject):
-        references = _CONDITION_ID.findall(line)
+        references = [
+            item_id.strip()
+            for marker in _CONDITION_ID.findall(line)
+            for item_id in marker.split(",")
+            if item_id.strip()
+        ]
         label, _, body = line.partition(":")
         expected = "충족 확인" if label == "추천 전환 조건" else "미충족 확정"
         if not references or _CONDITION_ID.sub("", body).strip() != expected:
             issues.append("condition-manual-review-required")
         for item_id in references:
-            item = targets.get(item_id.strip())
+            item = targets.get(item_id)
             if item is None or item.kind != RequirementKind.REQUIRED or values.get(item.id) == "충족":
                 issues.append("condition-requirement-conflict")
     return tuple(dict.fromkeys(issues))
