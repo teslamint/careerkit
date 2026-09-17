@@ -61,10 +61,6 @@ from careerkit.resume.domain.portfolio_evidence import (
 
 _PROPOSAL_EVIDENCE_REFERENCE = re.compile(r"\[Evidence:\s*([^\]]+)\]")
 _PROPOSAL_EVIDENCE_REFERENCE_AT_LINE_END = re.compile(r"(?:\[Evidence:\s*[^\]]+\]\s*)+$")
-_PROPOSAL_REVIEW_BOUNDARY_DISCLAIMER = (
-    "This draft replaces unsupported precision with ledger-backed observations. "
-    "Apply only after user review of each evidence reference."
-)
 _PROPOSAL_STRUCTURAL_HEADINGS = frozenset(
     {
         "## evidence-grounded summary",
@@ -332,9 +328,9 @@ def _validate_proposal_text(
         if stripped.startswith("#") and stripped.lower() in structural_headings:
             review_boundary = stripped.lower() == "## review boundary"
             continue
-        if review_boundary and stripped == _PROPOSAL_REVIEW_BOUNDARY_DISCLAIMER:
+        if review_boundary and review_path is not None:
             continue
-        if review_path is None and not _PROPOSAL_EVIDENCE_REFERENCE_AT_LINE_END.search(stripped):
+        if not _PROPOSAL_EVIDENCE_REFERENCE_AT_LINE_END.search(stripped):
             raise ValueError("proposal concrete claim requires an evidence reference")
 
 

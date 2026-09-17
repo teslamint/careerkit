@@ -2293,7 +2293,7 @@ def test_revision_proposal_uses_review_sidecar_and_preserves_applied_history(tmp
         root,
         "proposal-2",
         source_path,
-        "clean revised narrative\n",
+        "clean revised narrative [Evidence: e1]\n",
         ("e1",),
         review_path=review_path,
         supersedes="proposal-1",
@@ -2304,7 +2304,7 @@ def test_revision_proposal_uses_review_sidecar_and_preserves_applied_history(tmp
     (root / "proposals/proposal-2.md").write_text(render_proposal(second), encoding="utf-8")
     second = apply_proposal(root, second)
 
-    assert source.read_text(encoding="utf-8") == "clean revised narrative\n"
+    assert source.read_text(encoding="utf-8") == "clean revised narrative [Evidence: e1]\n"
     assert load_proposal(root / "proposals/proposal-1.md").proposed_text == "first [Evidence: e1]\n"
     portfolio_research._validate_proposal_revisions(root, (first, second))
     review.write_text("<!-- portfolio-review-only -->\nEvidence: e1\nchanged\n", encoding="utf-8")
@@ -2339,7 +2339,7 @@ def test_superseded_draft_allows_one_clean_replacement_proposal(tmp_path: Path) 
         root,
         "proposal-2",
         source_path,
-        "clean replacement\n",
+        "clean replacement [Evidence: e1]\n",
         ("e1",),
         review_path=review_path,
     )
@@ -2401,6 +2401,62 @@ def test_prepare_proposal_supersedes_rerun_excludes_its_own_record(tmp_path: Pat
 
     assert isinstance(again, NarrativeProposal)
     assert again == second
+
+
+def test_prepare_proposal_review_file_requires_line_citations_outside_boundary(tmp_path: Path) -> None:
+    root = tmp_path / "private" / "portfolio-research"
+    source_path = Path("companies/c1/portfolios/p.md")
+    source = root.parent / source_path
+    source.parent.mkdir(parents=True)
+    source.write_text("before\n", encoding="utf-8")
+    evidence = EvidenceRecord(
+        "e1", "context-1", "project-1", "work-1", ("period-1",),
+        ("logical-1",), ("a" * 40,), "yes", "yes", "problem",
+        "technology", "contribution", "verification", "outcome", (),
+        (EvidenceLink("logical-1", "a" * 40, Path("src/parser.py"), "parse", "contribution"),),
+        "main=" + "a" * 40, "d" * 64, "complete", "none",
+    )
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence/e1.md").write_text(render_evidence(evidence), encoding="utf-8")
+    _write_proposal_authority(root, source_path)
+    review_path = Path("reviews/proposal-1.md")
+    review = root / review_path
+    review.parent.mkdir()
+    review.write_text("<!-- portfolio-review-only -->\nEvidence: e1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="concrete claim requires an evidence reference"):
+        prepare_proposal(root, "proposal-1", source_path, "uncited narrative\n", ("e1",), review_path=review_path)
+
+
+def test_prepare_proposal_review_boundary_section_is_the_enumerated_exemption(tmp_path: Path) -> None:
+    root = tmp_path / "private" / "portfolio-research"
+    source_path = Path("companies/c1/portfolios/p.md")
+    source = root.parent / source_path
+    source.parent.mkdir(parents=True)
+    source.write_text("before\n", encoding="utf-8")
+    evidence = EvidenceRecord(
+        "e1", "context-1", "project-1", "work-1", ("period-1",),
+        ("logical-1",), ("a" * 40,), "yes", "yes", "problem",
+        "technology", "contribution", "verification", "outcome", (),
+        (EvidenceLink("logical-1", "a" * 40, Path("src/parser.py"), "parse", "contribution"),),
+        "main=" + "a" * 40, "d" * 64, "complete", "none",
+    )
+    (root / "evidence").mkdir(parents=True)
+    (root / "evidence/e1.md").write_text(render_evidence(evidence), encoding="utf-8")
+    _write_proposal_authority(root, source_path)
+    review_path = Path("reviews/proposal-1.md")
+    review = root / review_path
+    review.parent.mkdir()
+    review.write_text("<!-- portfolio-review-only -->\nEvidence: e1\n", encoding="utf-8")
+    proposed = (
+        "## Evidence-grounded summary\n"
+        "## Review Boundary\n"
+        "claim-to-evidence mapping for this draft lives in reviews/proposal-1.md\n"
+    )
+
+    proposal = prepare_proposal(root, "proposal-1", source_path, proposed, ("e1",), review_path=review_path)
+
+    assert proposal.proposed_text == proposed
 
 
 def test_prepare_proposal_rejects_non_narrative_source(tmp_path: Path) -> None:
