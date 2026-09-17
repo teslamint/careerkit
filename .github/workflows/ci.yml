@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
@@ -29,6 +31,24 @@ jobs:
         run: UV_CACHE_DIR=.uv-cache uv run lint-imports
       - name: Reviewed unused-code gate
         run: UV_CACHE_DIR=.uv-cache uv run vulture src tests/static/vulture_whitelist.py --min-confidence 60
+      - name: Publish de-identification guard
+        if: github.event_name == 'pull_request'
+        run: |
+          UV_CACHE_DIR=.uv-cache uv run python -m careerkit.publish_guard \
+            --commits "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --layers "${{ vars.GUARD_LAYERS || '1,2' }}" --no-evidence
+      - name: Publish de-identification guard (push to main)
+        if: github.event_name == 'push'
+        run: |
+          if git rev-parse -q --verify "${{ github.event.before }}^{commit}" >/dev/null; then
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          else
+            echo "::notice::pushed range unresolvable; scanning the pushed commit only"
+            RANGE="${{ github.sha }}^..${{ github.sha }}"
+          fi
+          UV_CACHE_DIR=.uv-cache uv run python -m careerkit.publish_guard \
+            --commits "$RANGE" \
+            --layers "${{ vars.GUARD_LAYERS || '1,2' }}" --no-evidence
       - uses: actions/setup-node@v7
         with:
           node-version: '24'

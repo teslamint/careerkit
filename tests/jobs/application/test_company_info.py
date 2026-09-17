@@ -248,9 +248,9 @@ def test_listed_company_detected_by_kospi_keyword(tmp_path: Path) -> None:
 
 def test_negative_keyword_in_body_does_not_override_startup(tmp_path: Path) -> None:
     """'대기업' in company description body must not flip is_startup."""
-    company_file = tmp_path / "medistream.md"
+    company_file = tmp_path / "integrations-labs.md"
     company_file.write_text(
-        "# 인티그레이션\n\n"
+        "# 테스트사\n\n"
         "## 기업 정보\n\n"
         "| 항목 | 내용 |\n|------|------|\n"
         "| 설립 | 2019년 |\n"
@@ -261,7 +261,7 @@ def test_negative_keyword_in_body_does_not_override_startup(tmp_path: Path) -> N
         "| 누적 투자금 | 661억원 |\n\n"
         "## 회사 소개\n\n"
         "스타트업/대기업 출신 인력이 포함되어 있습니다.\n\n"
-        "---\n*출처:*\n- https://thevc.kr/integration\n",
+        "---\n*출처:*\n- https://thevc.kr/integrations-labs\n",
         encoding="utf-8",
     )
 

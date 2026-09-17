@@ -21,6 +21,9 @@ browser = [
 semantic = [
     "sentence-transformers>=5.0.0",
 ]
+analyzer = [
+    "kiwipiepy>=0.23.0",
+]
 
 [project.scripts]
 career-resume = "careerkit.resume.cli:main"

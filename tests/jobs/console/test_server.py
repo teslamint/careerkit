@@ -555,7 +555,7 @@ def test_patch_rejection_matrix_preserves_manifest_bytes(tmp_path: Path) -> None
                 ),
                 (
                     "missing record",
-                    "/api/jobs/wanted/404/application-status",
+                    "/api/jobs/wanted/999999999/application-status",
                     valid_body,
                     valid_headers,
                     False,

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Publish de-identification guard: added lines and added paths of the index only.
+# Removed lines are already published; scanning them would block the replacing commit.
+exec uv run python -m careerkit.publish_guard --staged --no-evidence ${GUARD_LAYERS:+--layers "$GUARD_LAYERS"}

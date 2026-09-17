@@ -33,7 +33,7 @@ SAMPLE_API_RESPONSE = {
     ],
     "relatedKeywords": ["AI서비스", "에이전트", "자동화"],
     "products": [
-        {"name": "데이터커넥터", "desc": "AI 기반 자동화 솔루션"},
+        {"name": "데이터커넥터", "desc": "AI 기반 문서 자동화 솔루션"},
         {"name": "AI에이전트", "desc": ""},
     ],
     "lastRound": "Series B",
@@ -194,7 +194,7 @@ class TestThevcCompanyHttp:
         info = thevc_company_http("techbase", http=client)
 
         assert info.keywords == ("AI서비스", "에이전트", "자동화")
-        assert "데이터커넥터 — AI 기반 자동화 솔루션" in info.products
+        assert "데이터커넥터 — AI 기반 문서 자동화 솔루션" in info.products
         assert "AI에이전트" in info.products
 
     def test_404_raises_value_error(self):
@@ -257,12 +257,12 @@ class TestThevcCompanyHttp:
     @pytest.mark.parametrize(
         ("utc_timestamp", "expected_kst_date"),
         [
-            ("2017-05-22T14:59:59.999Z", "2017-05-22"),  # KST 23:59:58.999 — same day
+            ("2016-02-18T14:59:59.999Z", "2016-02-18"),  # KST 23:59:58.999 — same day
             ("2016-02-18T15:00:00.000Z", "2016-02-19"),  # KST 00:00:00 — next day
-            ("2017-05-22T16:00:00Z", "2016-02-19"),  # KST 01:00 — next day
-            ("2017-05-22T23:59:00Z", "2016-02-19"),  # KST 08:59 next day
-            ("2017-05-22T01:00:00Z", "2017-05-22"),  # KST 10:00 — same day
-            ("2017-05-22T00:00:00Z", "2017-05-22"),  # KST 09:00 — same day
+            ("2016-02-18T16:00:00Z", "2016-02-19"),  # KST 01:00 — next day
+            ("2016-02-18T23:59:00Z", "2016-02-19"),  # KST 08:59 next day
+            ("2016-02-18T01:00:00Z", "2016-02-18"),  # KST 10:00 — same day
+            ("2016-02-18T00:00:00Z", "2016-02-18"),  # KST 09:00 — same day
         ],
     )
     def test_date_kst_day_boundary(self, utc_timestamp: str, expected_kst_date: str):
