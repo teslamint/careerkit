@@ -1122,6 +1122,26 @@ def test_fallback_publication_preserves_an_existing_cap(tmp_path: Path) -> None:
     assert repository.get_metadata(JobKey("wanted", "100004")).record.verdict_capped is True
 
 
+def test_fallback_publication_does_not_replace_a_stored_assessment(tmp_path: Path) -> None:
+    workspace, repository, _ = _publish_initial_screening(tmp_path, provider_name="ollama", job_id="100014")
+    key = JobKey("wanted", "100014")
+    original = repository.get(key).screening_markdown
+
+    result = run_screening(
+        workspace=workspace,
+        jd=repository.get(key),
+        company_file=None,
+        dry_run=False,
+        llm_provider=FailingProvider(),
+        repository=repository,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot",
+    )
+
+    assert result.used_fallback is True
+    assert result.published is False
+    assert repository.get(key).screening_markdown == original
+
+
 def test_fallback_publication_is_withheld_when_a_strong_provider_is_required(
     tmp_path: Path,
 ) -> None:

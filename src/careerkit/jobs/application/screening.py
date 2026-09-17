@@ -31,6 +31,7 @@ from careerkit.jobs.application.screening_assessment import (
 from careerkit.jobs.application.storage_migration import extract_metadata_from_jd
 from careerkit.jobs.application.screening_quality import ScreeningQualityError, count_quality_issues, validate_assessment_quality
 from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
+from careerkit.jobs.domain.model import JobKey
 from careerkit.jobs.domain.verdict import (
     VERDICT_PRIORITY,
     parse_verdict_candidates,
@@ -440,6 +441,15 @@ def summarize_llm_error(exc: Exception) -> str:
     return first_line or "LLM 실행 오류"
 
 
+def _has_stored_assessment(repository: JDRecordRepository, key: JobKey) -> bool:
+    """Whether the record already holds a screening document a provider produced."""
+    path = repository.screening_path(key)
+    if path is None or not path.is_file():
+        return False
+    markdown = path.read_text(encoding="utf-8")
+    return bool(markdown.strip()) and not is_fallback_document(markdown)
+
+
 def build_fallback_output(jd: StoredJobRecord, jd_content: str, reason: str) -> str:
     metadata = extract_metadata_from_jd(jd_content)
     company = metadata.get("company")
@@ -714,6 +724,12 @@ def run_screening(
 
     screening_path = Path(jd.record.platform) / jd.record.job_id / "screening.md"
     withheld = require_strong_provider and (used_fallback or provider not in STRONG_PROVIDER_LABELS)
+    if used_fallback and not withheld and not dry_run and repository is not None:
+        # Revision pruning keeps only the newest document, so a fallback stub would
+        # destroy an assessment no provider can reproduce.
+        withheld = _has_stored_assessment(repository, jd.record.key)
+    if used_fallback and withheld and not dry_run and repository is not None:
+        verdict_capped = bool(repository.get_metadata(jd.record.key).record.verdict_capped)
     published = False
 
     if not dry_run and not withheld:
