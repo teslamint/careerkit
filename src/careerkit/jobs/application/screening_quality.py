@@ -124,7 +124,7 @@ def assessment_quality_issues(
         references = [
             item_id.strip()
             for marker in _CONDITION_ID.findall(line)
-            for item_id in marker.split(",")
+            for item_id in re.split(r"[,\s]+", marker)
             if item_id.strip()
         ]
         label, _, body = line.partition(":")
