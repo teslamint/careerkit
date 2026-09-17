@@ -72,6 +72,7 @@ _integer
 required_eval_gate
 calibrate_human_rubric
 grade_portfolio_eval_output
+supersede_draft
 compare_eval_results
 eval_activation_allowed
 render_manifest
