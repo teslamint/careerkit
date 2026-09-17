@@ -1551,6 +1551,7 @@ def test_build_services_loads_candidate_context_from_resume_sources(tmp_path: Pa
     company_dir.mkdir(parents=True)
     (profile_dir / 'summary-job.md').write_text('# Summary\nBackend evidence', encoding='utf-8')
     (profile_dir / 'education.md').write_text('# Education\n학사 졸업', encoding='utf-8')
+    (profile_dir / 'open-source.md').write_text('# Open Source\nMaintainer evidence', encoding='utf-8')
     (profile_dir / 'contact.md').write_text('private@example.com', encoding='utf-8')
     (company_dir.parent / 'profile.md').write_text('# Acme\nRole evidence', encoding='utf-8')
     (company_dir / 'platform.md').write_text('# Platform\nProject evidence', encoding='utf-8')
@@ -1561,6 +1562,7 @@ def test_build_services_loads_candidate_context_from_resume_sources(tmp_path: Pa
     assert 'Backend evidence' in context
     assert '학사 졸업' in context
     assert 'Role evidence' in context
+    assert 'Maintainer evidence' in context
     assert 'Project evidence' in context
     assert 'private@example.com' not in context
     automation = cast(AutomationService, services.automation)
