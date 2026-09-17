@@ -85,7 +85,7 @@ _SECTION_BOUNDARIES = {
     "회사소개",
     "기업소개",
 }
-_SOURCE_BULLET_RE = re.compile(r"^(?:[-*+•◦]\s*)+")
+_SOURCE_BULLET_RE = re.compile(r"^(?:[-*+•◦ㆍ]\s*)+")
 
 
 def _empty_sections() -> SaraminJDSections:
@@ -143,7 +143,11 @@ def _section_lines(fragment: str, target: str, *, from_detail: bool) -> list[str
             if clean:
                 formatted.append(f"- {clean}")
         return formatted
-    return [line for line in lines if _strip_source_bullet(line)]
+    return [
+        _SOURCE_BULLET_RE.sub("- ", line) if _SOURCE_BULLET_RE.match(line) else line
+        for line in lines
+        if _strip_source_bullet(line)
+    ]
 
 def _body_html(html: str, job_id: str) -> str:
     pattern = rf"detailContents_{re.escape(job_id)}\s*=\s*\{{\s*contents:\s*'([A-Za-z0-9+/=]+)'"

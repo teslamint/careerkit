@@ -3356,7 +3356,7 @@ def test_jobs_extraction_stage_saramin_plain_text_headings_build_manifest(tmp_pa
                     body_html=(
                         "<div>모집분야</div>"
                         "<div>📋 주요업무</div><div>• API 개발</div>"
-                        "<div>📋 자격요건</div><div>• Python 경험</div>"
+                        "<div>📋 자격요건</div><div>• Python 경험</div><div>ㆍ학사 졸업 이상</div>"
                         "<div>🏠 근무조건</div><div>• 정규직</div>"
                     ),
                     detail_pairs=(),
@@ -3369,11 +3369,12 @@ def test_jobs_extraction_stage_saramin_plain_text_headings_build_manifest(tmp_pa
 
     markdown = batch.records[0].jd_markdown
     assert _section_body(markdown, "주요 업무") == "- API 개발"
-    assert _section_body(markdown, "자격 요건") == "- Python 경험"
+    assert _section_body(markdown, "자격 요건") == "- Python 경험\n- 학사 졸업 이상"
     manifest = extract_requirement_manifest(markdown)
     assert [(item.text, item.kind) for item in manifest.parents] == [
         ("API 개발", RequirementKind.MAIN_DUTY),
         ("Python 경험", RequirementKind.REQUIRED),
+        ("학사 졸업 이상", RequirementKind.REQUIRED),
     ]
 
 
