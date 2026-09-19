@@ -170,6 +170,8 @@ class JDRecordRepository:
         screening_verdict: ScreeningVerdict | None = None,
         screening_provider: str | None = None,
         verdict_capped: bool | None = None,
+        expected_screening_provider: str | None = None,
+        expected_screening_sha256: str | None = None,
     ) -> StoredJobRecord:
         """Atomically publish screening content against the latest record metadata."""
         record_dir = self._record_dir(key)
@@ -177,6 +179,16 @@ class JDRecordRepository:
             raise JobRecordNotFound(f"Record not found: {key!r}")
         with self._locked(record_dir, exclusive=True):
             current = self._read_existing_locked(key, record_dir)
+            if expected_screening_provider is not None and (
+                current.record.screening_provider != expected_screening_provider
+            ):
+                raise RuntimeError("screening state conflict")
+            if expected_screening_sha256 is not None:
+                current_sha256 = hashlib.sha256(
+                    (current.screening_markdown or "").encode("utf-8")
+                ).hexdigest()
+                if current_sha256 != expected_screening_sha256:
+                    raise RuntimeError("screening state conflict")
             content = self._write_revision_content(
                 record_dir,
                 jd_markdown=current.jd_markdown,
