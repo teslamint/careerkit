@@ -563,6 +563,7 @@ def run_screening(
     repository: JDRecordRepository | None = None,
     candidate_context: str | None = None,
     require_strong_provider: bool = False,
+    selected_provider: str | None = None,
     semantic_validator: CalibratedSemanticValidator | None = None,
     require_semantic_validation: bool = False,
 ) -> ScreeningResult:
@@ -602,11 +603,13 @@ def run_screening(
 
     effective_local_llm_timeout = local_llm_timeout if local_llm_timeout is not None else llm_timeout
 
+    provider_kwargs = {"selected_provider": selected_provider} if selected_provider is not None else {}
     try:
         provider, raw_output = provider_runner.run(
             prompt,
             timeout=llm_timeout,
             local_timeout=effective_local_llm_timeout,
+            **provider_kwargs,
         )
     except Exception as exc:
         used_fallback = True
@@ -621,6 +624,7 @@ def run_screening(
                     _assessment_retry_prefix(str(first_error)) + prompt,
                     timeout=llm_timeout,
                     local_timeout=effective_local_llm_timeout,
+                    **provider_kwargs,
                 )
                 assessment = parse_screening_assessment(raw_output, filtered)
             except AssessmentContractError as retry_error:
