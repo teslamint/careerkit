@@ -63,6 +63,7 @@ class LLMProvider(Protocol):
         prompt: str,
         timeout: int,
         local_timeout: int | None = None,
+        selected_provider: str | None = None,
     ) -> tuple[str, str]:
         """Return the provider name and LLM output."""
         ...
@@ -78,6 +79,7 @@ class FakeProvider:
         prompt: str,
         timeout: int,
         local_timeout: int | None = None,
+        selected_provider: str | None = None,
     ) -> tuple[str, str]:
         return self.provider_name, self.output
 
@@ -119,6 +121,7 @@ class CLIProvider:
         prompt: str,
         timeout: int,
         local_timeout: int | None = None,
+        selected_provider: str | None = None,
     ) -> tuple[str, str]:
         env = build_provider_env(self.environment)
         redactions = collect_redactions(env)
@@ -127,7 +130,16 @@ class CLIProvider:
         # No reset here: the structural-retry path calls run() a second time on this
         # same instance, and clearing would discard the first call's chain — the very
         # failures this telemetry exists to show. run_screening resets per screening.
-        for provider, cmd in resolve_commands(self.environment):
+        commands = resolve_commands(self.environment)
+        if selected_provider is not None:
+            commands = [
+                (provider, cmd)
+                for provider, cmd in commands
+                if provider == selected_provider
+            ]
+            if not commands:
+                raise RuntimeError(f"{selected_provider}: command not available")
+        for provider, cmd in commands:
             try:
                 with _observe_attempt(provider, timeout) as attempt:
                     returncode, stdout, stderr = run_provider_command(
@@ -180,6 +192,8 @@ class CLIProvider:
             self._append(provider, "ok")
             return provider, output
 
+        if selected_provider is not None:
+            raise RuntimeError("; ".join(errors) or f"{selected_provider}: unavailable")
         try:
             local = resolve_local_llm(self.environment)
         except LocalLLMConfigError as exc:
