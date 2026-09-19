@@ -63,7 +63,6 @@ class LLMProvider(Protocol):
         prompt: str,
         timeout: int,
         local_timeout: int | None = None,
-        selected_provider: str | None = None,
     ) -> tuple[str, str]:
         """Return the provider name and LLM output."""
         ...

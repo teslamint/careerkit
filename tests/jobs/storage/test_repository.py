@@ -950,6 +950,7 @@ def test_screening_publication_rejects_changed_fallback_provider(tmp_path: Path)
     )
 
     original = repo.get(key)
+    assert original.screening_markdown is not None
     repo.update_screening_result(
         key,
         screening_markdown="# fallback",
@@ -981,6 +982,7 @@ def test_screening_publication_rejects_changed_posting_status(tmp_path: Path) ->
         screening_provider="fallback",
     )
     original = repo.get(key)
+    assert original.screening_markdown is not None
     repo.update_status(key, posting_status=PostingStatus.CLOSED)
 
     with pytest.raises(ScreeningStateConflict):

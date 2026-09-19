@@ -1930,9 +1930,15 @@ def test_rescreen_one_passes_selected_provider(monkeypatch, tmp_path: Path) -> N
         services,
         dry_run=True,
         selected_provider='claude',
+        expected_posting_status=PostingStatus.ACTIVE,
+        expected_screening_provider='fallback',
+        expected_screening_sha256='a' * 64,
     )
 
     assert captured['selected_provider'] == 'claude'
+    assert captured['expected_posting_status'] is PostingStatus.ACTIVE
+    assert captured['expected_screening_provider'] == 'fallback'
+    assert captured['expected_screening_sha256'] == 'a' * 64
 
 
 def test_cli_console_serve_uses_loopback_server(monkeypatch, capsys, tmp_path: Path) -> None:
@@ -2829,6 +2835,36 @@ def test_queue_fallback_limit_applies_after_closed_filter(monkeypatch, capsys, t
     assert payload['items'][0]['job_key'] == 'wanted:2'
 
 
+def test_queue_fallback_rescreen_snapshot_requires_provider_and_limit(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+    monkeypatch.setattr(
+        cli, 'resolve_commands',
+        lambda environment=None: [('claude', ['claude', '--print'])],
+    )
+    monkeypatch.setattr(
+        cli, 'run_screening',
+        lambda **kwargs: _screening(provider='claude', published=False, used_fallback=True),
+    )
+    snapshot_path = tmp_path / 'fallback-snapshot.json'
+    snapshot_path.write_text(
+        json.dumps(cli._build_fallback_snapshot(cast(JDRecordRepository, repository))),
+        encoding='utf-8',
+    )
+    result_path = tmp_path / 'fallback-result.json'
+
+    assert cli.main([
+        'queue', 'fallback', '--rescreen-snapshot', str(snapshot_path),
+        '--provider', 'claude', '--max-entries', '1', '--result', str(result_path), '--json',
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['digest'] == cli._build_fallback_snapshot(cast(JDRecordRepository, repository))['digest']
+    assert json.loads(result_path.read_text(encoding='utf-8'))['items'][0]['outcome'] == 'still_fallback'
+
+
 def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path: Path) -> None:
     repository = _FallbackRepository([
         (_fallback_record('2'), _FALLBACK_DOC),
@@ -2837,7 +2873,7 @@ def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path:
     ])
     _fallback_cli(monkeypatch, tmp_path, repository)
 
-    snapshot = cli._build_fallback_snapshot(repository)
+    snapshot = cli._build_fallback_snapshot(cast(JDRecordRepository, repository))
 
     assert [entry['job_key'] for entry in snapshot['entries']] == ['wanted:1', 'wanted:2']
     assert all(entry['posting_status'] == 'active' for entry in snapshot['entries'])

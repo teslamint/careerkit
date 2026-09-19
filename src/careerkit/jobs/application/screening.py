@@ -5,7 +5,7 @@ import importlib.resources as resources
 import json
 from pathlib import Path
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from careerkit.jobs.adapters.screening.cli_provider import CLIProvider, LLMProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
@@ -31,7 +31,7 @@ from careerkit.jobs.application.screening_assessment import (
 from careerkit.jobs.application.storage_migration import extract_metadata_from_jd
 from careerkit.jobs.application.screening_quality import ScreeningQualityError, count_quality_issues, validate_assessment_quality
 from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
-from careerkit.jobs.domain.model import JobKey
+from careerkit.jobs.domain.model import JobKey, PostingStatus
 from careerkit.jobs.domain.verdict import (
     VERDICT_PRIORITY,
     parse_verdict_candidates,
@@ -564,6 +564,9 @@ def run_screening(
     candidate_context: str | None = None,
     require_strong_provider: bool = False,
     selected_provider: str | None = None,
+    expected_posting_status: PostingStatus | None = None,
+    expected_screening_provider: str | None = None,
+    expected_screening_sha256: str | None = None,
     semantic_validator: CalibratedSemanticValidator | None = None,
     require_semantic_validation: bool = False,
 ) -> ScreeningResult:
@@ -603,9 +606,12 @@ def run_screening(
 
     effective_local_llm_timeout = local_llm_timeout if local_llm_timeout is not None else llm_timeout
 
-    provider_kwargs = {"selected_provider": selected_provider} if selected_provider is not None else {}
+    provider_kwargs: dict[str, Any] = (
+        {"selected_provider": selected_provider} if selected_provider is not None else {}
+    )
+    provider_run = getattr(provider_runner, "run")
     try:
-        provider, raw_output = provider_runner.run(
+        provider, raw_output = provider_run(
             prompt,
             timeout=llm_timeout,
             local_timeout=effective_local_llm_timeout,
@@ -620,7 +626,7 @@ def run_screening(
             assessment = parse_screening_assessment(raw_output, filtered)
         except AssessmentContractError as first_error:
             try:
-                provider, raw_output = provider_runner.run(
+                provider, raw_output = provider_run(
                     _assessment_retry_prefix(str(first_error)) + prompt,
                     timeout=llm_timeout,
                     local_timeout=effective_local_llm_timeout,
@@ -748,6 +754,9 @@ def run_screening(
             screening_verdict=canonical_verdict,
             screening_provider=provider,
             verdict_capped=None if used_fallback else verdict_capped,
+            expected_posting_status=expected_posting_status,
+            expected_screening_provider=expected_screening_provider,
+            expected_screening_sha256=expected_screening_sha256,
         )
         if used_fallback:
             verdict_capped = bool(stored_after.record.verdict_capped)
