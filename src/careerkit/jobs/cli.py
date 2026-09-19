@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 import math
 import sys
@@ -1304,6 +1305,38 @@ def _select_fallback_records(
             continue
         selected.append(stored.record)
     return selected, skipped_closed, unreadable
+
+
+def _build_fallback_snapshot(repository: JDRecordRepository) -> dict[str, Any]:
+    entries: list[dict[str, str]] = []
+    for item in repository.list_metadata():
+        if not item.has_screening:
+            continue
+        stored = repository.get(item.record.key)
+        if (
+            stored.record.posting_status != PostingStatus.ACTIVE
+            or stored.record.screening_provider != "fallback"
+            or stored.screening_markdown is None
+            or not is_fallback_document(stored.screening_markdown)
+        ):
+            continue
+        entries.append(
+            {
+                "job_key": f"{stored.record.platform}:{stored.record.job_id}",
+                "posting_status": stored.record.posting_status.value,
+                "screening_provider": stored.record.screening_provider,
+                "screening_sha256": hashlib.sha256(
+                    stored.screening_markdown.encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    entries.sort(key=lambda entry: entry["job_key"])
+    material = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "schema": "fallback-rescreen-snapshot/v1",
+        "entries": entries,
+        "digest": hashlib.sha256(material.encode("utf-8")).hexdigest(),
+    }
 
 
 def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:

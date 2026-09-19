@@ -2664,6 +2664,7 @@ def _fallback_record(
     return JobRecord(
         'wanted', job_id, 'Acme', 'Backend',
         screening_verdict=ScreeningVerdict.HOLD,
+        screening_provider='fallback',
         posting_status=posting_status,
     )
 
@@ -2782,6 +2783,22 @@ def test_queue_fallback_limit_applies_after_closed_filter(monkeypatch, capsys, t
     assert payload['count'] == 1
     assert payload['skipped_closed'] == 1
     assert payload['items'][0]['job_key'] == 'wanted:2'
+
+
+def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path: Path) -> None:
+    repository = _FallbackRepository([
+        (_fallback_record('2'), _FALLBACK_DOC),
+        (_fallback_record('1'), _FALLBACK_DOC),
+        (_fallback_record('3', posting_status=PostingStatus.CLOSED), _FALLBACK_DOC),
+    ])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+
+    snapshot = cli._build_fallback_snapshot(repository)
+
+    assert [entry['job_key'] for entry in snapshot['entries']] == ['wanted:1', 'wanted:2']
+    assert all(entry['posting_status'] == 'active' for entry in snapshot['entries'])
+    assert all(entry['screening_provider'] == 'fallback' for entry in snapshot['entries'])
+    assert len(snapshot['digest']) == 64
 
 
 def test_queue_fallback_rescreen_aborts_without_strong_provider(monkeypatch, capsys, tmp_path: Path) -> None:
