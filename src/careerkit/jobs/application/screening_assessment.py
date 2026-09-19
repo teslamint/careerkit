@@ -56,9 +56,23 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return parsed
 
 
+def _unwrap_json_code_fence(raw: str) -> str:
+    lines = raw.strip().splitlines()
+    if (
+        len(lines) >= 2
+        and lines[0].strip() == "```json"
+        and lines[-1].strip() == "```"
+    ):
+        return "\n".join(lines[1:-1])
+    return raw
+
+
 def _require_object(raw: str) -> dict[str, object]:
     try:
-        parsed = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        parsed = json.loads(
+            _unwrap_json_code_fence(raw),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
     except json.JSONDecodeError as exc:
         raise AssessmentContractError("JSON 객체만 허용됩니다") from exc
     if not isinstance(parsed, dict):

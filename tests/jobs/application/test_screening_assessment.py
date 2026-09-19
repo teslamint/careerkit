@@ -60,9 +60,15 @@ def stored_job() -> StoredJobRecord:
     )
 
 
+@pytest.mark.parametrize(
+    "wrapper",
+    [lambda raw: raw, lambda raw: f"```json\n{raw}\n```"],
+    ids=["plain-json", "json-fence"],
+)
 def test_parse_screening_assessment_and_render_markdown_round_trip(
     atomic_manifest,
     stored_job: StoredJobRecord,
+    wrapper,
 ) -> None:
     raw = json.dumps(
         {
@@ -96,7 +102,7 @@ def test_parse_screening_assessment_and_render_markdown_round_trip(
         ensure_ascii=False,
     )
 
-    assessment = parse_screening_assessment(raw, atomic_manifest)
+    assessment = parse_screening_assessment(wrapper(raw), atomic_manifest)
 
     assert assessment.verdict == "지원 보류"
     assert assessment.decision_basis == ("required-001", "main_duty-001")
@@ -189,7 +195,7 @@ def test_render_screening_markdown_aggregates_composite_parent_rows(
 @pytest.mark.parametrize(
     ("payload", "reason"),
     [
-        ("```json\n{}\n```", "JSON 객체만 허용됩니다"),
+        ("```json\n{}\n```", "unexpected top-level keys"),
         (
             {
                 "schema_version": 2,

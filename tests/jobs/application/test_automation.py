@@ -2823,7 +2823,8 @@ def test_run_auto_and_queue_rescreen_share_the_same_structured_manifest_contract
             match["evidence"].replace("synthetic/profile.md", "private/profile/skills-job.md")
         )
     assessment_json = json.dumps(assessment, ensure_ascii=False)
-    auto_provider = CapturingFakeProvider(assessment_json, provider_name="local")
+    fenced_assessment_json = f"```json\n{assessment_json}\n```"
+    auto_provider = CapturingFakeProvider(fenced_assessment_json, provider_name="codex")
     service = AutomationService(
         search_port=FakeSearchPort(_search_result()),
         extraction_stage=JobsExtractionStage(repository=repository, http_client=http_client),
@@ -2846,12 +2847,12 @@ def test_run_auto_and_queue_rescreen_share_the_same_structured_manifest_contract
     assert result.returncode == 0
     auto_payload = json.loads(result.stdout)
     assert auto_payload["screening"]["fallback_count"] == 0
-    assert auto_payload["screening"]["providers"] == {"local": 1}
+    assert auto_payload["screening"]["providers"] == {"codex": 1}
     assert auto_payload["screening"]["failure_count"] == 0
-    assert auto_payload["screening"]["verdict_counts"] == {"지원 보류": 1}
+    assert auto_payload["screening"]["verdict_counts"] == {"지원 추천": 1}
     assert len(auto_provider.prompts) == 1
 
-    rescreen_provider = CapturingFakeProvider(assessment_json, provider_name="codex")
+    rescreen_provider = CapturingFakeProvider(fenced_assessment_json, provider_name="codex")
     bundle = cli.ServiceBundle(
         maintenance=maintenance,
         pipeline=pipeline,
