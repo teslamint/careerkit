@@ -1117,6 +1117,7 @@ def _rescreen_one(
     *,
     dry_run: bool,
     require_strong_provider: bool = False,
+    selected_provider: str | None = None,
 ) -> IngestResult:
     """Rescreen a single record through the normal screening path."""
     repository = JDRecordRepository(workspace.jobs_records_dir)
@@ -1136,6 +1137,7 @@ def _rescreen_one(
         repository=None if dry_run else repository,
         candidate_context=load_candidate_context(workspace),
         require_strong_provider=require_strong_provider,
+        selected_provider=selected_provider,
     )
     if not dry_run and not screening.published:
         if screening.used_fallback:

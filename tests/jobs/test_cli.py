@@ -1891,6 +1891,50 @@ def test_queue_rescreen_dry_run_uses_company_evidence_and_new_verdict(
     assert payload['items'][0]['verdict'] == '지원 추천'
 
 
+def test_rescreen_one_passes_selected_provider(monkeypatch, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+
+    class FakeRepository:
+        def get(self, key: JobKey):
+            return SimpleNamespace(
+                record=JobRecord('wanted', '1', 'Acme', 'Backend'),
+                jd_markdown='# JD',
+            )
+
+    class FakeCompanyInfo:
+        def __init__(self, *, workspace):
+            pass
+
+        def find_matching_file(self, company_name: str):
+            return None
+
+    captured: dict[str, object] = {}
+
+    def fake_screening(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(verdict='지원 추천', published=True)
+
+    services = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'JDRecordRepository', lambda path: FakeRepository())
+    monkeypatch.setattr(cli, 'CompanyInfoService', FakeCompanyInfo)
+    monkeypatch.setattr(cli, 'load_candidate_context', lambda workspace: 'context')
+    monkeypatch.setattr(cli, 'run_screening', fake_screening)
+
+    cli._rescreen_one(
+        JobKey('wanted', '1'),
+        workspace,
+        services,
+        dry_run=True,
+        selected_provider='claude',
+    )
+
+    assert captured['selected_provider'] == 'claude'
+
+
 def test_cli_console_serve_uses_loopback_server(monkeypatch, capsys, tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     bundle = cli.ServiceBundle(
