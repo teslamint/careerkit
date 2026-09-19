@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -267,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     fallback_mode = queue_fallback.add_mutually_exclusive_group()
     fallback_mode.add_argument("--list", action="store_true", dest="list_only")
     fallback_mode.add_argument("--rescreen", action="store_true")
+    fallback_mode.add_argument("--snapshot", type=Path)
     queue_fallback.add_argument("--limit", type=_positive_int)
     queue_fallback.add_argument("--include-closed", action="store_true")
     queue_fallback.add_argument("--json", action="store_true")
@@ -1341,6 +1343,28 @@ def _build_fallback_snapshot(repository: JDRecordRepository) -> dict[str, Any]:
 
 def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     repository = JDRecordRepository(workspace.jobs_records_dir)
+    if args.snapshot is not None:
+        snapshot = _build_fallback_snapshot(repository)
+        args.snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=args.snapshot.parent,
+            prefix=f".{args.snapshot.name}.",
+            delete=False,
+        ) as handle:
+            json.dump(snapshot, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+            temporary_path = Path(handle.name)
+        temporary_path.replace(args.snapshot)
+        if args.json:
+            payload = _base_payload("queue fallback snapshot", workspace)
+            payload.update({"digest": snapshot["digest"], "count": len(snapshot["entries"])})
+            _print_json(payload)
+        else:
+            print(f"snapshot={args.snapshot} digest={snapshot['digest']} count={len(snapshot['entries'])}")
+        return 0
+
     selected, skipped_closed, unreadable = _select_fallback_records(
         repository, include_closed=args.include_closed,
     )

@@ -2801,6 +2801,19 @@ def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path:
     assert len(snapshot['digest']) == 64
 
 
+
+
+def test_queue_fallback_writes_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
+    repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+    snapshot_path = tmp_path / 'fallback-snapshot.json'
+
+    assert cli.main(['queue', 'fallback', '--snapshot', str(snapshot_path), '--json']) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    saved = json.loads(snapshot_path.read_text(encoding='utf-8'))
+    assert payload['digest'] == saved['digest']
+    assert [entry['job_key'] for entry in saved['entries']] == ['wanted:1']
 def test_queue_fallback_rescreen_aborts_without_strong_provider(monkeypatch, capsys, tmp_path: Path) -> None:
     repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
     _fallback_cli(monkeypatch, tmp_path, repository)
