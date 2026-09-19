@@ -176,6 +176,7 @@ class JDRecordRepository:
         verdict_capped: bool | None = None,
         expected_posting_status: PostingStatus | None = None,
         expected_screening_provider: str | None = None,
+        require_expected_screening_provider: bool = False,
         expected_screening_sha256: str | None = None,
     ) -> StoredJobRecord:
         """Atomically publish screening content against the latest record metadata."""
@@ -188,7 +189,7 @@ class JDRecordRepository:
                 current.record.posting_status != expected_posting_status
             ):
                 raise ScreeningStateConflict
-            if expected_screening_provider is not None and (
+            if require_expected_screening_provider and (
                 current.record.screening_provider != expected_screening_provider
             ):
                 raise ScreeningStateConflict

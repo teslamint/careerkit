@@ -566,6 +566,7 @@ def run_screening(
     selected_provider: str | None = None,
     expected_posting_status: PostingStatus | None = None,
     expected_screening_provider: str | None = None,
+    require_expected_screening_provider: bool = False,
     expected_screening_sha256: str | None = None,
     semantic_validator: CalibratedSemanticValidator | None = None,
     require_semantic_validation: bool = False,
@@ -756,6 +757,7 @@ def run_screening(
             verdict_capped=None if used_fallback else verdict_capped,
             expected_posting_status=expected_posting_status,
             expected_screening_provider=expected_screening_provider,
+            require_expected_screening_provider=require_expected_screening_provider,
             expected_screening_sha256=expected_screening_sha256,
         )
         if used_fallback:

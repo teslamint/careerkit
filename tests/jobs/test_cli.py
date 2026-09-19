@@ -2710,11 +2710,12 @@ def _fallback_record(
     *,
     screening_md: str | None = None,
     posting_status: PostingStatus = PostingStatus.ACTIVE,
+    screening_provider: str | None = 'fallback',
 ) -> JobRecord:
     return JobRecord(
         'wanted', job_id, 'Acme', 'Backend',
         screening_verdict=ScreeningVerdict.HOLD,
-        screening_provider='fallback',
+        screening_provider=screening_provider,
         posting_status=posting_status,
     )
 
@@ -2878,6 +2879,16 @@ def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path:
     assert [entry['job_key'] for entry in snapshot['entries']] == ['wanted:1', 'wanted:2']
     assert all(entry['posting_status'] == 'active' for entry in snapshot['entries'])
     assert all(entry['screening_provider'] == 'fallback' for entry in snapshot['entries'])
+
+def test_fallback_snapshot_includes_document_with_missing_provider(monkeypatch, tmp_path: Path) -> None:
+    repository = _FallbackRepository([(
+        _fallback_record('1', screening_provider=None), _FALLBACK_DOC
+    )])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+
+    snapshot = cli._build_fallback_snapshot(cast(JDRecordRepository, repository))
+
+    assert snapshot['entries'][0]['screening_provider'] is None
     assert len(snapshot['digest']) == 64
 
 

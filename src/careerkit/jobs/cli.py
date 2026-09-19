@@ -1124,6 +1124,7 @@ def _rescreen_one(
     selected_provider: str | None = None,
     expected_posting_status: PostingStatus | None = None,
     expected_screening_provider: str | None = None,
+    require_expected_screening_provider: bool = False,
     expected_screening_sha256: str | None = None,
 ) -> IngestResult:
     """Rescreen a single record through the normal screening path."""
@@ -1147,6 +1148,7 @@ def _rescreen_one(
         selected_provider=selected_provider,
         expected_posting_status=expected_posting_status,
         expected_screening_provider=expected_screening_provider,
+        require_expected_screening_provider=require_expected_screening_provider,
         expected_screening_sha256=expected_screening_sha256,
     )
     if not dry_run and not screening.published:
@@ -1322,14 +1324,13 @@ def _select_fallback_records(
 
 
 def _build_fallback_snapshot(repository: JDRecordRepository) -> dict[str, Any]:
-    entries: list[dict[str, str]] = []
+    entries: list[dict[str, Any]] = []
     for item in repository.list_metadata():
         if not item.has_screening:
             continue
         stored = repository.get(item.record.key)
         if (
             stored.record.posting_status != PostingStatus.ACTIVE
-            or stored.record.screening_provider != "fallback"
             or stored.screening_markdown is None
             or not is_fallback_document(stored.screening_markdown)
         ):
@@ -1354,7 +1355,11 @@ def _build_fallback_snapshot(repository: JDRecordRepository) -> dict[str, Any]:
 
 
 def _load_fallback_snapshot(
-    path: Path, repository: JDRecordRepository, *, max_entries: int
+    path: Path,
+    repository: JDRecordRepository,
+    *,
+    max_entries: int,
+    allow_inventory_drift: bool = False,
 ) -> dict[str, Any]:
     try:
         snapshot = json.loads(path.read_text(encoding="utf-8"))
@@ -1373,9 +1378,10 @@ def _load_fallback_snapshot(
         raise ValueError(
             f"snapshot has {len(entries)} entries, exceeding confirmed --max-entries {max_entries}"
         )
-    current = _build_fallback_snapshot(repository)
-    if current["digest"] != digest or current["entries"] != entries:
-        raise ValueError("fallback snapshot does not match active fallback inventory")
+    if not allow_inventory_drift:
+        current = _build_fallback_snapshot(repository)
+        if current["digest"] != digest or current["entries"] != entries:
+            raise ValueError("fallback snapshot does not match active fallback inventory")
     return snapshot
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -1456,7 +1462,9 @@ def _run_snapshot_rescreen(
             _rescreen_one(
                 key, workspace, services, dry_run=False, require_strong_provider=True,
                 selected_provider=provider, expected_posting_status=PostingStatus.ACTIVE,
-                expected_screening_provider="fallback", expected_screening_sha256=entry["screening_sha256"],
+                expected_screening_provider=entry["screening_provider"],
+                require_expected_screening_provider=True,
+                expected_screening_sha256=entry["screening_sha256"],
             )
         except ScreeningStateConflict:
             item.update(outcome="skipped_drift", message="record changed before publication")
@@ -1502,7 +1510,10 @@ def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, 
         if not any(label == args.provider for label, _command in resolve_commands()):
             raise ValueError(f"selected provider is unavailable: {args.provider}")
         snapshot = _load_fallback_snapshot(
-            args.rescreen_snapshot, repository, max_entries=args.max_entries
+            args.rescreen_snapshot,
+            repository,
+            max_entries=args.max_entries,
+            allow_inventory_drift=args.result.exists(),
         )
         journal = _run_snapshot_rescreen(
             snapshot,
