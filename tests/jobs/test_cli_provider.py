@@ -602,7 +602,12 @@ def test_run_selected_provider_does_not_fall_through(
 
     monkeypatch.setattr(cli_provider, "run_provider_command", fail_selected)
     local_calls = forbid_urlopen(monkeypatch)
-    provider = CLIProvider(environment={"OLLAMA_SCREENING_MODEL": "off"})
+    provider = CLIProvider(
+        environment={
+            "LOCAL_LLM_BASE_URL": "http://local.example/v1",
+            "LOCAL_LLM_MODEL": "local-model",
+        }
+    )
 
     with pytest.raises(RuntimeError):
         provider.run("private prompt", timeout=5, selected_provider="claude")

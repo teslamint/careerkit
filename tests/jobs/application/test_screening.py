@@ -183,8 +183,10 @@ def test_run_screening_publishes_rendered_markdown_and_metadata(tmp_path: Path) 
 def test_run_screening_passes_selected_provider_to_both_attempts(tmp_path: Path) -> None:
     workspace, _repository, stored = _create_record(tmp_path)
     manifest = extract_requirement_manifest(stored.jd_markdown)
-    provider = SequenceProvider([_assessment_json(without_main_duty(manifest))])
-
+    provider = SequenceProvider([
+        "not JSON",
+        _assessment_json(without_main_duty(manifest)),
+    ])
     run_screening(
         workspace=workspace,
         jd=stored,
@@ -194,8 +196,7 @@ def test_run_screening_passes_selected_provider_to_both_attempts(tmp_path: Path)
         selected_provider="claude",
         candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영, AWS",
     )
-
-    assert provider.selected_providers == ["claude"]
+    assert provider.selected_providers == ["claude", "claude"]
 
 def test_required_semantic_gate_preserves_record_when_validator_is_missing(tmp_path: Path) -> None:
     workspace, repository, stored = _create_record(tmp_path)
