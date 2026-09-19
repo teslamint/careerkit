@@ -970,6 +970,28 @@ def test_screening_publication_rejects_changed_fallback_provider(tmp_path: Path)
     assert repo.get(key).screening_markdown == "# fallback"
     assert repo.get(key).record.screening_provider == "codex"
 
+def test_screening_publication_rejects_changed_missing_provider(tmp_path: Path) -> None:
+    repo = JDRecordRepository(tmp_path)
+    key = JobKey("wanted", "100001")
+    repo.create(_record(), jd_markdown="body")
+    repo.update_screening_result(key, screening_markdown="# fallback")
+    original = repo.get(key)
+    assert original.screening_markdown is not None
+    repo.update_screening_result(
+        key, screening_markdown="# fallback", screening_provider="codex"
+    )
+
+    with pytest.raises(ScreeningStateConflict):
+        repo.update_screening_result(
+            key,
+            screening_markdown="# replacement",
+            expected_screening_provider=None,
+            require_expected_screening_provider=True,
+            expected_screening_sha256=hashlib.sha256(
+                original.screening_markdown.encode("utf-8")
+            ).hexdigest(),
+        )
+
 
 
 def test_screening_publication_rejects_changed_posting_status(tmp_path: Path) -> None:

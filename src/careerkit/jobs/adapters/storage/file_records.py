@@ -189,9 +189,10 @@ class JDRecordRepository:
                 current.record.posting_status != expected_posting_status
             ):
                 raise ScreeningStateConflict
-            if require_expected_screening_provider and (
-                current.record.screening_provider != expected_screening_provider
-            ):
+            if (
+                expected_screening_provider is not None
+                or require_expected_screening_provider
+            ) and current.record.screening_provider != expected_screening_provider:
                 raise ScreeningStateConflict
             if expected_screening_sha256 is not None:
                 current_sha256 = hashlib.sha256(
