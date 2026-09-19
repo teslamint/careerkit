@@ -23,6 +23,7 @@ from careerkit.jobs.adapters.storage.file_records import (
     JDRecordRepository,
     JobRecordIntegrityError,
     JobRecordNotFound,
+    ScreeningStateConflict,
 )
 
 
@@ -955,7 +956,7 @@ def test_screening_publication_rejects_changed_fallback_provider(tmp_path: Path)
         screening_provider="codex",
     )
 
-    with pytest.raises(RuntimeError, match="screening state conflict"):
+    with pytest.raises(ScreeningStateConflict):
         repo.update_screening_result(
             key,
             screening_markdown="# replacement",
@@ -967,3 +968,31 @@ def test_screening_publication_rejects_changed_fallback_provider(tmp_path: Path)
 
     assert repo.get(key).screening_markdown == "# fallback"
     assert repo.get(key).record.screening_provider == "codex"
+
+
+
+def test_screening_publication_rejects_changed_posting_status(tmp_path: Path) -> None:
+    repo = JDRecordRepository(tmp_path)
+    key = JobKey("wanted", "100001")
+    repo.create(_record(), jd_markdown="body")
+    repo.update_screening_result(
+        key,
+        screening_markdown="# fallback",
+        screening_provider="fallback",
+    )
+    original = repo.get(key)
+    repo.update_status(key, posting_status=PostingStatus.CLOSED)
+
+    with pytest.raises(ScreeningStateConflict):
+        repo.update_screening_result(
+            key,
+            screening_markdown="# replacement",
+            expected_posting_status=PostingStatus.ACTIVE,
+            expected_screening_provider="fallback",
+            expected_screening_sha256=hashlib.sha256(
+                original.screening_markdown.encode("utf-8")
+            ).hexdigest(),
+        )
+
+    assert repo.get(key).screening_markdown == "# fallback"
+    assert repo.get(key).record.posting_status is PostingStatus.CLOSED
