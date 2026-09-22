@@ -1879,13 +1879,12 @@ def test_pre_screened_record_is_absent_from_verdict_counts(tmp_path: Path) -> No
     assert counts.get(ScreeningVerdict.NOT_RECOMMENDED, 0) == 0
 
 
-def test_screening_only_bypasses_prescreen_filters(tmp_path: Path, monkeypatch) -> None:
+def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch) -> None:
     workspace = _make_workspace(tmp_path)
     repository = JDRecordRepository(tmp_path / "private/jd/records")
-    _write_valid_company_info(tmp_path, "product-co", "Product Co")
     record = repository.create(
         JobRecord("wanted", "20", "Product Co", "Product Manager"),
-        jd_markdown="# Product Manager\n",
+        jd_markdown="# Product Manager\n\n## 자격 요건\n\n- 학사 이상\n",
     )
     screened = []
 
@@ -1897,7 +1896,10 @@ def test_screening_only_bypasses_prescreen_filters(tmp_path: Path, monkeypatch) 
     result = JobsScreeningStage(
         workspace=workspace,
         repository=repository,
-        quick_filters={"title_exclude": ["Product Manager"]},
+        quick_filters={
+            "title_include": ["Backend"],
+            "title_exclude": ["Product Manager"],
+        },
     ).screen(
         ExtractionBatch(
             ("url",),
@@ -1909,8 +1911,9 @@ def test_screening_only_bypasses_prescreen_filters(tmp_path: Path, monkeypatch) 
         llm_timeout=1,
     )
 
-    assert result.item_ids == ("wanted:20",)
-    assert screened == ["20"]
+    assert result.item_ids == ()
+    assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
+    assert screened == []
 
 
 def test_screening_stage_passes_matching_company_info_file(tmp_path: Path, monkeypatch) -> None:
