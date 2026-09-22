@@ -1883,7 +1883,7 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
     workspace = _make_workspace(tmp_path)
     repository = JDRecordRepository(tmp_path / "private/jd/records")
     record = repository.create(
-        JobRecord("wanted", "20", "Product Co", "Product Manager"),
+        JobRecord("wanted", "fixture", "Product Co", "Product Manager"),
         jd_markdown="# Product Manager\n\n## 자격 요건\n\n- 학사 이상\n",
     )
     screened = []
@@ -1892,7 +1892,15 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
         screened.append(kwargs["jd"].record.job_id)
         return _screening_result()
 
+    def fail_enrich(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("role-excluded screening must not enrich company data")
+
     monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        fail_enrich,
+    )
     result = JobsScreeningStage(
         workspace=workspace,
         repository=repository,
@@ -1903,9 +1911,20 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
     ).screen(
         ExtractionBatch(
             ("url",),
-            ("wanted:20",),
+            ("wanted:fixture",),
             (record,),
             {"mode": "screening_only"},
+            company_contexts={
+                "wanted:fixture": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:fixture",
+                    company_name="Product Co",
+                    company_id=None,
+                    source_url="https://example.invalid/jobs/fixture",
+                    facts={},
+                    fact_sources={},
+                )
+            },
         ),
         dry_run=True,
         llm_timeout=1,

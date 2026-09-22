@@ -933,6 +933,18 @@ class JobsScreeningStage:
             started = time.monotonic()
             item_id = f"{record.record.platform}:{record.record.job_id}"
             context = extraction.company_contexts.get(item_id)
+            if screening_only:
+                prescreen_reason = _pre_screen_reason(
+                    record,
+                    prior_records,
+                    quick_filters,
+                    include_status_filters=False,
+                )
+                if prescreen_reason is not None:
+                    prescreen_reasons[prescreen_reason] += 1
+                    if not dry_run:
+                        self.repository.update_prescreen(record.record.key, prescreen_reason)
+                    continue
             try:
                 company_result, company_error, effective_company_file = _resolve_company_screening_state(
                     enrichment=enrichment,
