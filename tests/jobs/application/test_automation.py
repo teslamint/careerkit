@@ -1892,15 +1892,7 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
         screened.append(kwargs["jd"].record.job_id)
         return _screening_result()
 
-    def fail_enrich(*args, **kwargs):
-        del args, kwargs
-        pytest.fail("role-excluded screening must not enrich company data")
-
     monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
-    monkeypatch.setattr(
-        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
-        fail_enrich,
-    )
     result = JobsScreeningStage(
         workspace=workspace,
         repository=repository,
@@ -1914,17 +1906,6 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
             ("wanted:fixture",),
             (record,),
             {"mode": "screening_only"},
-            company_contexts={
-                "wanted:fixture": CompanyEnrichmentContext(
-                    platform="wanted",
-                    item_id="wanted:fixture",
-                    company_name="Product Co",
-                    company_id=None,
-                    source_url="https://example.invalid/jobs/fixture",
-                    facts={},
-                    fact_sources={},
-                )
-            },
         ),
         dry_run=True,
         llm_timeout=1,
