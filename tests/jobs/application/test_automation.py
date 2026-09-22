@@ -1887,12 +1887,29 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
         jd_markdown="# Product Manager\n\n## 자격 요건\n\n- 학사 이상\n",
     )
     screened = []
+    enriched = []
 
     def fake_run_screening(**kwargs):
         screened.append(kwargs["jd"].record.job_id)
         return _screening_result()
 
+    def fake_enrich(self, context, *, dry_run=False, timeout=1.0):
+        del self, dry_run, timeout
+        enriched.append(context.item_id)
+        return CompanyInfoEnrichmentResult(
+            status="warning",
+            attempted=True,
+            persisted=False,
+            completeness=None,
+            warning_code="missing",
+            file_path=None,
+        )
+
     monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+    monkeypatch.setattr(
+        "careerkit.jobs.application.automation.CompanyEnrichmentService.enrich",
+        fake_enrich,
+    )
     result = JobsScreeningStage(
         workspace=workspace,
         repository=repository,
@@ -1906,6 +1923,17 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
             ("wanted:fixture",),
             (record,),
             {"mode": "screening_only"},
+            company_contexts={
+                "wanted:fixture": CompanyEnrichmentContext(
+                    platform="wanted",
+                    item_id="wanted:fixture",
+                    company_name="Product Co",
+                    company_id=None,
+                    source_url="https://example.invalid/jobs/fixture",
+                    facts={},
+                    fact_sources={},
+                )
+            },
         ),
         dry_run=True,
         llm_timeout=1,
@@ -1914,6 +1942,14 @@ def test_screening_only_prescreens_non_backend_roles(tmp_path: Path, monkeypatch
     assert result.item_ids == ()
     assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
     assert screened == []
+    assert enriched == ["wanted:fixture"]
+    assert result.metadata["company_info_results"]["wanted:fixture"] == {
+        "attempted": True,
+        "completeness": None,
+        "persisted": False,
+        "status": "warning",
+        "warning_code": "missing",
+    }
 
 
 def test_screening_stage_passes_matching_company_info_file(tmp_path: Path, monkeypatch) -> None:
