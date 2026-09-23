@@ -40,6 +40,7 @@ from careerkit.jobs.application.screening_semantics import CalibratedSemanticVal
 from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
+    duties_show_server_work,
     has_domain_counter_indicator,
     is_level_exclusion,
     matched_title_exclusion,
@@ -858,7 +859,7 @@ def _pre_screen_reason(
     def backend_confirmed() -> bool:
         nonlocal confirmed
         if confirmed is None:
-            confirmed = requirements_show_backend(record.jd_markdown)
+            confirmed = requirements_show_backend(record.jd_markdown) or duties_show_server_work(record.jd_markdown)
         return confirmed
 
     if quick_filter_title(position, {"quick_filters": quick_filters}) == "pass":

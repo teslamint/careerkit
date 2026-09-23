@@ -32,8 +32,8 @@ import yaml
 
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
 from careerkit.jobs.application.automation import _pre_screen_reason
-from careerkit.jobs.application.requirement_manifest import RequirementItem, extract_requirement_manifest
-from careerkit.jobs.application.title_filter import has_backend_keyword, quick_filter_title
+from careerkit.jobs.application.requirement_manifest import RequirementItem, RequirementKind, extract_requirement_manifest
+from careerkit.jobs.application.title_filter import duty_shows_server_work, has_backend_keyword, quick_filter_title
 from careerkit.workspace import resolve_workspace
 
 TRUNCATE = 60
@@ -111,7 +111,14 @@ def matching_parents(jd_markdown: str) -> tuple[int, list[RequirementItem]]:
     a decision the code did not make.
     """
     manifest = extract_requirement_manifest(jd_markdown)
-    return len(manifest.parents), [item for item in manifest.items if has_backend_keyword(item.text)]
+    # Both halves of `backend_confirmed`: a backend token on any item, or a 주요업무
+    # line that says the role builds or runs an API.
+    return len(manifest.parents), [
+        item
+        for item in manifest.items
+        if has_backend_keyword(item.text)
+        or (item.kind == RequirementKind.MAIN_DUTY and duty_shows_server_work(item.text))
+    ]
 
 
 def format_matches(matches: Sequence[RequirementItem]) -> str:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Iterable, Mapping
 
-from careerkit.jobs.application.requirement_manifest import extract_requirement_manifest
+from careerkit.jobs.application.requirement_manifest import RequirementKind, extract_requirement_manifest
 
 _BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]*\]\s*")
 _BACKEND_KW_RE = re.compile(r"backend|back(?:-|\s|_)?end|server|백엔드|서버", re.IGNORECASE)
@@ -40,6 +40,39 @@ _DOMAIN_COUNTER_PATTERNS = {
 # confirmation must not cancel these: backend work in the body does not make a
 # 신입 posting a senior one.
 _LEVEL_EXCLUSION_RE = re.compile(r"인턴|신입|주니어|junior|entry[\s-]?level|체험형", re.IGNORECASE)
+
+# Main-duty evidence that the role builds or runs an API, whatever the client (web
+# or app). Hangul counts as a word character, so ASCII tokens use explicit
+# lookarounds instead of \b ("API를" has no \b between "I" and "를").
+_DUTY_VERB_KO = r"(?:설계|개발|구축|운영|구현|\uc720\uc9c0\s*\ubcf4\uc218|고도화|개선)"
+_CONSUMING_VERB = r"연동|활용|사용|호출|이용"
+# Korean puts the object first: the API, then the verb, with at most one short
+# coordinated phrase between that must not itself say the API is consumed.
+_DUTY_API_KO_RE = re.compile(
+    r"(?<![A-Za-z])APIs?(?![A-Za-z])"
+    rf"(?:\s*(?:및|와|과|,|·|/)\s*(?:(?!{_CONSUMING_VERB})[^,.;:\n]){{1,20}}?)?"
+    rf"\s*(?:을|를)?\s*{_DUTY_VERB_KO}",
+    re.IGNORECASE,
+)
+_DUTY_API_EN_RE = re.compile(
+    r"\b(?:develop|build|design|implement|maintain|operate|own)\w*"
+    r"(?:\s*(?:,|and|&)\s*\w+)*\s+"
+    r"(?:(?:REST(?:ful)?|GraphQL|gRPC|HTTP|public|internal|backend|web|scalable|high[\s-]performance|new)\s+)*"
+    r"APIs?\b",
+    re.IGNORECASE,
+)
+# Each of these reuses the same words for work that has no service behind it.
+_DUTY_API_CONSUMED_RE = re.compile(
+    r"(?:(?:오픈|외부|공개|서드파티)\s*|(?:3rd|third)[\s-]party\s+|open\s+)APIs?(?![A-Za-z])"
+    rf"|(?<![A-Za-z])APIs?(?![A-Za-z])\s*(?:을|를)?\s*(?:{_CONSUMING_VERB})"
+    r"|\b(?:on|using|via|through|against)\s+(?:(?:our|the|their|its|an?)\s+)?(?:\w+\s+)?APIs?\b",
+    re.IGNORECASE,
+)
+_DUTY_CLIENT_SURFACE_RE = re.compile(r"(?<![A-Za-z])SDKs?(?![A-Za-z])|라이브러리|\blibrar(?:y|ies)\b", re.IGNORECASE)
+_DUTY_LOW_LEVEL_RE = re.compile(
+    r"프로토콜|protocol|드라이버|driver|\ud38c\uc6e8\uc5b4|firmware|\ucee4\ub110|kernel|임베디드|embedded|하드웨어|hardware",
+    re.IGNORECASE,
+)
 
 
 def normalize_job_query(query: str) -> str:
@@ -140,6 +173,30 @@ def requirements_show_backend(jd_markdown: str) -> bool:
     # when this widened — the disputed set's outcomes did not move.
     manifest = extract_requirement_manifest(jd_markdown)
     return any(has_backend_keyword(item.text) for item in manifest.items)
+
+
+def duty_shows_server_work(text: str) -> bool:
+    """Does this one main-duty line say the role builds or operates an API?"""
+    if not (_DUTY_API_KO_RE.search(text) or _DUTY_API_EN_RE.search(text)):
+        return False
+    return not (
+        _DUTY_API_CONSUMED_RE.search(text)
+        or _DUTY_CLIENT_SURFACE_RE.search(text)
+        or _DUTY_LOW_LEVEL_RE.search(text)
+    )
+
+
+def duties_show_server_work(jd_markdown: str) -> bool:
+    # 주요업무 only: it describes the role, while a requirement line that names an
+    # API describes the candidate and is already read by requirements_show_backend.
+    # Tuned on the live corpus and re-measured there; the parametrized tests are an
+    # authored confirmation set, not corpus lines.
+    manifest = extract_requirement_manifest(jd_markdown)
+    return any(
+        duty_shows_server_work(item.text)
+        for item in manifest.items
+        if item.kind == RequirementKind.MAIN_DUTY
+    )
 
 
 def classify_non_backend_domain(title: str) -> str | None:
