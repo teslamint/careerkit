@@ -5,6 +5,7 @@ functions used by the packaged jobs application.
 """
 
 import re
+import unicodedata
 
 _LEGAL_ENTITY_RE = re.compile(
     r'\(주\)|주식회사|\(유\)|유한회사|㈜|\(주\)|Inc\.?|Corp\.?|Co\.,?\s*Ltd\.?',
@@ -40,7 +41,8 @@ def slugify_company(
     The parameters preserve the two supported product policies: a stable
     default slug and a stricter extraction slug with an empty fallback.
     """
-    text = _SLUG_LEGAL_RE.sub("", name or "").strip()
+    # NFC first: decomposed Hangul (macOS file names) falls outside 가-힣 and would be dropped.
+    text = _SLUG_LEGAL_RE.sub("", unicodedata.normalize("NFC", name or "")).strip()
     text = _NON_ALNUM_HANGUL_RE.sub(" ", text).strip()
     result = "-".join(text.lower().split())[:max_len]
     return result or fallback
@@ -55,5 +57,5 @@ def normalize_company_name(name: str) -> str:
     This is the broad normalization policy. Narrow matching policies remain
     local to their application service because they intentionally strip spaces.
     """
-    name = _LEGAL_ENTITY_RE.sub('', name)
+    name = _LEGAL_ENTITY_RE.sub('', unicodedata.normalize("NFC", name))
     return re.sub(r'[\[\]\(\)]', '', name).strip().lower()
