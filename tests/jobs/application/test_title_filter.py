@@ -1,4 +1,6 @@
-from careerkit.jobs.application.title_filter import requirements_show_backend
+import pytest
+
+from careerkit.jobs.application.title_filter import duties_show_server_work, requirements_show_backend
 
 
 BACKEND_JD = """# 합성 공고
@@ -87,3 +89,56 @@ def test_requirements_show_backend_accepts_a_preferred_only_backend_mention() ->
     # screening path, which strips 주요업무. Measured on the corpus: this is what
     # confirms a Backend Engineer posting whose 자격요건 never says 백엔드.
     assert requirements_show_backend(PREFERRED_ONLY_BACKEND_JD) is True
+
+
+def _duty_jd(duty: str) -> str:
+    return f"# 합성 공고\n\n## 주요업무\n\n- {duty}\n\n## 자격요건\n\n- 동료 리뷰 참여 경험\n"
+
+
+# Authored for this rule, not copied from the corpus it was tuned on: these are the
+# confirmation set. The API has to be what the role builds or runs.
+@pytest.mark.parametrize(
+    "duty",
+    [
+        "정산 API 설계 및 운영",
+        "Kotlin 기반 주문 API와 배치 작업 개발",
+        "모바일 앱에서 호출하는 인증 API 구현",
+        "Spring 기반 예약 API 고도화",
+        "Design, build and maintain RESTful APIs for the booking product",
+        "OpenAPI 명세 기반 검색 API 개발",
+    ],
+)
+def test_duties_show_server_work_for_api_the_role_builds(duty: str) -> None:
+    assert duties_show_server_work(_duty_jd(duty)) is True
+
+
+@pytest.mark.parametrize(
+    "duty",
+    [
+        # SDK or library surface: the same words, but no server behind them.
+        "개발자가 쓰기 쉬운 API와 SDK를 설계",
+        "사내 공용 라이브러리의 API 설계 및 문서화",
+        # Consuming someone else's API.
+        "외부 결제사 API 연동 및 정산 화면 구현",
+        "지도 API를 활용한 경로 탐색 기능 개발",
+        "Build internal tools on our public API",
+        "오픈 API 기반 데이터 수집기 개발",
+        # The positive shape matches here; only the consumption guards reject it.
+        "공공 오픈 API/웹 페이지 수집 크롤러 개발",
+        "관제 API, 차량 단말 연동 및 운영",
+        # Low-level work that exposes an API without being a service.
+        "센서 드라이버 API 설계 및 구현",
+        "임베디드 보드용 제어 API 개발",
+        # No API or server in the duty at all.
+        "React 기반 관리자 화면 개발",
+    ],
+)
+def test_duties_show_server_work_rejects_other_api_contexts(duty: str) -> None:
+    assert duties_show_server_work(_duty_jd(duty)) is False
+
+
+def test_duties_show_server_work_ignores_api_work_outside_main_duties() -> None:
+    # Only 주요업무 describes the role; a requirement line is covered by
+    # requirements_show_backend and must not be reinterpreted here.
+    jd = "# 합성 공고\n\n## 주요업무\n\n- 관리자 화면 개발\n\n## 자격요건\n\n- 정산 API 설계 및 운영 경험\n"
+    assert duties_show_server_work(jd) is False

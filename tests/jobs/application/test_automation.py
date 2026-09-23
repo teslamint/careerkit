@@ -1625,6 +1625,73 @@ def test_non_backend_requirements_keep_the_reason(tmp_path: Path) -> None:
     assert repository.get(JobKey("wanted", "35")).record.prescreen_reason == "title_exclude"
 
 
+def _jd_with_duty(title: str, duty: str) -> str:
+    return f"# {title}\n\n## 주요업무\n\n- {duty}\n\n## 자격요건\n\n- 동료와 설계를 검토해 본 경험\n"
+
+
+def test_generic_title_with_api_duty_reaches_screening(tmp_path: Path, monkeypatch) -> None:
+    # The title carries no include keyword and the requirements never say backend;
+    # the main duty names the API the role builds, which is the evidence that counts.
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    _write_valid_company_info(tmp_path, "synthetic-co", "Synthetic Co")
+    record = repository.create(
+        JobRecord("wanted", "7", "Synthetic Co", "Senior Software Engineer"),
+        jd_markdown=_jd_with_duty("Senior Software Engineer", "정산 API 설계 및 운영"),
+    )
+    screened: list[str] = []
+
+    def fake_run_screening(**kwargs):
+        screened.append(kwargs["jd"].record.job_id)
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_include": ["Backend"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:7",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["prescreen_reasons"] == {}
+    assert screened == ["7"]
+
+
+@pytest.mark.parametrize(
+    ("title", "duty"),
+    [
+        # A level keyword is evidence the duty cannot contradict.
+        ("Software Engineer 인턴", "정산 API 설계 및 운영"),
+        # An SDK surface is not server work.
+        ("Senior Software Engineer", "개발자가 쓰기 쉬운 API와 SDK를 설계"),
+    ],
+)
+def test_api_duty_does_not_cancel_level_cut_or_sdk_role(tmp_path: Path, title: str, duty: str) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "8", "Synthetic Co", title),
+        jd_markdown=_jd_with_duty(title, duty),
+    )
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        quick_filters={"title_include": ["Backend"], "title_exclude": ["인턴"]},
+    ).screen(
+        ExtractionBatch(("url",), ("wanted:8",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.item_ids == ()
+    assert result.metadata["prescreen_reasons"] == {"title_exclude": 1}
+
+
 def test_backend_confirmed_domain_title_is_not_pre_screened(tmp_path: Path, monkeypatch) -> None:
     workspace = _make_workspace(tmp_path)
     repository = JDRecordRepository(tmp_path / "private/jd/records")
