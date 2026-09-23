@@ -5,6 +5,7 @@ from pathlib import Path
 import stat
 import threading
 from typing import TypedDict
+import unicodedata
 
 import pytest
 
@@ -169,6 +170,21 @@ def test_company_info_matching_resolves_safe_slug_alias_symlink(tmp_path: Path) 
     outside.write_text("# Outside\n", encoding="utf-8")
     (company_dir / "outside-alias.md").symlink_to(outside)
     assert service.find_matching_file("Outside Alias") is None
+
+
+def test_company_info_matching_handles_decomposed_hangul_filenames(tmp_path: Path) -> None:
+    # macOS stores Hangul file names decomposed (NFD); JD records carry NFC names.
+    workspace = WorkspacePaths(root=tmp_path, source="explicit")
+    company_dir = tmp_path / "private" / "company_info"
+    company_dir.mkdir(parents=True)
+    stem = unicodedata.normalize("NFD", "\uac00\ub098\ub2e4-sample")
+    source = company_dir / f"{stem}.md"
+    source.write_text("# \uac00\ub098\ub2e4\n", encoding="utf-8")
+    service = CompanyInfoService(workspace=workspace)
+
+    assert service.find_matching_file("\uac00\ub098\ub2e4(Sample)") == source.resolve()
+    assert service.find_matching_file(unicodedata.normalize("NFD", "\uac00\ub098\ub2e4")) == source.resolve()
+    assert service.find_matching_file("\ub77c\ub9c8\ubc14") is None
 
 
 def test_risk_section_uses_injected_time() -> None:
