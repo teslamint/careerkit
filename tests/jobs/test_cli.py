@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from dataclasses import dataclass, field
@@ -2900,6 +2901,124 @@ def test_fallback_snapshot_includes_document_with_missing_provider(monkeypatch, 
     assert snapshot['entries'][0]['screening_provider'] is None
 
 
+def _snapshot_with_entries(entries: list[dict]) -> dict:
+    material = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return {
+        'schema': 'fallback-rescreen-snapshot/v1',
+        'entries': entries,
+        'digest': hashlib.sha256(material.encode('utf-8')).hexdigest(),
+    }
+
+
+def _resume_snapshot_files(tmp_path: Path, snapshot: dict, *, max_entries: int) -> tuple[Path, Path]:
+    snapshot_path = tmp_path / 'fallback-snapshot.json'
+    snapshot_path.write_text(json.dumps(snapshot), encoding='utf-8')
+    result_path = tmp_path / 'fallback-result.json'
+    result_path.write_text(json.dumps({
+        'schema': 'fallback-rescreen-result/v1',
+        'snapshot_digest': snapshot['digest'],
+        'requested_provider': 'claude',
+        'max_entries': max_entries,
+        'items': [],
+    }), encoding='utf-8')
+    return snapshot_path, result_path
+
+
+@pytest.mark.parametrize('mutate', ['drop_key', 'duplicate_key'])
+def test_resumed_rescreen_snapshot_rejects_malformed_entries(
+    monkeypatch, capsys, tmp_path: Path, mutate: str
+) -> None:
+    repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+    monkeypatch.setattr(
+        cli, 'resolve_commands',
+        lambda environment=None: [('claude', ['claude', '--print'])],
+    )
+    monkeypatch.setattr(
+        cli, 'run_screening',
+        lambda **kwargs: pytest.fail('a malformed snapshot must not reach screening'),
+    )
+    entries = cli._build_fallback_snapshot(cast(JDRecordRepository, repository))['entries']
+    if mutate == 'drop_key':
+        del entries[0]['posting_status']
+    else:
+        entries.append(dict(entries[0]))
+    snapshot_path, result_path = _resume_snapshot_files(
+        tmp_path, _snapshot_with_entries(entries), max_entries=2
+    )
+
+    assert cli.main([
+        'queue', 'fallback', '--rescreen-snapshot', str(snapshot_path),
+        '--provider', 'claude', '--max-entries', '2', '--result', str(result_path), '--json',
+    ]) == 2
+    assert 'snapshot' in capsys.readouterr().err
+
+
+def test_rescreen_snapshot_drift_message_is_per_entry(monkeypatch, capsys, tmp_path: Path) -> None:
+    class _UnreadableFirst(_FallbackRepository):
+        def get(self, key: JobKey):
+            if key.job_id == '1':
+                raise OSError('record 1 unreadable')
+            return super().get(key)
+
+    repository = _UnreadableFirst([
+        (_fallback_record('1'), _FALLBACK_DOC),
+        (_fallback_record('2'), _FALLBACK_DOC),
+    ])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+    monkeypatch.setattr(
+        cli, 'resolve_commands',
+        lambda environment=None: [('claude', ['claude', '--print'])],
+    )
+    entry = {
+        'posting_status': 'active',
+        'screening_provider': 'fallback',
+        'screening_sha256': hashlib.sha256(_FALLBACK_DOC.encode('utf-8')).hexdigest(),
+    }
+    snapshot = _snapshot_with_entries([
+        {'job_key': 'wanted:1', **entry},
+        {'job_key': 'wanted:2', **entry},
+    ])
+    repository.set_screening_override('2', _FALLBACK_DOC + '\nedited\n')
+    snapshot_path, result_path = _resume_snapshot_files(tmp_path, snapshot, max_entries=2)
+
+    assert cli.main([
+        'queue', 'fallback', '--rescreen-snapshot', str(snapshot_path),
+        '--provider', 'claude', '--max-entries', '2', '--result', str(result_path), '--json',
+    ]) == 0
+
+    items = json.loads(capsys.readouterr().out)['items']
+    assert [(item['outcome'], item['message']) for item in items] == [
+        ('skipped_drift', 'record 1 unreadable'),
+        ('skipped_drift', 'record changed'),
+    ]
+
+
+def test_rescreen_snapshot_prints_summary_without_json(monkeypatch, capsys, tmp_path: Path) -> None:
+    repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
+    _fallback_cli(monkeypatch, tmp_path, repository)
+    monkeypatch.setattr(
+        cli, 'resolve_commands',
+        lambda environment=None: [('claude', ['claude', '--print'])],
+    )
+    monkeypatch.setattr(
+        cli, 'run_screening',
+        lambda **kwargs: _screening(provider='claude', published=False, used_fallback=True),
+    )
+    snapshot_path = tmp_path / 'fallback-snapshot.json'
+    snapshot_path.write_text(
+        json.dumps(cli._build_fallback_snapshot(cast(JDRecordRepository, repository))),
+        encoding='utf-8',
+    )
+
+    assert cli.main([
+        'queue', 'fallback', '--rescreen-snapshot', str(snapshot_path),
+        '--provider', 'claude', '--max-entries', '1', '--result', str(tmp_path / 'result.json'),
+    ]) == 0
+
+    out = capsys.readouterr().out
+    assert 'wanted:1: still_fallback' in out
+    assert 'still_fallback=1' in out
 
 
 def test_queue_fallback_writes_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
@@ -2913,6 +3032,8 @@ def test_queue_fallback_writes_snapshot(monkeypatch, capsys, tmp_path: Path) -> 
     saved = json.loads(snapshot_path.read_text(encoding='utf-8'))
     assert payload['digest'] == saved['digest']
     assert [entry['job_key'] for entry in saved['entries']] == ['wanted:1']
+
+
 def test_queue_fallback_rescreen_aborts_without_strong_provider(monkeypatch, capsys, tmp_path: Path) -> None:
     repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
     _fallback_cli(monkeypatch, tmp_path, repository)

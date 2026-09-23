@@ -1361,6 +1361,10 @@ def _build_fallback_snapshot(repository: JDRecordRepository) -> dict[str, Any]:
     }
 
 
+_FALLBACK_SNAPSHOT_ENTRY_KEYS = frozenset(
+    {"job_key", "posting_status", "screening_provider", "screening_sha256"}
+)
+
 def _load_fallback_snapshot(
     path: Path,
     repository: JDRecordRepository,
@@ -1377,6 +1381,20 @@ def _load_fallback_snapshot(
     entries = snapshot.get("entries")
     if not isinstance(entries, list):
         raise ValueError("invalid fallback snapshot entries")
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != _FALLBACK_SNAPSHOT_ENTRY_KEYS
+            or not isinstance(entry["job_key"], str)
+            or not isinstance(entry["posting_status"], str)
+            or not isinstance(entry["screening_sha256"], str)
+            or not isinstance(entry["screening_provider"], (str, type(None)))
+        ):
+            raise ValueError("invalid fallback snapshot entry")
+        _parse_job_key(entry["job_key"])
+    job_keys = [entry["job_key"] for entry in entries]
+    if job_keys != sorted(set(job_keys)):
+        raise ValueError("fallback snapshot entries must be unique and ordered by job_key")
     material = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     if snapshot.get("digest") != digest:
@@ -1442,6 +1460,7 @@ def _run_snapshot_rescreen(
         if name in items:
             continue
         key = _parse_job_key(name)
+        message = "record changed"
         try:
             current = repository.get(key)
             digest = hashlib.sha256((current.screening_markdown or "").encode("utf-8")).hexdigest()
@@ -1456,7 +1475,7 @@ def _run_snapshot_rescreen(
             eligible = False
             message = str(exc)
         if not eligible:
-            item = {"job_key": name, "outcome": "skipped_drift", "message": locals().get("message", "record changed")}
+            item = {"job_key": name, "outcome": "skipped_drift", "message": message}
             journal["items"].append(item)
             items[name] = item
             _write_json_atomic(result_path, journal)
@@ -1492,18 +1511,7 @@ def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, 
     repository = JDRecordRepository(workspace.jobs_records_dir)
     if getattr(args, "snapshot", None) is not None:
         snapshot = _build_fallback_snapshot(repository)
-        args.snapshot.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=args.snapshot.parent,
-            prefix=f".{args.snapshot.name}.",
-            delete=False,
-        ) as handle:
-            json.dump(snapshot, handle, ensure_ascii=False, sort_keys=True)
-            handle.write("\n")
-            temporary_path = Path(handle.name)
-        temporary_path.replace(args.snapshot)
+        _write_json_atomic(args.snapshot, snapshot)
         if args.json:
             payload = _base_payload("queue fallback snapshot", workspace)
             payload.update({"digest": snapshot["digest"], "count": len(snapshot["entries"])})
@@ -1547,6 +1555,14 @@ def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, 
                 }
             )
             _print_json(payload)
+        else:
+            for item in journal["items"]:
+                print(f"{item['job_key']}: {item['outcome']} {item.get('message', '')}".rstrip())
+            print(
+                f"rescreened={counts['rescreened']} still_fallback={counts['still_fallback']} "
+                f"failed={counts['failed']} failed_after_publish={counts['failed_after_publish']} "
+                f"skipped_drift={counts['skipped_drift']}"
+            )
         return 2 if counts["failed"] or counts["failed_after_publish"] else 0
 
     selected, skipped_closed, unreadable = _select_fallback_records(
