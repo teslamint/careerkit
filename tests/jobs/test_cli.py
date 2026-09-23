@@ -1702,6 +1702,7 @@ def test_cli_screening_run_reads_explicit_candidate_context(monkeypatch, capsys,
             provider='fake-provider',
             used_fallback=False,
             fallback_reason=None,
+            provider_attempts={'codex': ('timed out after 120s',)},
         )
 
     monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
@@ -1714,6 +1715,7 @@ def test_cli_screening_run_reads_explicit_candidate_context(monkeypatch, capsys,
     assert payload['command'] == 'screening run'
     assert payload['job_key'] == 'wanted:1'
     assert payload['verdict'] == '지원 추천'
+    assert payload['provider_attempts'] == {'codex': ['timed out after 120s']}
     assert captured['candidate_context'] == 'explicit context'
     assert captured['repository'] is None
     assert captured['dry_run'] is True
@@ -1759,6 +1761,7 @@ def test_cli_screening_run_prescreens_non_backend_role(monkeypatch, capsys, tmp_
     payload = json.loads(capsys.readouterr().out)
     assert payload["prescreen_reason"] == "title_exclude"
     assert payload["verdict"] is None
+    assert payload["provider_attempts"] == {}
 
 def test_cli_screening_run_loads_workspace_candidate_context_by_default(
     monkeypatch, capsys, tmp_path: Path
@@ -1787,6 +1790,7 @@ def test_cli_screening_run_loads_workspace_candidate_context_by_default(
             provider='fake-provider',
             used_fallback=False,
             fallback_reason=None,
+            provider_attempts={},
         )
 
     monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
@@ -2436,6 +2440,7 @@ def _screening(**overrides):
         'published': False,
         'used_fallback': False,
         'fallback_reason': None,
+        'provider_attempts': {'codex': ('timed out after 120s',)},
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -2863,7 +2868,9 @@ def test_queue_fallback_rescreen_snapshot_requires_provider_and_limit(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload['digest'] == cli._build_fallback_snapshot(cast(JDRecordRepository, repository))['digest']
-    assert json.loads(result_path.read_text(encoding='utf-8'))['items'][0]['outcome'] == 'still_fallback'
+    journal = json.loads(result_path.read_text(encoding='utf-8'))['items'][0]
+    assert journal['outcome'] == 'still_fallback'
+    assert 'codex: timed out after 120s' in journal['message']
 
 
 def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path: Path) -> None:
@@ -2879,6 +2886,8 @@ def test_fallback_snapshot_is_ordered_and_excludes_closed(monkeypatch, tmp_path:
     assert [entry['job_key'] for entry in snapshot['entries']] == ['wanted:1', 'wanted:2']
     assert all(entry['posting_status'] == 'active' for entry in snapshot['entries'])
     assert all(entry['screening_provider'] == 'fallback' for entry in snapshot['entries'])
+    assert len(snapshot['digest']) == 64
+
 
 def test_fallback_snapshot_includes_document_with_missing_provider(monkeypatch, tmp_path: Path) -> None:
     repository = _FallbackRepository([(
@@ -2889,7 +2898,6 @@ def test_fallback_snapshot_includes_document_with_missing_provider(monkeypatch, 
     snapshot = cli._build_fallback_snapshot(cast(JDRecordRepository, repository))
 
     assert snapshot['entries'][0]['screening_provider'] is None
-    assert len(snapshot['digest']) == 64
 
 
 

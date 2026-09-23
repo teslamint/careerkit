@@ -1153,7 +1153,14 @@ def _rescreen_one(
     )
     if not dry_run and not screening.published:
         if screening.used_fallback:
+            attempts = "; ".join(
+                f"{label}: {detail}"
+                for label, details in screening.provider_attempts.items()
+                for detail in details
+            )
             reason = "no provider answered"
+            if attempts:
+                reason = f"{reason} ({attempts})"
         else:
             reason = f"still capped by {screening.provider}"
         return IngestResult(
@@ -1459,7 +1466,7 @@ def _run_snapshot_rescreen(
         items[name] = item
         _write_json_atomic(result_path, journal)
         try:
-            _rescreen_one(
+            result = _rescreen_one(
                 key, workspace, services, dry_run=False, require_strong_provider=True,
                 selected_provider=provider, expected_posting_status=PostingStatus.ACTIVE,
                 expected_screening_provider=entry["screening_provider"],
@@ -1476,7 +1483,7 @@ def _run_snapshot_rescreen(
             item.update(outcome="failed_after_publish" if changed else "failed", message=str(exc))
         else:
             changed = not is_fallback_document(repository.get(key).screening_markdown or "")
-            item.update(outcome="rescreened" if changed else "still_fallback")
+            item.update(outcome="rescreened" if changed else "still_fallback", message=result.message)
         _write_json_atomic(result_path, journal)
     return journal
 
@@ -2000,6 +2007,7 @@ def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, s
                     "provider": None,
                     "used_fallback": False,
                     "fallback_reason": None,
+                    "provider_attempts": {},
                     "verdict": None,
                     "screening_path": None,
                 }
@@ -2034,6 +2042,10 @@ def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, s
                 "provider": result.provider,
                 "used_fallback": result.used_fallback,
                 "fallback_reason": result.fallback_reason,
+                "provider_attempts": {
+                    label: list(details)
+                    for label, details in result.provider_attempts.items()
+                },
                 "verdict": result.verdict,
                 "screening_path": str(result.screening_path),
             }
