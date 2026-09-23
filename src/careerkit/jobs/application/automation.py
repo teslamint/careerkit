@@ -821,11 +821,13 @@ def _pre_screen_reason(
     record: StoredJobRecord,
     prior_records: Sequence[StoredJobRecord],
     quick_filters: Mapping[str, Any],
+    *,
+    include_status_filters: bool = True,
 ) -> str | None:
-    if any(marker in record.jd_markdown for marker in _CLOSED_MARKERS):
+    if include_status_filters and any(marker in record.jd_markdown for marker in _CLOSED_MARKERS):
         return "closed"
     company_slug = slugify_company(record.record.company, max_len=30, fallback="")
-    if len(company_slug) >= 2:
+    if include_status_filters and len(company_slug) >= 2:
         cutoff = (datetime.now() - timedelta(days=180)).timestamp()
         for prior in prior_records:
             if prior.record.key == record.record.key:
@@ -951,13 +953,12 @@ class JobsScreeningStage:
                 continue
             if company_error is not None:
                 company_info_warnings[item_id] = company_error
-            prescreen_reason = None
-            if not screening_only:
-                prescreen_reason = _pre_screen_reason(
-                    record,
-                    prior_records,
-                    quick_filters,
-                )
+            prescreen_reason = _pre_screen_reason(
+                record,
+                prior_records,
+                quick_filters,
+                include_status_filters=not screening_only,
+            )
             if prescreen_reason is not None:
                 prescreen_reasons[prescreen_reason] += 1
                 if not dry_run:

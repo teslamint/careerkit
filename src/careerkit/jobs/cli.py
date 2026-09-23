@@ -20,6 +20,8 @@ from careerkit.jobs.application.automation import (
     JobsAutoResultService,
     JobsResumeStateService,
     JobsScreeningStage,
+    _load_quick_filters,
+    _pre_screen_reason,
     load_candidate_context,
 )
 from careerkit.cli_logging import configure_cli_logging
@@ -1745,6 +1747,33 @@ def _handle_screening_lint(args: argparse.Namespace, workspace: WorkspacePaths, 
 def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     repository = JDRecordRepository(workspace.jobs_records_dir)
     stored = repository.get(_parse_job_key(args.job_key))
+    prescreen_reason = _pre_screen_reason(
+        stored,
+        (),
+        _load_quick_filters(workspace),
+        include_status_filters=False,
+    )
+    if prescreen_reason is not None:
+        if not args.dry_run:
+            repository.update_prescreen(stored.record.key, prescreen_reason)
+        if args.json:
+            payload = _base_payload("screening run", workspace)
+            payload.update(
+                {
+                    "job_key": args.job_key,
+                    "dry_run": args.dry_run,
+                    "prescreen_reason": prescreen_reason,
+                    "provider": None,
+                    "used_fallback": False,
+                    "fallback_reason": None,
+                    "verdict": None,
+                    "screening_path": None,
+                }
+            )
+            _print_json(payload)
+        else:
+            print(f"job_key={args.job_key} prescreen_reason={prescreen_reason}")
+        return 0
     candidate_context = (
         args.candidate_context_file.read_text(encoding="utf-8")
         if args.candidate_context_file is not None

@@ -1689,7 +1689,10 @@ def test_cli_screening_run_reads_explicit_candidate_context(monkeypatch, capsys,
     class FakeRepository:
         def get(self, key: JobKey):
             captured['key'] = key
-            return SimpleNamespace(record=SimpleNamespace(platform='wanted', job_id='1', company='Acme'), jd_markdown='# JD')
+            return SimpleNamespace(
+                record=SimpleNamespace(platform='wanted', job_id='1', company='Acme', position='Backend'),
+                jd_markdown='# JD',
+            )
 
     def fake_run_screening(**kwargs):
         captured.update(kwargs)
@@ -1716,6 +1719,47 @@ def test_cli_screening_run_reads_explicit_candidate_context(monkeypatch, capsys,
     assert captured['dry_run'] is True
 
 
+def test_cli_screening_run_prescreens_non_backend_role(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source="explicit")
+    config_path = tmp_path / "private/jd/config/search_config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "quick_filters:\n  title_include:\n    - Backend\n  title_exclude:\n    - Product Manager\n",
+        encoding="utf-8",
+    )
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+
+    class FakeRepository:
+        def get(self, key: JobKey):
+            assert key == JobKey("wanted", "fixture")
+            return SimpleNamespace(
+                record=SimpleNamespace(
+                    platform="wanted",
+                    job_id="20",
+                    company="Product Co",
+                    position="Product Manager",
+                ),
+                jd_markdown="# Product Manager\n\n## 자격 요건\n\n- 학사 이상\n",
+            )
+
+    def fail_screening(**kwargs):
+        del kwargs
+        pytest.fail("role-excluded screening must not call the model")
+
+    monkeypatch.setattr(cli, "resolve_workspace", lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, "_build_services", lambda resolved: bundle)
+    monkeypatch.setattr(cli, "JDRecordRepository", lambda path: FakeRepository())
+    monkeypatch.setattr(cli, "run_screening", fail_screening)
+
+    assert cli.main(["screening", "run", "wanted:fixture", "--dry-run", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["prescreen_reason"] == "title_exclude"
+    assert payload["verdict"] is None
+
 def test_cli_screening_run_loads_workspace_candidate_context_by_default(
     monkeypatch, capsys, tmp_path: Path
 ) -> None:
@@ -1730,7 +1774,10 @@ def test_cli_screening_run_loads_workspace_candidate_context_by_default(
 
     class FakeRepository:
         def get(self, key: JobKey):
-            return SimpleNamespace(record=SimpleNamespace(platform='wanted', job_id='1', company='Acme'), jd_markdown='# JD')
+            return SimpleNamespace(
+                record=SimpleNamespace(platform='wanted', job_id='1', company='Acme', position='Backend'),
+                jd_markdown='# JD',
+            )
 
     def fake_run_screening(**kwargs):
         captured.update(kwargs)
@@ -1764,7 +1811,10 @@ def test_cli_screening_runtime_error_is_controlled(monkeypatch, capsys, tmp_path
 
     class FakeRepository:
         def get(self, key: JobKey):
-            return SimpleNamespace(record=SimpleNamespace(company='Acme'), jd_markdown='# JD')
+            return SimpleNamespace(
+                record=SimpleNamespace(company='Acme', position='Backend'),
+                jd_markdown='# JD',
+            )
 
     def fail_screening(**kwargs):
         raise RuntimeError('invalid screening output')
