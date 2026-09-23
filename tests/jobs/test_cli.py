@@ -2842,9 +2842,9 @@ def test_queue_fallback_limit_applies_after_closed_filter(monkeypatch, capsys, t
     assert payload['items'][0]['job_key'] == 'wanted:2'
 
 
-def test_queue_fallback_rescreen_snapshot_requires_provider_and_limit(
-    monkeypatch, capsys, tmp_path: Path
-) -> None:
+def _run_still_fallback_snapshot(
+    monkeypatch, tmp_path: Path, *, json_output: bool
+) -> tuple[_FallbackRepository, Path, int]:
     repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
     _fallback_cli(monkeypatch, tmp_path, repository)
     monkeypatch.setattr(
@@ -2861,12 +2861,22 @@ def test_queue_fallback_rescreen_snapshot_requires_provider_and_limit(
         encoding='utf-8',
     )
     result_path = tmp_path / 'fallback-result.json'
-
-    assert cli.main([
+    argv = [
         'queue', 'fallback', '--rescreen-snapshot', str(snapshot_path),
-        '--provider', 'claude', '--max-entries', '1', '--result', str(result_path), '--json',
-    ]) == 0
+        '--provider', 'claude', '--max-entries', '1', '--result', str(result_path),
+    ]
+    exit_code = cli.main([*argv, '--json'] if json_output else argv)
+    return repository, result_path, exit_code
 
+
+def test_queue_fallback_rescreen_snapshot_requires_provider_and_limit(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    repository, result_path, exit_code = _run_still_fallback_snapshot(
+        monkeypatch, tmp_path, json_output=True
+    )
+
+    assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload['digest'] == cli._build_fallback_snapshot(cast(JDRecordRepository, repository))['digest']
     journal = json.loads(result_path.read_text(encoding='utf-8'))['items'][0]
@@ -2995,27 +3005,11 @@ def test_rescreen_snapshot_drift_message_is_per_entry(monkeypatch, capsys, tmp_p
 
 
 def test_rescreen_snapshot_prints_summary_without_json(monkeypatch, capsys, tmp_path: Path) -> None:
-    repository = _FallbackRepository([(_fallback_record('1'), _FALLBACK_DOC)])
-    _fallback_cli(monkeypatch, tmp_path, repository)
-    monkeypatch.setattr(
-        cli, 'resolve_commands',
-        lambda environment=None: [('claude', ['claude', '--print'])],
-    )
-    monkeypatch.setattr(
-        cli, 'run_screening',
-        lambda **kwargs: _screening(provider='claude', published=False, used_fallback=True),
-    )
-    snapshot_path = tmp_path / 'fallback-snapshot.json'
-    snapshot_path.write_text(
-        json.dumps(cli._build_fallback_snapshot(cast(JDRecordRepository, repository))),
-        encoding='utf-8',
+    _repository, _result_path, exit_code = _run_still_fallback_snapshot(
+        monkeypatch, tmp_path, json_output=False
     )
 
-    assert cli.main([
-        'queue', 'fallback', '--rescreen-snapshot', str(snapshot_path),
-        '--provider', 'claude', '--max-entries', '1', '--result', str(tmp_path / 'result.json'),
-    ]) == 0
-
+    assert exit_code == 0
     out = capsys.readouterr().out
     assert 'wanted:1: still_fallback' in out
     assert 'still_fallback=1' in out
