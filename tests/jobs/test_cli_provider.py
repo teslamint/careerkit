@@ -584,3 +584,33 @@ def test_resolve_commands_no_model_env_uses_default() -> None:
     claude_cmds = [c for c in cmds if c[0] == "claude"]
     assert len(claude_cmds) == 1
     assert "--model" not in " ".join(claude_cmds[0][1])
+
+
+def test_run_selected_provider_does_not_fall_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli_provider,
+        "resolve_commands",
+        lambda env: [("claude", ["claude"]), ("codex", ["codex"])],
+    )
+
+    def fail_selected(provider, *args):
+        calls.append(provider)
+        return 1, "", "unavailable"
+
+    monkeypatch.setattr(cli_provider, "run_provider_command", fail_selected)
+    local_calls = forbid_urlopen(monkeypatch)
+    provider = CLIProvider(
+        environment={
+            "LOCAL_LLM_BASE_URL": "http://local.example/v1",
+            "LOCAL_LLM_MODEL": "local-model",
+        }
+    )
+
+    with pytest.raises(RuntimeError):
+        provider.run("private prompt", timeout=5, selected_provider="claude")
+
+    assert calls == ["claude"]
+    assert local_calls == []

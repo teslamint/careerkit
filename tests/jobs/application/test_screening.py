@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from careerkit.jobs.application.screening import (
     run_screening,
     validate_screening_structure,
 )
-from careerkit.jobs.domain.model import JobKey, JobRecord, ScreeningVerdict
+from careerkit.jobs.domain.model import JobKey, JobRecord, PostingStatus, ScreeningVerdict
 from careerkit.workspace import resolve_workspace
 
 
@@ -50,14 +51,17 @@ class SequenceProvider:
         self.provider_name = provider_name
         self.calls = 0
         self.prompts: list[str] = []
+        self.selected_providers: list[str | None] = []
 
     def run(
         self,
         prompt: str,
         timeout: int,
         local_timeout: int | None = None,
+        selected_provider: str | None = None,
     ) -> tuple[str, str]:
         self.prompts.append(prompt)
+        self.selected_providers.append(selected_provider)
         output = self.outputs[min(self.calls, len(self.outputs) - 1)]
         self.calls += 1
         return self.provider_name, output
@@ -175,6 +179,60 @@ def test_run_screening_publishes_rendered_markdown_and_metadata(tmp_path: Path) 
     assert "required-001" not in persisted.screening_markdown
     assert result.evidence_violations["unevidenced_main_duty"] == 0
 
+
+def test_run_screening_passes_expected_publication_state(tmp_path: Path, monkeypatch) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    existing_markdown = "Existing fallback result\n"
+    repository.update_screening_result(
+        stored.record.key,
+        screening_markdown=existing_markdown,
+        screening_provider="fallback",
+    )
+    manifest = extract_requirement_manifest(stored.jd_markdown)
+    expected_digest = hashlib.sha256(existing_markdown.encode("utf-8")).hexdigest()
+    captured: dict[str, object] = {}
+    original = repository.update_screening_result
+
+    def capture_expected_state(*args, **kwargs):
+        captured.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "update_screening_result", capture_expected_state)
+
+    run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        llm_provider=SequenceProvider([_assessment_json(without_main_duty(manifest))]),
+        repository=repository,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영, AWS",
+        expected_posting_status=PostingStatus.ACTIVE,
+        expected_screening_provider="fallback",
+        expected_screening_sha256=expected_digest,
+    )
+
+    assert captured["expected_posting_status"] is PostingStatus.ACTIVE
+    assert captured["expected_screening_provider"] == "fallback"
+    assert captured["expected_screening_sha256"] == expected_digest
+
+
+def test_run_screening_passes_selected_provider_to_both_attempts(tmp_path: Path) -> None:
+    workspace, _repository, stored = _create_record(tmp_path)
+    manifest = extract_requirement_manifest(stored.jd_markdown)
+    provider = SequenceProvider([
+        "not JSON",
+        _assessment_json(without_main_duty(manifest)),
+    ])
+    run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        llm_provider=provider,
+        dry_run=True,
+        selected_provider="claude",
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영, AWS",
+    )
+    assert provider.selected_providers == ["claude", "claude"]
 
 def test_required_semantic_gate_preserves_record_when_validator_is_missing(tmp_path: Path) -> None:
     workspace, repository, stored = _create_record(tmp_path)

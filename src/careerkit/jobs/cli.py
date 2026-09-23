@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 import math
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -34,7 +36,7 @@ from careerkit.jobs.application.requirement_manifest import extract_requirement_
 from careerkit.jobs.application.screening_assessment import parse_screening_assessment
 from careerkit.jobs.application.screening_quality import validate_assessment_quality
 from careerkit.jobs.application.storage_migration import get_platform_from_url
-from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
+from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, ScreeningStateConflict
 from careerkit.jobs.adapters.storage.link_store import LinkStore
 from careerkit.jobs.application.linking import LinkService
 from careerkit.jobs.console.server import create_server
@@ -266,7 +268,12 @@ def build_parser() -> argparse.ArgumentParser:
     fallback_mode = queue_fallback.add_mutually_exclusive_group()
     fallback_mode.add_argument("--list", action="store_true", dest="list_only")
     fallback_mode.add_argument("--rescreen", action="store_true")
+    fallback_mode.add_argument("--rescreen-snapshot", type=Path)
+    fallback_mode.add_argument("--snapshot", type=Path)
     queue_fallback.add_argument("--limit", type=_positive_int)
+    queue_fallback.add_argument("--provider", choices=sorted(STRONG_PROVIDER_LABELS))
+    queue_fallback.add_argument("--max-entries", type=_positive_int)
+    queue_fallback.add_argument("--result", type=Path)
     queue_fallback.add_argument("--include-closed", action="store_true")
     queue_fallback.add_argument("--json", action="store_true")
     queue_fallback.set_defaults(handler=_handle_queue_fallback)
@@ -1114,6 +1121,11 @@ def _rescreen_one(
     *,
     dry_run: bool,
     require_strong_provider: bool = False,
+    selected_provider: str | None = None,
+    expected_posting_status: PostingStatus | None = None,
+    expected_screening_provider: str | None = None,
+    require_expected_screening_provider: bool = False,
+    expected_screening_sha256: str | None = None,
 ) -> IngestResult:
     """Rescreen a single record through the normal screening path."""
     repository = JDRecordRepository(workspace.jobs_records_dir)
@@ -1133,10 +1145,22 @@ def _rescreen_one(
         repository=None if dry_run else repository,
         candidate_context=load_candidate_context(workspace),
         require_strong_provider=require_strong_provider,
+        selected_provider=selected_provider,
+        expected_posting_status=expected_posting_status,
+        expected_screening_provider=expected_screening_provider,
+        require_expected_screening_provider=require_expected_screening_provider,
+        expected_screening_sha256=expected_screening_sha256,
     )
     if not dry_run and not screening.published:
         if screening.used_fallback:
+            attempts = "; ".join(
+                f"{label}: {detail}"
+                for label, details in screening.provider_attempts.items()
+                for detail in details
+            )
             reason = "no provider answered"
+            if attempts:
+                reason = f"{reason} ({attempts})"
         else:
             reason = f"still capped by {screening.provider}"
         return IngestResult(
@@ -1306,8 +1330,241 @@ def _select_fallback_records(
     return selected, skipped_closed, unreadable
 
 
+def _build_fallback_snapshot(repository: JDRecordRepository) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for item in repository.list_metadata():
+        if not item.has_screening:
+            continue
+        stored = repository.get(item.record.key)
+        if (
+            stored.record.posting_status != PostingStatus.ACTIVE
+            or stored.screening_markdown is None
+            or not is_fallback_document(stored.screening_markdown)
+        ):
+            continue
+        entries.append(
+            {
+                "job_key": f"{stored.record.platform}:{stored.record.job_id}",
+                "posting_status": stored.record.posting_status.value,
+                "screening_provider": stored.record.screening_provider,
+                "screening_sha256": hashlib.sha256(
+                    stored.screening_markdown.encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    entries.sort(key=lambda entry: entry["job_key"])
+    material = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return {
+        "schema": "fallback-rescreen-snapshot/v1",
+        "entries": entries,
+        "digest": hashlib.sha256(material.encode("utf-8")).hexdigest(),
+    }
+
+
+_FALLBACK_SNAPSHOT_ENTRY_KEYS = frozenset(
+    {"job_key", "posting_status", "screening_provider", "screening_sha256"}
+)
+
+def _load_fallback_snapshot(
+    path: Path,
+    repository: JDRecordRepository,
+    *,
+    max_entries: int,
+    allow_inventory_drift: bool = False,
+) -> dict[str, Any]:
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid fallback snapshot: {exc}") from exc
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != "fallback-rescreen-snapshot/v1":
+        raise ValueError("invalid fallback snapshot schema")
+    entries = snapshot.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("invalid fallback snapshot entries")
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != _FALLBACK_SNAPSHOT_ENTRY_KEYS
+            or not isinstance(entry["job_key"], str)
+            or not isinstance(entry["posting_status"], str)
+            or not isinstance(entry["screening_sha256"], str)
+            or not isinstance(entry["screening_provider"], (str, type(None)))
+        ):
+            raise ValueError("invalid fallback snapshot entry")
+        _parse_job_key(entry["job_key"])
+    job_keys = [entry["job_key"] for entry in entries]
+    if job_keys != sorted(set(job_keys)):
+        raise ValueError("fallback snapshot entries must be unique and ordered by job_key")
+    material = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    if snapshot.get("digest") != digest:
+        raise ValueError("fallback snapshot digest does not match entries")
+    if len(entries) > max_entries:
+        raise ValueError(
+            f"snapshot has {len(entries)} entries, exceeding confirmed --max-entries {max_entries}"
+        )
+    if not allow_inventory_drift:
+        current = _build_fallback_snapshot(repository)
+        if current["digest"] != digest or current["entries"] != entries:
+            raise ValueError("fallback snapshot does not match active fallback inventory")
+    return snapshot
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        delete=False,
+    ) as handle:
+        json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+        handle.write("\n")
+        temporary_path = Path(handle.name)
+    temporary_path.replace(path)
+
+
+def _run_snapshot_rescreen(
+    snapshot: dict[str, Any],
+    *,
+    provider: str,
+    max_entries: int,
+    result_path: Path,
+    workspace: WorkspacePaths,
+    services: ServiceBundle,
+    repository: JDRecordRepository,
+) -> dict[str, Any]:
+    journal = {
+        "schema": "fallback-rescreen-result/v1",
+        "snapshot_digest": snapshot["digest"],
+        "requested_provider": provider,
+        "max_entries": max_entries,
+        "items": [],
+    }
+    if result_path.exists():
+        journal = json.loads(result_path.read_text(encoding="utf-8"))
+        if (
+            journal.get("snapshot_digest") != snapshot["digest"]
+            or journal.get("requested_provider") != provider
+            or journal.get("max_entries") != max_entries
+        ):
+            raise ValueError("result journal does not match snapshot, provider, and max entries")
+    items = {item["job_key"]: item for item in journal["items"]}
+    for item in items.values():
+        if item.get("outcome") == "started":
+            item["outcome"] = "failed"
+            item["message"] = "interrupted before terminal outcome"
+    _write_json_atomic(result_path, journal)
+    for entry in snapshot["entries"]:
+        name = entry["job_key"]
+        if name in items:
+            continue
+        key = _parse_job_key(name)
+        message = "record changed"
+        try:
+            current = repository.get(key)
+            digest = hashlib.sha256((current.screening_markdown or "").encode("utf-8")).hexdigest()
+            eligible = (
+                current.record.posting_status.value == entry["posting_status"]
+                and current.record.screening_provider == entry["screening_provider"]
+                and digest == entry["screening_sha256"]
+                and current.screening_markdown is not None
+                and is_fallback_document(current.screening_markdown)
+            )
+        except Exception as exc:
+            eligible = False
+            message = str(exc)
+        if not eligible:
+            item = {"job_key": name, "outcome": "skipped_drift", "message": message}
+            journal["items"].append(item)
+            items[name] = item
+            _write_json_atomic(result_path, journal)
+            continue
+        item = {"job_key": name, "outcome": "started", "provider": provider}
+        journal["items"].append(item)
+        items[name] = item
+        _write_json_atomic(result_path, journal)
+        try:
+            result = _rescreen_one(
+                key, workspace, services, dry_run=False, require_strong_provider=True,
+                selected_provider=provider, expected_posting_status=PostingStatus.ACTIVE,
+                expected_screening_provider=entry["screening_provider"],
+                require_expected_screening_provider=True,
+                expected_screening_sha256=entry["screening_sha256"],
+            )
+        except ScreeningStateConflict:
+            item.update(outcome="skipped_drift", message="record changed before publication")
+        except Exception as exc:
+            try:
+                changed = not is_fallback_document(repository.get(key).screening_markdown or "")
+            except Exception:
+                changed = False
+            item.update(outcome="failed_after_publish" if changed else "failed", message=str(exc))
+        else:
+            changed = not is_fallback_document(repository.get(key).screening_markdown or "")
+            item.update(outcome="rescreened" if changed else "still_fallback", message=result.message)
+        _write_json_atomic(result_path, journal)
+    return journal
+
+
 def _handle_queue_fallback(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
     repository = JDRecordRepository(workspace.jobs_records_dir)
+    if getattr(args, "snapshot", None) is not None:
+        snapshot = _build_fallback_snapshot(repository)
+        _write_json_atomic(args.snapshot, snapshot)
+        if args.json:
+            payload = _base_payload("queue fallback snapshot", workspace)
+            payload.update({"digest": snapshot["digest"], "count": len(snapshot["entries"])})
+            _print_json(payload)
+        else:
+            print(f"snapshot={args.snapshot} digest={snapshot['digest']} count={len(snapshot['entries'])}")
+        return 0
+    if getattr(args, "rescreen_snapshot", None) is not None:
+        if args.provider is None or args.max_entries is None or args.result is None:
+            raise ValueError("--rescreen-snapshot requires --provider, --max-entries, and --result")
+        if not any(label == args.provider for label, _command in resolve_commands()):
+            raise ValueError(f"selected provider is unavailable: {args.provider}")
+        snapshot = _load_fallback_snapshot(
+            args.rescreen_snapshot,
+            repository,
+            max_entries=args.max_entries,
+            allow_inventory_drift=args.result.exists(),
+        )
+        journal = _run_snapshot_rescreen(
+            snapshot,
+            provider=args.provider,
+            max_entries=args.max_entries,
+            result_path=args.result,
+            workspace=workspace,
+            services=services,
+            repository=repository,
+        )
+        counts = Counter(item["outcome"] for item in journal["items"])
+        if args.json:
+            payload = _base_payload("queue fallback rescreen snapshot", workspace)
+            payload.update(
+                {
+                    "digest": snapshot["digest"],
+                    "count": len(journal["items"]),
+                    "rescreened": counts["rescreened"],
+                    "still_fallback": counts["still_fallback"],
+                    "failed": counts["failed"],
+                    "failed_after_publish": counts["failed_after_publish"],
+                    "skipped_drift": counts["skipped_drift"],
+                    "items": journal["items"],
+                }
+            )
+            _print_json(payload)
+        else:
+            for item in journal["items"]:
+                print(f"{item['job_key']}: {item['outcome']} {item.get('message', '')}".rstrip())
+            print(
+                f"rescreened={counts['rescreened']} still_fallback={counts['still_fallback']} "
+                f"failed={counts['failed']} failed_after_publish={counts['failed_after_publish']} "
+                f"skipped_drift={counts['skipped_drift']}"
+            )
+        return 2 if counts["failed"] or counts["failed_after_publish"] else 0
+
     selected, skipped_closed, unreadable = _select_fallback_records(
         repository, include_closed=args.include_closed,
     )
@@ -1766,6 +2023,7 @@ def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, s
                     "provider": None,
                     "used_fallback": False,
                     "fallback_reason": None,
+                    "provider_attempts": {},
                     "verdict": None,
                     "screening_path": None,
                 }
@@ -1800,6 +2058,10 @@ def _handle_screening_run(args: argparse.Namespace, workspace: WorkspacePaths, s
                 "provider": result.provider,
                 "used_fallback": result.used_fallback,
                 "fallback_reason": result.fallback_reason,
+                "provider_attempts": {
+                    label: list(details)
+                    for label, details in result.provider_attempts.items()
+                },
                 "verdict": result.verdict,
                 "screening_path": str(result.screening_path),
             }

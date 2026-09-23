@@ -47,6 +47,10 @@ class JobRecordIntegrityError(JobRecordRepositoryError):
     """Raised when persisted data is missing or corrupted."""
 
 
+class ScreeningStateConflict(JobRecordRepositoryError):
+    """Raised when a snapshot precondition no longer matches the record."""
+
+
 @dataclass(frozen=True)
 class StoredJobRecord:
     record: JobRecord
@@ -170,6 +174,10 @@ class JDRecordRepository:
         screening_verdict: ScreeningVerdict | None = None,
         screening_provider: str | None = None,
         verdict_capped: bool | None = None,
+        expected_posting_status: PostingStatus | None = None,
+        expected_screening_provider: str | None = None,
+        require_expected_screening_provider: bool = False,
+        expected_screening_sha256: str | None = None,
     ) -> StoredJobRecord:
         """Atomically publish screening content against the latest record metadata."""
         record_dir = self._record_dir(key)
@@ -177,6 +185,21 @@ class JDRecordRepository:
             raise JobRecordNotFound(f"Record not found: {key!r}")
         with self._locked(record_dir, exclusive=True):
             current = self._read_existing_locked(key, record_dir)
+            if expected_posting_status is not None and (
+                current.record.posting_status != expected_posting_status
+            ):
+                raise ScreeningStateConflict
+            if (
+                expected_screening_provider is not None
+                or require_expected_screening_provider
+            ) and current.record.screening_provider != expected_screening_provider:
+                raise ScreeningStateConflict
+            if expected_screening_sha256 is not None:
+                current_sha256 = hashlib.sha256(
+                    (current.screening_markdown or "").encode("utf-8")
+                ).hexdigest()
+                if current_sha256 != expected_screening_sha256:
+                    raise ScreeningStateConflict
             content = self._write_revision_content(
                 record_dir,
                 jd_markdown=current.jd_markdown,
