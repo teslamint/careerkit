@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from careerkit.jobs.adapters.platforms.groupby import GroupByAdapter, format_groupby_experience
 from careerkit.jobs.adapters.platforms.remember import RememberAdapter
 from careerkit.jobs.adapters.platforms.wanted import WantedAdapter
@@ -12,9 +14,11 @@ class StubHttp:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
         self.urls: list[str] = []
+        self.headers: list[dict[str, str]] = []
 
     def request_json(self, url: str, **kwargs) -> dict:
         self.urls.append(url)
+        self.headers.append(dict(kwargs.get("headers") or {}))
         return self.payload
 
 
@@ -63,6 +67,9 @@ class SequenceHttp:
         return response
 
 
+_BACKEND_TYPES = [{"id": 2, "name": "백엔드", "parentId": 1}]
+
+
 def _config(
     platform: str,
     http,
@@ -109,6 +116,7 @@ def test_groupby_search_unwraps_data_envelope_and_formats_experience_range() -> 
                         "name": "Backend",
                         "startup": {"name": "Acme"},
                         "experienceRange": {"min": 1, "max": 3},
+                        "positionTypes": _BACKEND_TYPES,
                     }
                 ],
                 "total": 1,
@@ -159,14 +167,14 @@ def test_groupby_search_serializes_configured_experience_range_on_first_and_next
             {
                 "status": 200,
                 "data": {
-                    "items": [{"id": 1, "name": "Backend"}],
+                    "items": [{"id": 1, "name": "Backend", "positionTypes": _BACKEND_TYPES}],
                     "total": 2,
                 },
             },
             {
                 "status": 200,
                 "data": {
-                    "items": [{"id": 2, "name": "Platform"}],
+                    "items": [{"id": 2, "name": "Platform", "positionTypes": _BACKEND_TYPES}],
                     "total": 2,
                 },
             },
@@ -229,7 +237,7 @@ def test_remember_search_returns_partial_items_after_later_page_failure() -> Non
 
 
 def test_groupby_search_returns_partial_items_after_later_page_failure() -> None:
-    http = FailSecondHttp({"status": 200, "data": {"items": [{"id": 1, "name": "Backend"}], "total": 2}})
+    http = FailSecondHttp({"status": 200, "data": {"items": [{"id": 1, "name": "Backend", "positionTypes": _BACKEND_TYPES}], "total": 2}})
     result = GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
     assert [item.job_id for item in result.items] == ["1"]
     assert result.complete is False
@@ -263,6 +271,97 @@ def test_remember_candidate_treats_zero_bounds_as_unrestricted() -> None:
     )
 
     assert candidate.experience == "경력 무관"
+
+
+def test_groupby_search_sends_browser_fetch_metadata() -> None:
+    # Without Sec-Fetch-* headers the API ignores every query parameter and serves an
+    # unrelated, unordered list (observed 2026-09-28).
+    http = StubHttp({"status": 200, "data": {"items": [], "total": 0}})
+
+    GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
+
+    assert http.headers[0]["Sec-Fetch-Mode"] == "cors"
+    assert http.headers[0]["Sec-Fetch-Site"] == "same-site"
+
+
+def test_groupby_search_rejects_first_page_that_ignores_position_filter() -> None:
+    http = StubHttp(
+        {
+            "status": 200,
+            "data": {
+                "items": [{"id": 9, "name": "Designer", "positionTypes": [{"id": 25}]}],
+                "total": 99,
+            },
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="positionTypes"):
+        GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
+
+
+def test_groupby_search_rejects_page_mixing_requested_and_other_position_types() -> None:
+    # An unfiltered list can contain a backend posting by chance; one foreign item
+    # is enough to show the filter was not applied.
+    http = StubHttp(
+        {
+            "status": 200,
+            "data": {
+                "items": [
+                    {"id": 1, "name": "Backend", "positionTypes": _BACKEND_TYPES},
+                    {"id": 9, "name": "Designer", "positionTypes": [{"id": 25}]},
+                ],
+                "total": 99,
+            },
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="positionTypes"):
+        GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
+
+
+def test_groupby_search_rejects_items_without_position_types() -> None:
+    http = StubHttp({"status": 200, "data": {"items": [{"id": 1, "name": "Backend"}], "total": 1}})
+
+    with pytest.raises(RuntimeError, match="positionTypes"):
+        GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
+
+
+def test_groupby_search_stops_incomplete_when_later_page_ignores_position_filter() -> None:
+    http = SequenceHttp(
+        [
+            {
+                "status": 200,
+                "data": {"items": [{"id": 1, "name": "Backend", "positionTypes": _BACKEND_TYPES}], "total": 3},
+            },
+            {
+                "status": 200,
+                "data": {"items": [{"id": 9, "name": "Designer", "positionTypes": [{"id": 25}]}], "total": 99},
+            },
+        ]
+    )
+
+    result = GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
+
+    assert [item.job_id for item in result.items] == ["1"]
+    assert result.complete is False
+    assert result.stop_reason == "malformed_response"
+
+
+def test_groupby_search_accepts_item_listing_requested_type_among_others() -> None:
+    http = StubHttp(
+        {
+            "status": 200,
+            "data": {
+                "items": [{"id": 3, "name": "Backend", "positionTypes": [{"id": 1}, {"id": 2}, {"id": 11}]}],
+                "total": 1,
+            },
+        }
+    )
+
+    result = GroupByAdapter().search("ignored", config=_config("groupby", http), state=None)
+
+    assert [item.job_id for item in result.items] == ["3"]
+    assert result.complete is True
 
 
 def test_groupby_max_only_experience_is_parseable_by_shared_filter() -> None:

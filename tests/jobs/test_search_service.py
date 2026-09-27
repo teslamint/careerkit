@@ -338,6 +338,7 @@ def test_search_service_runs_groupby_and_saramin_real_adapters_with_runtime_http
                             "name": "백엔드 엔지니어",
                             "startup": {"name": "GroupBy Co"},
                             "experienceRange": {"min": 3, "max": 10},
+                            "positionTypes": [{"id": 2, "name": "백엔드", "parentId": 1}],
                         }
                     ],
                     "total": 1,
