@@ -9,7 +9,17 @@ from careerkit.jobs.application.search import PaginatedItems, SearchCandidate, p
 
 GROUPBY_API_BASE = "https://api.groupby.kr"
 GROUPBY_BASE_URL = "https://groupby.kr"
-GROUPBY_HEADERS = {"Accept": "application/json", "Origin": GROUPBY_BASE_URL}
+# The API ignores every query parameter and serves an unrelated list unless the request
+# carries browser fetch metadata (verified 2026-09-28). The position-type check in
+# search() detects that list if the server changes what it keys on.
+GROUPBY_HEADERS = {
+    "Accept": "application/json",
+    "Origin": GROUPBY_BASE_URL,
+    "Referer": f"{GROUPBY_BASE_URL}/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+}
 GROUPBY_BACKEND_MAPPING = {"position_types": [2]}
 _DEFAULT_LIMIT = 10
 _MAX_PAGES = 1000
@@ -68,6 +78,11 @@ class GroupByAdapter:
             items = data.get("items", [])
             total = int(data.get("total", 0))
             pages_fetched += 1
+            requested_types = set(GROUPBY_BACKEND_MAPPING["position_types"])
+            if any(not requested_types & _position_type_ids(item) for item in items):
+                if not all_items:
+                    raise RuntimeError("GroupBy API ignored the positionTypes filter")
+                return PaginatedItems(items=tuple(self._to_candidate(item, platform.base_url) for item in all_items), total_count=total, complete=False, pages_fetched=pages_fetched, stop_reason="malformed_response")
             if not items:
                 return PaginatedItems(items=tuple(self._to_candidate(item, platform.base_url) for item in all_items), total_count=total, pages_fetched=pages_fetched)
             fingerprint = page_fingerprint(items)
@@ -90,6 +105,13 @@ class GroupByAdapter:
         company = item.get("company") or item.get("startup") or {}
         experience = format_groupby_experience(item)
         return SearchCandidate(platform=self.name, job_id=raw_id, raw_id=raw_id, title=(item.get("title") or item.get("name") or "").strip(), company=(company.get("name") or item.get("companyName") or "").strip(), experience=str(experience).strip(), url=f"{base_url}/positions/{raw_id}")
+
+
+def _position_type_ids(item: dict) -> set[int]:
+    types = item.get("positionTypes")
+    if not isinstance(types, list):
+        return set()
+    return {entry["id"] for entry in types if isinstance(entry, dict) and isinstance(entry.get("id"), int)}
 
 
 @dataclass(frozen=True)
