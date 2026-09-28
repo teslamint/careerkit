@@ -126,17 +126,37 @@ def _citation_field(citation: dict[str, object], key: str) -> str:
     return _normalize_single_line(value)
 
 
-def _derive_evidence(match_value: str, citations_raw: object) -> str:
+_NEEDS_CITATION = "충족·부분 needs at least one citation"
+_NO_CITATION_ALLOWED = "없음 must have no citations"
+_COUNT_FIXES = {
+    _NEEDS_CITATION: "인용할 원문이 없으면 match를 없음으로 바꾸세요",
+    _NO_CITATION_ALLOWED: "citations를 []로 비우거나, 인용할 원문이 있으면 match를 충족 또는 부분으로 바꾸세요",
+}
+
+
+def _citation_count_violation(match_value: str, citations_raw: object) -> str | None:
     if not isinstance(citations_raw, list):
         raise AssessmentContractError("citations must be a list")
+    if match_value == "없음" and citations_raw:
+        return _NO_CITATION_ALLOWED
+    if match_value != "없음" and not citations_raw:
+        return _NEEDS_CITATION
+    return None
+
+
+def _citation_count_error(violations: list[tuple[str, str]]) -> AssessmentContractError:
+    # One message lists every bad id, so the single contract retry can fix all
+    # of them at once instead of trading one violation for another.
+    listed = "; ".join(f"{match_id}: {rule}" for match_id, rule in violations)
+    fixes = " ".join(f"{rule} → {_COUNT_FIXES[rule]}." for rule in dict.fromkeys(rule for _, rule in violations))
+    return AssessmentContractError(f"{listed}. {fixes}")
+
+
+def _derive_evidence(match_value: str, citations: list[object]) -> str:
     if match_value == "없음":
-        if citations_raw:
-            raise AssessmentContractError("없음 must have no citations")
         return _NO_EVIDENCE
-    if not citations_raw:
-        raise AssessmentContractError("충족·부분 needs at least one citation")
     pairs: list[str] = []
-    for citation in citations_raw:
+    for citation in citations:
         if not isinstance(citation, dict) or frozenset(citation) != _CITATION_KEYS:
             raise AssessmentContractError("citation keys must be source and quote")
         source = _citation_field(citation, "source")
@@ -166,6 +186,7 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
 
     matches: list[AssessmentMatch] = []
     seen_ids: list[str] = []
+    count_violations: list[tuple[str, str]] = []
     for item in matches_raw:
         if not isinstance(item, dict) or frozenset(item) != _MATCH_KEYS:
             raise AssessmentContractError("unexpected match item keys")
@@ -175,9 +196,16 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
             raise AssessmentContractError("match id must be a non-empty string")
         if not isinstance(match_value, str) or match_value not in _MATCH_VALUES:
             raise AssessmentContractError(f"invalid match value: {match_value}")
-        evidence = _derive_evidence(match_value, item["citations"])
+        citations = item["citations"]
         seen_ids.append(match_id)
+        violation = _citation_count_violation(match_value, citations)
+        if violation is not None:
+            count_violations.append((match_id, violation))
+            continue
+        evidence = _derive_evidence(match_value, citations)
         matches.append(AssessmentMatch(id=match_id, match=match_value, evidence=evidence))
+    if count_violations:
+        raise _citation_count_error(count_violations)
 
     expected_ids = _leaf_ids(manifest)
     if tuple(seen_ids) != tuple(dict.fromkeys(seen_ids)) or frozenset(seen_ids) != frozenset(expected_ids) or len(seen_ids) != len(expected_ids):

@@ -511,9 +511,9 @@ _CITE = [{"source": "private/profile/skills-job.md", "quote": "Python"}]
     ("required", "reason"),
     [
         ({"id": "required-001", "match": "충족", "evidence": "probable: [source: a.md] [quote: Python]"}, "unexpected match item keys"),
-        ({"id": "required-001", "match": "충족", "citations": []}, "충족·부분 needs at least one citation"),
-        ({"id": "required-001", "match": "부분", "citations": []}, "충족·부분 needs at least one citation"),
-        ({"id": "required-001", "match": "없음", "citations": _CITE}, "없음 must have no citations"),
+        ({"id": "required-001", "match": "충족", "citations": []}, r"required-001: 충족·부분 needs at least one citation"),
+        ({"id": "required-001", "match": "부분", "citations": []}, r"required-001: 충족·부분 needs at least one citation"),
+        ({"id": "required-001", "match": "없음", "citations": _CITE}, r"required-001: 없음 must have no citations"),
         ({"id": "required-001", "match": "충족", "citations": "Python"}, "citations must be a list"),
         ({"id": "required-001", "match": "충족", "citations": ["Python"]}, "citation keys must be source and quote"),
         (
@@ -570,3 +570,23 @@ def test_free_text_schema_version_1_is_rejected(atomic_manifest) -> None:
 
     with pytest.raises(AssessmentContractError, match="schema_version must be 2"):
         parse_screening_assessment(json.dumps(raw, ensure_ascii=False), atomic_manifest)
+
+
+def test_every_citation_count_violation_is_named_with_its_fix(atomic_manifest) -> None:
+    raw = _form_payload(
+        [
+            {"id": "required-001", "match": "충족", "citations": []},
+            {"id": "main_duty-001", "match": "부분", "citations": _CITE},
+            {"id": "preferred-001", "match": "없음", "citations": _CITE},
+        ]
+    )
+
+    with pytest.raises(AssessmentContractError) as caught:
+        parse_screening_assessment(raw, atomic_manifest)
+
+    message = str(caught.value)
+    assert "required-001: 충족·부분 needs at least one citation" in message
+    assert "preferred-001: 없음 must have no citations" in message
+    assert "main_duty-001" not in message
+    assert "match를 없음으로" in message
+    assert "citations를 []로" in message

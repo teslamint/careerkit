@@ -457,6 +457,29 @@ def test_invalid_first_response_gets_contract_specific_retry(tmp_path: Path) -> 
     assert '"id": "required-001"' in provider.prompts[1]
 
 
+def test_contract_retry_names_every_form_violation(tmp_path: Path) -> None:
+    workspace, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    broken = json.loads(_assessment_json(manifest))
+    for item in broken["matches"]:
+        item["citations"] = []
+    provider = SequenceProvider([json.dumps(broken, ensure_ascii=False), _assessment_json(manifest)])
+
+    run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        dry_run=True,
+        llm_provider=provider,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+    )
+
+    violating = [item["id"] for item in broken["matches"] if item["match"] != "없음"]
+    assert len(violating) >= 2
+    for match_id in violating:
+        assert f"{match_id}: 충족·부분 needs at least one citation" in provider.prompts[1]
+
+
 def test_screening_result_constructor_keeps_fallback_reason_optional() -> None:
     result = run_screening.__globals__["ScreeningResult"](
         verdict="지원 보류",
