@@ -84,22 +84,22 @@ GOLDEN_LLM_OUTPUT = """## 기본 정보
 
 GOLDEN_ASSESSMENT_JSON = json.dumps(
     {
-        "schema_version": 1,
+        "schema_version": 2,
         "matches": [
             {
                 "id": "required-001",
                 "match": "충족",
-                "evidence": "probable [source: synthetic/profile.md] [quote: Python]",
+                "citations": [{"source": "synthetic/profile.md", "quote": "Python"}],
             },
             {
                 "id": "required-002",
                 "match": "충족",
-                "evidence": "probable [source: synthetic/profile.md] [quote: API]",
+                "citations": [{"source": "synthetic/profile.md", "quote": "API"}],
             },
             {
                 "id": "preferred-001",
                 "match": "충족",
-                "evidence": "probable [source: synthetic/profile.md] [quote: 검색 경험]",
+                "citations": [{"source": "synthetic/profile.md", "quote": "검색 경험"}],
             },
         ],
         "verdict": "지원 추천",
@@ -2886,9 +2886,8 @@ def test_run_auto_and_queue_rescreen_share_the_same_structured_manifest_contract
     candidate_context = cli.load_candidate_context(workspace)
     assessment = json.loads(GOLDEN_ASSESSMENT_JSON)
     for match in assessment["matches"]:
-        match["evidence"] = (
-            match["evidence"].replace("synthetic/profile.md", "private/profile/skills-job.md")
-        )
+        for citation in match["citations"]:
+            citation["source"] = "private/profile/skills-job.md"
     assessment_json = json.dumps(assessment, ensure_ascii=False)
     fenced_assessment_json = f"```json\n{assessment_json}\n```"
     auto_provider = CapturingFakeProvider(fenced_assessment_json, provider_name="codex")

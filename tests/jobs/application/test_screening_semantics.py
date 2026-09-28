@@ -42,11 +42,11 @@ def _judgments(labels: dict[str, str], spans: dict[str, list[str]]) -> str:
     }, ensure_ascii=False)
 
 
-def _single_claim_assessment(match: str, evidence: str):
+def _single_claim_assessment(match: str, citations: list[dict[str, str]]):
     manifest = extract_requirement_manifest("## 자격요건\n- Spring Boot 개발 경험\n")
     assessment = parse_screening_assessment(json.dumps({
-        "schema_version": 1,
-        "matches": [{"id": "required-001", "match": match, "evidence": evidence}],
+        "schema_version": 2,
+        "matches": [{"id": "required-001", "match": match, "citations": citations}],
         "verdict": "지원 보류",
         "decision_basis": [],
         "screening_summary": [f"필수 1항목: {match} 1"],
@@ -60,10 +60,10 @@ def test_semantic_claims_preserve_unsplit_parent_meaning() -> None:
         "## 자격요건\n- 백엔드 서비스, 분산 처리 시스템 또는 플랫폼 구축 경험 6년 이상\n"
     )
     assessment = parse_screening_assessment(json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "matches": [
-            {"id":"required-001.1","match":"충족","evidence":"probable [source: profile.md] [quote: 백엔드 개발 8년]"},
-            {"id":"required-001.2","match":"부분","evidence":"plausible [source: profile.md] [quote: 플랫폼 운영]"},
+            {"id":"required-001.1","match":"충족","citations": [{"source": "profile.md", "quote": "백엔드 개발 8년"}]},
+            {"id":"required-001.2","match":"부분","citations": [{"source": "profile.md", "quote": "플랫폼 운영"}]},
         ],
         "verdict":"지원 보류","decision_basis":[],
         "screening_summary":["필수 2항목: 충족 1, 부분 1, 없음 0"],
@@ -126,8 +126,8 @@ def test_semantic_eval_loader_rejects_non_boolean_decision_flag(tmp_path, monkey
 def test_semantic_validation_rejects_same_provider_and_scope_overclaim() -> None:
     manifest = extract_requirement_manifest("## 우대사항\n- 온프레미스 또는 폐쇄망 배포 경험\n")
     assessment = parse_screening_assessment(json.dumps({
-        "schema_version":1,
-        "matches":[{"id":"preferred-001","match":"충족","evidence":"probable [source: profile.md] [quote: Ansible 자동화]"}],
+        "schema_version":2,
+        "matches":[{"id":"preferred-001","match":"충족","citations": [{"source": "profile.md", "quote": "Ansible 자동화"}]}],
         "verdict":"지원 추천","decision_basis":[],
         "screening_summary":["우대 1항목: 충족 1, 부분 0, 없음 0"],
         "reasons":["근거 검토","요건 검토","판정 완료"],
@@ -158,7 +158,7 @@ def test_failed_calibration_blocks_runtime_judge_call() -> None:
 
 def test_calibrated_validator_rejects_runtime_provider_drift() -> None:
     manifest, assessment = _single_claim_assessment(
-        "충족", "probable [source: profile.md] [quote: Spring Boot 개발]"
+        "충족", [{"source": "profile.md", "quote": "Spring Boot 개발"}]
     )
     output = _judgments({"required-001": "entails"}, {"required-001": ["Spring Boot 개발"]})
     validator = CalibratedSemanticValidator(
@@ -174,7 +174,7 @@ def test_calibrated_validator_rejects_runtime_provider_drift() -> None:
 
 
 def test_semantic_validation_accepts_empty_spans_when_claim_has_no_evidence() -> None:
-    manifest, assessment = _single_claim_assessment("없음", "possible: 직접 근거 없음")
+    manifest, assessment = _single_claim_assessment("없음", [])
     output = _judgments({"required-001": "unsupported"}, {"required-001": []})
 
     judgments = validate_semantic_assessment(
@@ -187,7 +187,7 @@ def test_semantic_validation_accepts_empty_spans_when_claim_has_no_evidence() ->
 
 def test_semantic_validation_requires_available_evidence_span() -> None:
     manifest, assessment = _single_claim_assessment(
-        "충족", "probable [source: profile.md] [quote: Spring Boot 개발]"
+        "충족", [{"source": "profile.md", "quote": "Spring Boot 개발"}]
     )
     output = _judgments({"required-001": "entails"}, {"required-001": []})
 
@@ -203,17 +203,17 @@ def test_semantic_validation_joins_judgments_by_id_not_response_order() -> None:
         "## 자격요건\n- Spring Boot 개발 경험\n- 폐쇄망 배포 경험\n"
     )
     assessment = parse_screening_assessment(json.dumps({
-        "schema_version":1,
+        "schema_version":2,
         "matches":[
-            {"id":"required-001","match":"충족","evidence":"probable [source: profile.md] [quote: Spring Boot 개발]"},
-            {"id":"required-002","match":"없음","evidence":"possible: 직접 근거 없음 [source: profile.md] [quote: 일반 SaaS 배포]"},
+            {"id":"required-001","match":"충족","citations": [{"source": "profile.md", "quote": "Spring Boot 개발"}]},
+            {"id":"required-002","match":"없음","citations": []},
         ],
         "verdict":"지원 보류","decision_basis":[],
         "screening_summary":["필수 2항목: 충족 1, 부분 0, 없음 1"],
         "reasons":["추천 전환 조건: [requirement: required-002] 충족 확인","비추천 확정 조건: [requirement: required-002] 미충족 확정","검토 필요"],
     }, ensure_ascii=False), manifest)
     output = json.dumps({"schema_version":1,"judgments":[
-        {"id":"required-002","label":"unsupported","evidence_spans":["일반 SaaS 배포"],"reason":"환경 근거가 없다."},
+        {"id":"required-002","label":"unsupported","evidence_spans":[],"reason":"환경 근거가 없다."},
         {"id":"required-001","label":"entails","evidence_spans":["Spring Boot 개발"],"reason":"개발 경험이 직접 일치한다."},
     ]}, ensure_ascii=False)
 

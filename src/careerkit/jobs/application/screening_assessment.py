@@ -24,7 +24,12 @@ _TOP_LEVEL_KEYS = frozenset(
         "reasons",
     }
 )
-_MATCH_KEYS = frozenset({"id", "match", "evidence"})
+_MATCH_KEYS = frozenset({"id", "match", "citations"})
+_CITATION_KEYS = frozenset({"source", "quote"})
+# The model fills a form; code writes the evidence text that the quality gate
+# and the renderer read, so the grade and the citation syntax cannot drift.
+_GRADE_BY_MATCH = {"충족": "probable", "부분": "plausible", "없음": "possible"}
+_NO_EVIDENCE = "possible: 근거 없음"
 _DEFAULT_EVIDENCE = "확인 필요"
 
 
@@ -110,6 +115,36 @@ def _leaf_ids(manifest: RequirementManifest) -> tuple[str, ...]:
     return tuple(item.id for item in manifest.leaves if item.assessable)
 
 
+def _citation_field(citation: dict[str, object], key: str) -> str:
+    value = citation[key]
+    if not isinstance(value, str) or not _normalize_single_line(value):
+        raise AssessmentContractError("citation source and quote must be non-empty strings")
+    # The gate parses `[source: …] [quote: …]` with bracket delimiters. A
+    # bracket inside a value would make it read a different quote.
+    if "[" in value or "]" in value:
+        raise AssessmentContractError("citation source and quote must not contain brackets")
+    return _normalize_single_line(value)
+
+
+def _derive_evidence(match_value: str, citations_raw: object) -> str:
+    if not isinstance(citations_raw, list):
+        raise AssessmentContractError("citations must be a list")
+    if match_value == "없음":
+        if citations_raw:
+            raise AssessmentContractError("없음 must have no citations")
+        return _NO_EVIDENCE
+    if not citations_raw:
+        raise AssessmentContractError("충족·부분 needs at least one citation")
+    pairs: list[str] = []
+    for citation in citations_raw:
+        if not isinstance(citation, dict) or frozenset(citation) != _CITATION_KEYS:
+            raise AssessmentContractError("citation keys must be source and quote")
+        source = _citation_field(citation, "source")
+        quote = _citation_field(citation, "quote")
+        pairs.append(f"[source: {source}] [quote: {quote}]")
+    return f"{_GRADE_BY_MATCH[match_value]}: " + " ".join(pairs)
+
+
 def _parent_ids(manifest: RequirementManifest) -> frozenset[str]:
     return frozenset(item.id for item in manifest.parents)
 
@@ -118,8 +153,8 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
     parsed = _require_object(raw)
 
     schema_version = parsed["schema_version"]
-    if type(schema_version) is not int or schema_version != 1:
-        raise AssessmentContractError("schema_version must be 1")
+    if type(schema_version) is not int or schema_version != 2:
+        raise AssessmentContractError("schema_version must be 2")
 
     verdict = parsed["verdict"]
     if not isinstance(verdict, str) or verdict not in VERDICT_PRIORITY:
@@ -136,18 +171,13 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
             raise AssessmentContractError("unexpected match item keys")
         match_id = item["id"]
         match_value = item["match"]
-        evidence = item["evidence"]
         if not isinstance(match_id, str) or not match_id.strip():
             raise AssessmentContractError("match id must be a non-empty string")
         if not isinstance(match_value, str) or match_value not in _MATCH_VALUES:
             raise AssessmentContractError(f"invalid match value: {match_value}")
-        if not isinstance(evidence, str):
-            raise AssessmentContractError("match evidence must be a non-empty string")
-        normalized_evidence = _normalize_single_line(evidence)
-        if not normalized_evidence:
-            raise AssessmentContractError("match evidence must be a non-empty string")
+        evidence = _derive_evidence(match_value, item["citations"])
         seen_ids.append(match_id)
-        matches.append(AssessmentMatch(id=match_id, match=match_value, evidence=normalized_evidence))
+        matches.append(AssessmentMatch(id=match_id, match=match_value, evidence=evidence))
 
     expected_ids = _leaf_ids(manifest)
     if tuple(seen_ids) != tuple(dict.fromkeys(seen_ids)) or frozenset(seen_ids) != frozenset(expected_ids) or len(seen_ids) != len(expected_ids):

@@ -409,12 +409,12 @@ def test_code_rendered_row_with_fabricated_resume_citation_is_demoted(tmp_path: 
     manifest = extract_requirement_manifest(jd_markdown)
     assessment = parse_screening_assessment(
         """{
-  "schema_version": 1,
+  "schema_version": 2,
   "matches": [
     {
       "id": "required-001",
       "match": "충족",
-      "evidence": "[source: private/profile/fabricated.md] Spring Boot 경험"
+      "citations": [{"source": "private/profile/fabricated.md", "quote": "Spring Boot 경험"}]
     }
   ],
   "verdict": "지원 추천",
