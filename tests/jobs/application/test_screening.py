@@ -81,7 +81,7 @@ def _assessment_json(
     manifest,
     *,
     match_overrides: dict[str, str] | None = None,
-    evidence_overrides: dict[str, str] | None = None,
+    citation_overrides: dict[str, list[dict[str, str]]] | None = None,
     verdict: str = "지원 추천",
     decision_basis: list[str] | None = None,
     summary: list[str] | None = None,
@@ -89,24 +89,24 @@ def _assessment_json(
 ) -> str:
     matches = []
     match_overrides = match_overrides or {}
-    evidence_overrides = evidence_overrides or {}
+    citation_overrides = citation_overrides or {}
     for item in manifest.leaves:
         if not item.assessable:
             continue
+        match = match_overrides.get(item.id, "충족")
         matches.append(
             {
                 "id": item.id,
-                "match": match_overrides.get(item.id, "충족"),
-                "evidence": evidence_overrides.get(
+                "match": match,
+                "citations": citation_overrides.get(
                     item.id,
-                    ("possible: 직접 근거 없음" if match_overrides.get(item.id) == "없음" else
-                     f"{'plausible' if match_overrides.get(item.id) == '부분' else 'probable'} "
-                     f"[source: private/profile/skills-job.md] [quote: {item.text.split()[0]}]"),
+                    [] if match == "없음" else
+                    [{"source": "private/profile/skills-job.md", "quote": item.text.split()[0]}],
                 ),
             }
         )
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "matches": matches,
         "verdict": verdict,
         "decision_basis": decision_basis or [],
@@ -271,9 +271,9 @@ def test_conditions_accept_several_requirement_ids_in_one_marker(tmp_path: Path,
     candidate_context = "[source: private/profile/skills-job.md] Spring Boot"
     raw = json.loads(_assessment_json(manifest, verdict="지원 보류"))
     raw["matches"] = [
-        {"id": "required-001", "match": "부분", "evidence": "plausible [source: private/profile/skills-job.md] [quote: Spring Boot]"},
-        {"id": "required-002", "match": "없음", "evidence": "possible: Kafka 직접 근거 없음"},
-        {"id": "preferred-001", "match": "없음", "evidence": "possible: AWS 직접 근거 없음"},
+        {"id": "required-001", "match": "부분", "citations": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}]},
+        {"id": "required-002", "match": "없음", "citations": []},
+        {"id": "preferred-001", "match": "없음", "citations": []},
     ]
     raw["screening_summary"] = ["필수 2항목: 충족 0, 부분 1, 없음 1", "우대 1항목: 충족 0, 부분 0, 없음 1"]
     raw["reasons"] = [
@@ -291,7 +291,7 @@ def test_conditions_accept_several_requirement_ids_in_one_marker(tmp_path: Path,
         assert "condition-requirement-conflict" in assessment_quality_issues(grouped, manifest, candidate_context)
 
 
-@pytest.mark.parametrize("defect", ["count", "citation", "quote", "grade", "condition", "missing-condition", "valid", "borrowed-quote", "extra-claim", "unstructured-condition", "extra-condition", "post-demotion-count"])
+@pytest.mark.parametrize("defect", ["count", "quote", "condition", "missing-condition", "valid", "borrowed-quote", "unstructured-condition", "extra-condition", "post-demotion-count"])
 def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> None:
     workspace, repository, stored = _create_record(tmp_path)
     repository.update_screening_result(
@@ -302,9 +302,9 @@ def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> 
     manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
     raw = json.loads(_assessment_json(manifest, verdict="지원 보류"))
     raw["matches"] = [
-        {"id": "required-001", "match": "충족", "evidence": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]"},
-        {"id": "required-002", "match": "없음", "evidence": "possible: Kafka 직접 근거 없음"},
-        {"id": "preferred-001", "match": "부분", "evidence": "plausible [source: private/profile/skills-job.md] [quote: AWS]"},
+        {"id": "required-001", "match": "충족", "citations": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}]},
+        {"id": "required-002", "match": "없음", "citations": []},
+        {"id": "preferred-001", "match": "부분", "citations": [{"source": "private/profile/skills-job.md", "quote": "AWS"}]},
     ]
     raw["screening_summary"] = ["필수 2항목: 충족 1, 부분 0, 없음 1", "우대 1항목: 충족 0, 부분 1, 없음 0"]
     raw["reasons"] = [
@@ -314,26 +314,20 @@ def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> 
     ]
     if defect == "count":
         raw["screening_summary"][0] = "필수 3항목: 충족 2, 부분 0, 없음 1"
-    elif defect == "citation":
-        raw["matches"][0]["evidence"] = "probable Spring Boot 경험"
     elif defect == "quote":
-        raw["matches"][0]["evidence"] = "probable [source: private/profile/skills-job.md] [quote: 폐쇄망 배포]"
-    elif defect == "grade":
-        raw["matches"][0]["evidence"] = "plausible [source: private/profile/skills-job.md] [quote: Spring Boot]"
+        raw["matches"][0]["citations"] = [{"source": "private/profile/skills-job.md", "quote": "폐쇄망 배포"}]
     elif defect == "condition":
         raw["reasons"][1] = "비추천 확정 조건: [requirement: required-001] 경험 필수 확인"
     elif defect == "missing-condition":
         raw["reasons"][1] = "처우 확인 필요"
     elif defect == "borrowed-quote":
-        raw["matches"][0]["evidence"] = "probable [source: private/profile/other.md] [quote: Spring Boot]"
-    elif defect == "extra-claim":
-        raw["matches"][0]["evidence"] += " 폐쇄망 배포 경험 있음"
+        raw["matches"][0]["citations"] = [{"source": "private/profile/other.md", "quote": "Spring Boot"}]
     elif defect == "unstructured-condition":
         raw["reasons"][1] = "비추천 확정 조건: 연봉 하한 미달"
     elif defect == "extra-condition":
         raw["reasons"][1] += " 또는 처음부터 설계가 필수일 때"
     elif defect == "post-demotion-count":
-        raw["matches"][1] = {"id": "required-002", "match": "충족", "evidence": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]"}
+        raw["matches"][1] = {"id": "required-002", "match": "충족", "citations": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}]}
         raw["verdict"] = "지원 추천"
         raw["screening_summary"][0] = "필수 2항목: 충족 2, 부분 0, 없음 0"
         raw["reasons"] = ["직접 근거", "운영 경험", "백엔드 직무"]
@@ -356,6 +350,48 @@ def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> 
     after = repository.get(stored.record.key)
     assert after.record == before.record
     assert after.screening_markdown == before.screening_markdown
+
+
+@pytest.mark.parametrize(
+    ("evidence", "issue"),
+    [
+        ("probable Spring Boot 경험", "evidence-citation-required:required-001"),
+        ("plausible: [source: private/profile/skills-job.md] [quote: Spring Boot]", "evidence-grade-conflict:required-001"),
+        ("[source: private/profile/skills-job.md] [quote: Spring Boot]", "evidence-grade:required-001"),
+        (
+            "probable: [source: private/profile/skills-job.md] [quote: Spring Boot] 폐쇄망 배포 경험 있음",
+            "evidence-unverified-prose:required-001",
+        ),
+    ],
+)
+def test_gate_still_rejects_evidence_text_the_form_cannot_produce(tmp_path: Path, evidence: str, issue: str) -> None:
+    # The parser derives evidence text, so these shapes arrive only if the
+    # derivation regresses. The gate stays the independent check.
+    from careerkit.jobs.application.screening_assessment import AssessmentMatch, ScreeningAssessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    assessment = ScreeningAssessment(
+        matches=(
+            AssessmentMatch(id="required-001", match="충족", evidence=evidence),
+            AssessmentMatch(id="required-002", match="없음", evidence="possible: 근거 없음"),
+            AssessmentMatch(id="preferred-001", match="없음", evidence="possible: 근거 없음"),
+        ),
+        verdict="지원 보류",
+        decision_basis=(),
+        screening_summary=("필수 2항목: 충족 1, 부분 0, 없음 1",),
+        reasons=(
+            "추천 전환 조건: [requirement: required-002] 충족 확인",
+            "비추천 확정 조건: [requirement: required-002] 미충족 확정",
+            "서류 검토 필요",
+        ),
+    )
+
+    issues = assessment_quality_issues(assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot")
+
+    assert issue in issues
+
 
 
 def test_build_prompt_embeds_source_owned_manifest_and_json_contract(tmp_path: Path) -> None:
@@ -419,6 +455,29 @@ def test_invalid_first_response_gets_contract_specific_retry(tmp_path: Path) -> 
     assert "이전 응답이 JSON 계약을 위반했습니다" in provider.prompts[1]
     assert '"id": "required-001"' in provider.prompts[0]
     assert '"id": "required-001"' in provider.prompts[1]
+
+
+def test_contract_retry_names_every_form_violation(tmp_path: Path) -> None:
+    workspace, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    broken = json.loads(_assessment_json(manifest))
+    for item in broken["matches"]:
+        item["citations"] = []
+    provider = SequenceProvider([json.dumps(broken, ensure_ascii=False), _assessment_json(manifest)])
+
+    run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        dry_run=True,
+        llm_provider=provider,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+    )
+
+    violating = [item["id"] for item in broken["matches"] if item["match"] != "없음"]
+    assert len(violating) >= 2
+    for match_id in violating:
+        assert f"{match_id}: 충족·부분 needs at least one citation" in provider.prompts[1]
 
 
 def test_screening_result_constructor_keeps_fallback_reason_optional() -> None:
@@ -1303,9 +1362,9 @@ def test_gate_fails_closed_when_demotion_breaks_the_table(
                 [
                     _assessment_json(
                         without_main_duty(manifest),
-                        evidence_overrides={
-                            "required-001": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]",
-                            "required-002": "probable [source: private/profile/skills-job.md] [quote: Spring Boot]",
+                        citation_overrides={
+                            "required-001": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}],
+                            "required-002": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}],
                         },
                     )
                 ],

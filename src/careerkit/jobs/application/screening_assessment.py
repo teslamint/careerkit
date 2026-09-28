@@ -24,7 +24,12 @@ _TOP_LEVEL_KEYS = frozenset(
         "reasons",
     }
 )
-_MATCH_KEYS = frozenset({"id", "match", "evidence"})
+_MATCH_KEYS = frozenset({"id", "match", "citations"})
+_CITATION_KEYS = frozenset({"source", "quote"})
+# The model fills a form; code writes the evidence text that the quality gate
+# and the renderer read, so the grade and the citation syntax cannot drift.
+_GRADE_BY_MATCH = {"충족": "probable", "부분": "plausible", "없음": "possible"}
+_NO_EVIDENCE = "possible: 근거 없음"
 _DEFAULT_EVIDENCE = "확인 필요"
 
 
@@ -110,6 +115,56 @@ def _leaf_ids(manifest: RequirementManifest) -> tuple[str, ...]:
     return tuple(item.id for item in manifest.leaves if item.assessable)
 
 
+def _citation_field(citation: dict[str, object], key: str) -> str:
+    value = citation[key]
+    if not isinstance(value, str) or not _normalize_single_line(value):
+        raise AssessmentContractError("citation source and quote must be non-empty strings")
+    # The gate parses `[source: …] [quote: …]` with bracket delimiters. A
+    # bracket inside a value would make it read a different quote.
+    if "[" in value or "]" in value:
+        raise AssessmentContractError("citation source and quote must not contain brackets")
+    return _normalize_single_line(value)
+
+
+_NEEDS_CITATION = "충족·부분 needs at least one citation"
+_NO_CITATION_ALLOWED = "없음 must have no citations"
+_COUNT_FIXES = {
+    _NEEDS_CITATION: "인용할 원문이 없으면 match를 없음으로 바꾸세요",
+    _NO_CITATION_ALLOWED: "citations를 []로 비우거나, 인용할 원문이 있으면 match를 충족 또는 부분으로 바꾸세요",
+}
+
+
+def _citation_count_violation(match_value: str, citations_raw: object) -> str | None:
+    if not isinstance(citations_raw, list):
+        raise AssessmentContractError("citations must be a list")
+    if match_value == "없음" and citations_raw:
+        return _NO_CITATION_ALLOWED
+    if match_value != "없음" and not citations_raw:
+        return _NEEDS_CITATION
+    return None
+
+
+def _citation_count_error(violations: list[tuple[str, str]]) -> AssessmentContractError:
+    # One message lists every bad id, so the single contract retry can fix all
+    # of them at once instead of trading one violation for another.
+    listed = "; ".join(f"{match_id}: {rule}" for match_id, rule in violations)
+    fixes = " ".join(f"{rule} → {_COUNT_FIXES[rule]}." for rule in dict.fromkeys(rule for _, rule in violations))
+    return AssessmentContractError(f"{listed}. {fixes}")
+
+
+def _derive_evidence(match_value: str, citations: list[object]) -> str:
+    if match_value == "없음":
+        return _NO_EVIDENCE
+    pairs: list[str] = []
+    for citation in citations:
+        if not isinstance(citation, dict) or frozenset(citation) != _CITATION_KEYS:
+            raise AssessmentContractError("citation keys must be source and quote")
+        source = _citation_field(citation, "source")
+        quote = _citation_field(citation, "quote")
+        pairs.append(f"[source: {source}] [quote: {quote}]")
+    return f"{_GRADE_BY_MATCH[match_value]}: " + " ".join(pairs)
+
+
 def _parent_ids(manifest: RequirementManifest) -> frozenset[str]:
     return frozenset(item.id for item in manifest.parents)
 
@@ -118,8 +173,8 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
     parsed = _require_object(raw)
 
     schema_version = parsed["schema_version"]
-    if type(schema_version) is not int or schema_version != 1:
-        raise AssessmentContractError("schema_version must be 1")
+    if type(schema_version) is not int or schema_version != 2:
+        raise AssessmentContractError("schema_version must be 2")
 
     verdict = parsed["verdict"]
     if not isinstance(verdict, str) or verdict not in VERDICT_PRIORITY:
@@ -131,23 +186,26 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
 
     matches: list[AssessmentMatch] = []
     seen_ids: list[str] = []
+    count_violations: list[tuple[str, str]] = []
     for item in matches_raw:
         if not isinstance(item, dict) or frozenset(item) != _MATCH_KEYS:
             raise AssessmentContractError("unexpected match item keys")
         match_id = item["id"]
         match_value = item["match"]
-        evidence = item["evidence"]
         if not isinstance(match_id, str) or not match_id.strip():
             raise AssessmentContractError("match id must be a non-empty string")
         if not isinstance(match_value, str) or match_value not in _MATCH_VALUES:
             raise AssessmentContractError(f"invalid match value: {match_value}")
-        if not isinstance(evidence, str):
-            raise AssessmentContractError("match evidence must be a non-empty string")
-        normalized_evidence = _normalize_single_line(evidence)
-        if not normalized_evidence:
-            raise AssessmentContractError("match evidence must be a non-empty string")
+        citations = item["citations"]
         seen_ids.append(match_id)
-        matches.append(AssessmentMatch(id=match_id, match=match_value, evidence=normalized_evidence))
+        violation = _citation_count_violation(match_value, citations)
+        if violation is not None:
+            count_violations.append((match_id, violation))
+            continue
+        evidence = _derive_evidence(match_value, citations)
+        matches.append(AssessmentMatch(id=match_id, match=match_value, evidence=evidence))
+    if count_violations:
+        raise _citation_count_error(count_violations)
 
     expected_ids = _leaf_ids(manifest)
     if tuple(seen_ids) != tuple(dict.fromkeys(seen_ids)) or frozenset(seen_ids) != frozenset(expected_ids) or len(seen_ids) != len(expected_ids):

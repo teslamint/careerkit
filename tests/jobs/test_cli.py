@@ -1607,9 +1607,9 @@ def test_cli_screening_validate_assessment_checks_evidence(monkeypatch, capsys, 
     jd.write_text('## 자격 요건\n- Python 경험 필수', encoding='utf-8')
     candidate.write_text('[source: profile.md] Python 서비스 운영', encoding='utf-8')
     payload = {
-        'schema_version': 1,
+        'schema_version': 2,
         'matches': [{'id': 'required-001', 'match': '충족',
-                     'evidence': 'probable [source: profile.md] [quote: Python 서비스 운영]'}],
+                     'citations': [{'source': 'profile.md', 'quote': 'Python 서비스 운영'}]}],
         'verdict': '지원 추천', 'decision_basis': [],
         'screening_summary': ['필수 1항목: 충족 1, 부분 0, 없음 0'],
         'reasons': ['직접 운영 경험', '백엔드 직무', '필수 요건 확인'],
@@ -1622,7 +1622,7 @@ def test_cli_screening_validate_assessment_checks_evidence(monkeypatch, capsys, 
         code = exc.code
     assert code == 0
     assert json.loads(capsys.readouterr().out)['validation_scope'] == 'assessment-quality'
-    payload['matches'][0]['evidence'] = 'probable [source: profile.md] [quote: 폐쇄망 배포]'
+    payload['matches'][0]['citations'] = [{'source': 'profile.md', 'quote': '폐쇄망 배포'}]
     answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     assert cli.main(args) == 2
     result = json.loads(capsys.readouterr().out)

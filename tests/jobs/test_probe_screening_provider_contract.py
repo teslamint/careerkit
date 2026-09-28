@@ -36,14 +36,14 @@ def _build_valid_assessment_payload(
         {
             "id": item.id,
             "match": "부분" if item.id == "required-002" else "충족",
-            "evidence": f"{'plausible' if item.id == 'required-002' else 'probable'} [source: private/profile/skills-job.md] [quote: {item.text.split()[0]}]",
+            "citations": [{"source": "private/profile/skills-job.md", "quote": item.text.split()[0]}],
         }
         for item in manifest.leaves
         if item.assessable
     ]
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "matches": matches,
             "verdict": "지원 보류",
             "decision_basis": [],
