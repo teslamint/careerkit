@@ -62,8 +62,16 @@ def stored_job() -> StoredJobRecord:
 
 @pytest.mark.parametrize(
     "wrapper",
-    [lambda raw: raw, lambda raw: f"```json\n{raw}\n```"],
-    ids=["plain-json", "json-fence"],
+    [
+        lambda raw: raw,
+        lambda raw: f"```json\n{raw}\n```",
+        lambda raw: (
+            f"```json\n{json.dumps(json.loads(raw), ensure_ascii=False, indent=2)}\n```"
+            "\n\nAssisted-By: Example Tool <noreply@example.com>"
+        ),
+        lambda raw: f"Here is the assessment.\n```json\n{raw}\n```",
+    ],
+    ids=["plain-json", "json-fence", "json-fence-then-trailer", "prose-then-json-fence"],
 )
 def test_parse_screening_assessment_and_render_markdown_round_trip(
     atomic_manifest,
@@ -196,6 +204,8 @@ def test_render_screening_markdown_aggregates_composite_parent_rows(
     ("payload", "reason"),
     [
         ("```json\n{}\n```", "unexpected top-level keys"),
+        ('```json\n{"a": 1}\n```\n```json\n{"b": 2}\n```', "JSON 객체만 허용됩니다"),
+        ('{"a": 1}\n\nAssisted-By: Example Tool <noreply@example.com>', "JSON 객체만 허용됩니다"),
         (
             {
                 "schema_version": 2,

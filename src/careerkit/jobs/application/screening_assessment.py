@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from careerkit.jobs.adapters.storage.file_records import StoredJobRecord
@@ -56,14 +57,17 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return parsed
 
 
+# Claude may append an attribution trailer after the fence, so text around
+# exactly one ```json block is discarded. Two blocks stay ambiguous and fail.
+# A JSON string cannot hold a raw newline, so the closing fence line cannot
+# occur inside the payload.
+_JSON_CODE_FENCE = re.compile(r"^```json[ \t]*\n(.*?)\n```[ \t]*$", re.DOTALL | re.MULTILINE)
+
+
 def _unwrap_json_code_fence(raw: str) -> str:
-    lines = raw.strip().splitlines()
-    if (
-        len(lines) >= 2
-        and lines[0].strip() == "```json"
-        and lines[-1].strip() == "```"
-    ):
-        return "\n".join(lines[1:-1])
+    blocks = _JSON_CODE_FENCE.findall(raw)
+    if len(blocks) == 1:
+        return blocks[0]
     return raw
 
 
