@@ -17,7 +17,7 @@ from careerkit.jobs.application.requirement_manifest import (
     RequirementManifest,
     aggregate_parent_matches,
 )
-from careerkit.jobs.application.screening_assessment import ScreeningAssessment
+from careerkit.jobs.application.screening_assessment import RULE_BASIS_PREFIX, ScreeningAssessment
 
 
 class ScreeningQualityError(ValueError):
@@ -27,6 +27,16 @@ class ScreeningQualityError(ValueError):
 _GRADE = re.compile(r"^(probable|plausible|possible)\b")
 _CITATION = re.compile(r"\[source:\s*([^\]]+)\]\s*\[quote:\s*([^\]]+)\]")
 _CONDITION_ID = re.compile(r"\[requirement:\s*([^\]]+)\]")
+_CONDITION_RULE = re.compile(r"\[rule:\s*([^\]]+)\]")
+# Hold paths that the screening rules define without a requirement row:
+# employment type (rules 0.5③) and a △ on final-decision sentences 2, 4, 5.
+# Anything else, such as pay, stays manual review.
+HOLD_RULE_CONDITIONS = ("employment-type", "leadership-scope", "domain", "experience-cap")
+# Final-decision sentences that alone give ❌: 2 (C-level), 4 (non-backend
+# domain), 5 (experience cap ≤ 10 years). Sentence 1 never applies alone, and
+# pay and employment type are not rejection grounds here.
+REJECTION_RULE_BASES = ("leadership-scope", "domain", "experience-cap")
+_REJECTION_EVIDENCE = re.compile(r"비추천 근거:\s*\[rule:\s*([^\]]+)\]\s*\[quote:\s*([^\]]+)\]")
 _COUNT = re.compile(r"(필수|우대|주요업무)\s*(\d+)\s*(?:개|항목)")
 _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
 
@@ -37,6 +47,11 @@ _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
 # span, so skipped, inserted, or changed words are still rejected.
 _LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
 _SEPARATOR = re.compile(r"[,·/|]")
+
+
+# JD quotes for rule-basis rejections only tolerate whitespace differences.
+def _normalize(text: str) -> str:
+    return " ".join(text.split())
 
 
 def _canonical(text: str) -> str:
@@ -122,6 +137,8 @@ def assessment_quality_issues(
     assessment: ScreeningAssessment,
     manifest: RequirementManifest,
     candidate_context: str,
+    *,
+    jd_content: str,
 ) -> tuple[str, ...]:
     """Return stable issue codes without disclosing source content in errors."""
     sources = _sources(candidate_context)
@@ -160,9 +177,12 @@ def assessment_quality_issues(
         if not assessment.decision_basis:
             issues.append("rejection-basis-required")
         for item_id in assessment.decision_basis:
+            if item_id.startswith(RULE_BASIS_PREFIX):
+                continue
             parent = parents[item_id]
             if parent.kind != RequirementKind.REQUIRED or not parent.decisive or parent_matches[item_id] != "없음":
                 issues.append(f"rejection-basis-conflict:{item_id}")
+    issues.extend(_rejection_rule_issues(assessment, jd_content))
 
     narrative = (*assessment.screening_summary, *assessment.reasons)
     promote = [line for line in narrative if line.startswith("추천 전환 조건:")]
@@ -172,16 +192,15 @@ def assessment_quality_issues(
     targets = {item.id: item for item in (*manifest.parents, *manifest.leaves)}
     values = {**parent_matches, **matches}
     for line in (*promote, *reject):
-        references = [
-            item_id.strip()
-            for marker in _CONDITION_ID.findall(line)
-            for item_id in re.split(r"[,\s]+", marker)
-            if item_id.strip()
-        ]
+        references = _marker_ids(_CONDITION_ID, line)
+        rules = _marker_ids(_CONDITION_RULE, line)
         label, _, body = line.partition(":")
         expected = "충족 확인" if label == "추천 전환 조건" else "미충족 확정"
-        if not references or _CONDITION_ID.sub("", body).strip() != expected:
+        remainder = _CONDITION_RULE.sub("", _CONDITION_ID.sub("", body)).strip()
+        if not (references or rules) or remainder != expected:
             issues.append("condition-manual-review-required")
+        if any(rule not in HOLD_RULE_CONDITIONS for rule in rules):
+            issues.append("condition-rule-unknown")
         for item_id in references:
             item = targets.get(item_id)
             if item is None or item.kind != RequirementKind.REQUIRED or values.get(item.id) == "충족":
@@ -189,14 +208,52 @@ def assessment_quality_issues(
     return tuple(dict.fromkeys(issues))
 
 
+def _rejection_rule_issues(assessment: ScreeningAssessment, jd_content: str) -> list[str]:
+    """Each rule basis needs one quoted JD line; the quote proves presence, not meaning."""
+    rules = [item.removeprefix(RULE_BASIS_PREFIX) for item in assessment.decision_basis if item.startswith(RULE_BASIS_PREFIX)]
+    issues: list[str] = []
+    quotes: dict[str, list[str]] = {}
+    for line in (*assessment.screening_summary, *assessment.reasons):
+        if not line.startswith("비추천 근거:"):
+            continue
+        match = _REJECTION_EVIDENCE.fullmatch(line.strip())
+        if match is None:
+            issues.append("rejection-evidence-malformed")
+            continue
+        quotes.setdefault(match.group(1).strip(), []).append(_normalize(match.group(2)))
+    jd = _normalize(jd_content)
+    for rule in rules:
+        if rule not in REJECTION_RULE_BASES:
+            issues.append(f"rejection-rule-unknown:{rule}")
+            continue
+        found = quotes.get(rule, [])
+        if len(found) != 1:
+            issues.append(f"rejection-rule-quote-required:{rule}")
+        elif not found[0] or found[0] not in jd:
+            issues.append(f"rejection-rule-quote-not-in-jd:{rule}")
+    issues.extend(f"rejection-evidence-without-basis:{rule}" for rule in quotes if rule not in rules)
+    return issues
+
+
+def _marker_ids(pattern: re.Pattern[str], line: str) -> list[str]:
+    return [
+        item_id.strip()
+        for marker in pattern.findall(line)
+        for item_id in re.split(r"[,\s]+", marker)
+        if item_id.strip()
+    ]
+
+
 def validate_assessment_quality(
     assessment: ScreeningAssessment,
     manifest: RequirementManifest,
     candidate_context: str,
+    *,
+    jd_content: str,
 ) -> ScreeningAssessment:
     """Re-attribute citations, then gate the result that will be published."""
     corrected = reattribute_citations(assessment, candidate_context)
-    issues = assessment_quality_issues(corrected, manifest, candidate_context)
+    issues = assessment_quality_issues(corrected, manifest, candidate_context, jd_content=jd_content)
     if issues:
         raise ScreeningQualityError("screening-quality: " + ", ".join(issues))
     return corrected

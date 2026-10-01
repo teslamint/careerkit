@@ -1926,9 +1926,12 @@ def _handle_screening_validate(args: argparse.Namespace, workspace: WorkspacePat
         try:
             if args.jd is None or args.candidate is None:
                 raise ValueError("--assessment-json requires --jd and --candidate")
-            manifest = without_main_duty(extract_requirement_manifest(args.jd.read_text(encoding="utf-8")))
+            jd_content = args.jd.read_text(encoding="utf-8")
+            manifest = without_main_duty(extract_requirement_manifest(jd_content))
             assessment = parse_screening_assessment(content, manifest)
-            validate_assessment_quality(assessment, manifest, args.candidate.read_text(encoding="utf-8"))
+            validate_assessment_quality(
+                assessment, manifest, args.candidate.read_text(encoding="utf-8"), jd_content=jd_content
+            )
             valid, reason = True, ""
         except ValueError as exc:
             valid, reason = False, str(exc)

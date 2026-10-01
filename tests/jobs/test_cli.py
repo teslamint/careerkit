@@ -1635,6 +1635,16 @@ def test_cli_screening_validate_assessment_checks_evidence(monkeypatch, capsys, 
     answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     assert cli.main(args) == 0
     assert json.loads(capsys.readouterr().out)['valid'] is True
+    payload['matches'][0]['citations'] = [{'source': 'profile.md', 'quote': 'Python 서비스 운영'}]
+    payload['verdict'], payload['decision_basis'] = '지원 비추천', ['rule:domain']
+    payload['reasons'][0] = '비추천 근거: [rule: domain] [quote: Python 경험 필수]'
+    answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    assert cli.main(args) == 0, capsys.readouterr().out
+    capsys.readouterr()
+    payload['reasons'][0] = '비추천 근거: [rule: domain] [quote: 인프라 운영]'
+    answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    assert cli.main(args) == 2
+    assert 'rejection-rule-quote-not-in-jd:domain' in json.loads(capsys.readouterr().out)['reason']
 
 
 def test_cli_screening_lint_file_reports_screening_structure(monkeypatch, capsys, tmp_path: Path) -> None:
