@@ -31,6 +31,9 @@ _CITATION_KEYS = frozenset({"source", "quote"})
 _GRADE_BY_MATCH = {"충족": "probable", "부분": "plausible", "없음": "possible"}
 _NO_EVIDENCE = "possible: 근거 없음"
 _DEFAULT_EVIDENCE = "확인 필요"
+# A rejection can rest on a final-decision rule instead of a requirement row;
+# the quality gate owns which rule ids are allowed.
+RULE_BASIS_PREFIX = "rule:"
 
 
 class AssessmentContractError(ValueError):
@@ -218,9 +221,13 @@ def parse_screening_assessment(raw: str, manifest: RequirementManifest) -> Scree
     parent_ids = _parent_ids(manifest)
     for item in decision_basis_raw:
         if not isinstance(item, str) or not item.strip():
-            raise AssessmentContractError("decision_basis must reference manifest parent ids")
-        if item not in parent_ids:
-            raise AssessmentContractError("decision_basis must reference manifest parent ids")
+            raise AssessmentContractError("decision_basis must reference manifest parent ids or rule:<id>")
+        if item.startswith(RULE_BASIS_PREFIX):
+            rule_id = item.removeprefix(RULE_BASIS_PREFIX)
+            if not rule_id or rule_id != rule_id.strip():
+                raise AssessmentContractError("decision_basis must reference manifest parent ids or rule:<id>")
+        elif item not in parent_ids:
+            raise AssessmentContractError("decision_basis must reference manifest parent ids or rule:<id>")
         decision_basis.append(item)
     if len(decision_basis) != len(set(decision_basis)):
         raise AssessmentContractError("decision_basis must reference each manifest parent id at most once")

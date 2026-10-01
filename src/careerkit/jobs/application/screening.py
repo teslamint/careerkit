@@ -24,12 +24,19 @@ from careerkit.jobs.application.requirement_manifest import (
     without_main_duty,
 )
 from careerkit.jobs.application.screening_assessment import (
+    RULE_BASIS_PREFIX,
     AssessmentContractError,
     parse_screening_assessment,
     render_screening_markdown,
 )
 from careerkit.jobs.application.storage_migration import extract_metadata_from_jd
-from careerkit.jobs.application.screening_quality import ScreeningQualityError, count_quality_issues, validate_assessment_quality
+from careerkit.jobs.application.screening_quality import (
+    HOLD_RULE_CONDITIONS,
+    REJECTION_RULE_BASES,
+    ScreeningQualityError,
+    count_quality_issues,
+    validate_assessment_quality,
+)
 from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
 from careerkit.jobs.domain.model import JobKey, PostingStatus
 from careerkit.jobs.domain.verdict import (
@@ -178,6 +185,8 @@ def build_prompt(
         company_content=company_content,
         jd_content=jd_content,
         requirement_manifest=_serialize_manifest(manifest),
+        hold_rule_ids=", ".join(HOLD_RULE_CONDITIONS),
+        rejection_rule_ids=", ".join(REJECTION_RULE_BASES),
     )
 
 
@@ -504,6 +513,11 @@ def _decision_basis_supports_not_recommended(manifest: RequirementManifest, asse
     )
     parent_map = {item.id: item for item in manifest.parents}
     for basis_id in assessment.decision_basis:
+        if basis_id.startswith(RULE_BASIS_PREFIX):
+            # The quality gate already checked the rule id and its JD quote.
+            if basis_id.removeprefix(RULE_BASIS_PREFIX) in REJECTION_RULE_BASES:
+                return True
+            continue
         parent = parent_map[basis_id]
         if parent.kind.value != "필수" or not parent.decisive:
             continue
@@ -656,7 +670,7 @@ def run_screening(
         if not valid:
             raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
-        assessment = validate_assessment_quality(assessment, filtered, candidate_context_text)
+        assessment = validate_assessment_quality(assessment, filtered, candidate_context_text, jd_content=jd_content)
         if require_semantic_validation and semantic_validator is None:
             raise ScreeningQualityError("screening-quality: semantic-validator-required")
         if semantic_validator is not None:

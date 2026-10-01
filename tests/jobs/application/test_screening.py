@@ -283,12 +283,184 @@ def test_conditions_accept_several_requirement_ids_in_one_marker(tmp_path: Path,
     ]
     assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
 
-    assert assessment_quality_issues(assessment, manifest, candidate_context) == ()
+    assert assessment_quality_issues(assessment, manifest, candidate_context, jd_content=stored.jd_markdown) == ()
 
     for rejected_ids in (f"{grouped_ids.split()[0].rstrip(',')} preferred-001", "required-001 초안 검토"):
         raw["reasons"][0] = "추천 전환 조건: [requirement: " + rejected_ids + "] 충족 확인"
         grouped = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
-        assert "condition-requirement-conflict" in assessment_quality_issues(grouped, manifest, candidate_context)
+        assert "condition-requirement-conflict" in assessment_quality_issues(
+            grouped, manifest, candidate_context, jd_content=stored.jd_markdown
+        )
+
+
+def _rule_hold(manifest, promote: str, reject: str) -> dict:
+    raw = json.loads(_assessment_json(manifest, verdict="지원 보류"))
+    raw["matches"] = [
+        {"id": "required-001", "match": "충족", "citations": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}]},
+        {"id": "required-002", "match": "없음", "citations": []},
+        {"id": "preferred-001", "match": "없음", "citations": []},
+    ]
+    raw["screening_summary"] = ["필수 2항목: 충족 1, 부분 0, 없음 1", "우대 1항목: 충족 0, 부분 0, 없음 1"]
+    raw["reasons"] = [promote, reject, "계약 기간이 공고에 없다"]
+    return raw
+
+
+@pytest.mark.parametrize("rule_id", ["employment-type", "leadership-scope", "domain", "experience-cap"])
+def test_conditions_accept_rule_defined_hold_paths(tmp_path: Path, rule_id: str) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_hold(
+        manifest,
+        f"추천 전환 조건: [rule: {rule_id}] 충족 확인",
+        f"비추천 확정 조건: [rule: {rule_id}] 미충족 확정",
+    )
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    assert assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    ("markers", "issue"),
+    [
+        ("[rule: salary] 충족 확인", "condition-rule-unknown"),
+        ("[rule: Domain] 충족 확인", "condition-rule-unknown"),
+        ("[rule: domain, salary] 충족 확인", "condition-rule-unknown"),
+        ("[rule: ] 충족 확인", "condition-manual-review-required"),
+        ("[rule: domain] 충족 확인 또는 연봉 협의", "condition-manual-review-required"),
+        ("[rule: domain] [requirement: required-001] 충족 확인", "condition-requirement-conflict"),
+    ],
+)
+def test_rule_conditions_fail_closed(tmp_path: Path, markers: str, issue: str) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_hold(manifest, "추천 전환 조건: " + markers, "비추천 확정 조건: [rule: domain] 미충족 확정")
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    assert issue in assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    )
+
+
+def test_run_screening_publishes_hold_with_rule_conditions(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_hold(
+        manifest,
+        "추천 전환 조건: [rule: employment-type] 충족 확인",
+        "비추천 확정 조건: [rule: employment-type] 미충족 확정",
+    )
+
+    result = run_screening(
+        workspace=workspace, jd=stored, company_file=None,
+        llm_provider=SequenceProvider([json.dumps(raw, ensure_ascii=False)]),
+        repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot",
+    )
+
+    assert (result.published, result.used_fallback, result.verdict) == (True, False, "지원 보류")
+    assert "[rule: employment-type]" in (repository.get(stored.record.key).screening_markdown or "")
+
+
+def _rule_reject(manifest, basis: list[str], evidence: list[str], verdict: str = "지원 비추천") -> dict:
+    raw = _rule_hold(manifest, "", "")
+    raw["verdict"] = verdict
+    raw["decision_basis"] = basis
+    raw["reasons"] = [*evidence, "후보자 이력의 명시 근거만 사용했다", "최종 판정은 6장 규칙으로 작성했다", "주요업무 원문을 인용했다"][:5]
+    return raw
+
+
+@pytest.mark.parametrize("rule_id", ["leadership-scope", "domain", "experience-cap"])
+def test_rejection_accepts_rule_basis_with_jd_quote(tmp_path: Path, rule_id: str) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_reject(manifest, [f"rule:{rule_id}"], [f"비추천 근거: [rule: {rule_id}] [quote: 결제 서비스  운영]"])
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    assert assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    ("basis", "evidence", "issue"),
+    [
+        (["rule:salary"], ["비추천 근거: [rule: salary] [quote: 결제 서비스 운영]"], "rejection-rule-unknown:salary"),
+        (["rule:Domain"], ["비추천 근거: [rule: Domain] [quote: 결제 서비스 운영]"], "rejection-rule-unknown:Domain"),
+        (["rule:employment-type"], ["비추천 근거: [rule: employment-type] [quote: 결제 서비스 운영]"], "rejection-rule-unknown:employment-type"),
+        (["rule:domain"], [], "rejection-rule-quote-required:domain"),
+        (["rule:domain"], ["비추천 근거: [rule: domain] [quote: 결제 서비스 운영]"] * 2, "rejection-rule-quote-required:domain"),
+        (["rule:domain"], ["비추천 근거: [rule: domain] [quote: 존재하지 않는 문장]"], "rejection-rule-quote-not-in-jd:domain"),
+        (["rule:domain"], ["비추천 근거: [rule: domain] [quote: 결제 서비스 운영] 비백엔드 직무다"], "rejection-evidence-malformed"),
+        (
+            ["rule:domain"],
+            ["비추천 근거: [rule: domain] [quote: 결제 서비스 운영]", "비추천 근거: [rule: experience-cap] [quote: 결제 서비스 운영]"],
+            "rejection-evidence-without-basis:experience-cap",
+        ),
+    ],
+)
+def test_rule_rejection_basis_fails_closed(tmp_path: Path, basis: list[str], evidence: list[str], issue: str) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_reject(manifest, basis, evidence)
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    assert issue in assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    )
+
+
+def test_rule_basis_on_hold_is_rejected(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_reject(manifest, ["rule:domain"], ["비추천 근거: [rule: domain] [quote: 결제 서비스 운영]"], verdict="지원 보류")
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    assert "decision-basis-without-rejection" in assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    )
+
+
+@pytest.mark.parametrize("basis", [["rule:"], ["rule: "], ["rule:domain", "rule:domain"]])
+def test_parser_rejects_malformed_rule_basis(tmp_path: Path, basis: list[str]) -> None:
+    from careerkit.jobs.application.screening_assessment import AssessmentContractError, parse_screening_assessment
+
+    _, _, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_reject(manifest, basis, [])
+
+    with pytest.raises(AssessmentContractError):
+        parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+
+def test_run_screening_publishes_rule_based_rejection(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = _rule_reject(manifest, ["rule:domain"], ["비추천 근거: [rule: domain] [quote: 결제 서비스 운영]"])
+
+    result = run_screening(
+        workspace=workspace, jd=stored, company_file=None,
+        llm_provider=SequenceProvider([json.dumps(raw, ensure_ascii=False)]),
+        repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot",
+    )
+
+    assert (result.published, result.used_fallback, result.verdict) == (True, False, "지원 비추천")
+    assert "[rule: domain] [quote: 결제 서비스 운영]" in (repository.get(stored.record.key).screening_markdown or "")
 
 
 @pytest.mark.parametrize("defect", ["count", "quote", "condition", "missing-condition", "valid", "ambiguous-borrowed-quote", "unstructured-condition", "extra-condition", "post-demotion-count"])
@@ -393,7 +565,9 @@ def test_gate_still_rejects_evidence_text_the_form_cannot_produce(tmp_path: Path
         ),
     )
 
-    issues = assessment_quality_issues(assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot")
+    issues = assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    )
 
     assert issue in issues
 
@@ -427,12 +601,14 @@ def test_quote_matches_its_source_across_list_and_separator_formatting(
     from careerkit.jobs.application.screening_quality import assessment_quality_issues, reattribute_citations
 
     assessment = _single_citation_assessment(source, quote)
-    manifest = without_main_duty(extract_requirement_manifest(_create_record(tmp_path)[2].jd_markdown))
+    jd_content = _create_record(tmp_path)[2].jd_markdown
+    manifest = without_main_duty(extract_requirement_manifest(jd_content))
 
     corrected = reattribute_citations(assessment, _QUOTE_CONTEXT)
 
     assert corrected.matches[0].evidence == f"probable: [source: {published_source}] [quote: {quote}]"
-    assert not [i for i in assessment_quality_issues(corrected, manifest, _QUOTE_CONTEXT) if i.startswith("evidence-quote")]
+    issues = assessment_quality_issues(corrected, manifest, _QUOTE_CONTEXT, jd_content=jd_content)
+    assert not [i for i in issues if i.startswith("evidence-quote")]
 
 
 @pytest.mark.parametrize(
@@ -457,12 +633,15 @@ def test_quote_outside_one_contiguous_source_span_is_still_rejected(tmp_path: Pa
     from careerkit.jobs.application.screening_quality import assessment_quality_issues, reattribute_citations
 
     assessment = _single_citation_assessment(source, quote)
-    manifest = without_main_duty(extract_requirement_manifest(_create_record(tmp_path)[2].jd_markdown))
+    jd_content = _create_record(tmp_path)[2].jd_markdown
+    manifest = without_main_duty(extract_requirement_manifest(jd_content))
 
     corrected = reattribute_citations(assessment, _QUOTE_CONTEXT)
 
     assert corrected == assessment
-    assert "evidence-quote-not-in-source:required-001" in assessment_quality_issues(corrected, manifest, _QUOTE_CONTEXT)
+    assert "evidence-quote-not-in-source:required-001" in assessment_quality_issues(
+        corrected, manifest, _QUOTE_CONTEXT, jd_content=jd_content
+    )
 
 
 def _single_citation_assessment(source: str, quote: str):
