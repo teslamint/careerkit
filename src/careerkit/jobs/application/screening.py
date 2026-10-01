@@ -656,7 +656,7 @@ def run_screening(
         if not valid:
             raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
-        validate_assessment_quality(assessment, filtered, candidate_context_text)
+        assessment = validate_assessment_quality(assessment, filtered, candidate_context_text)
         if require_semantic_validation and semantic_validator is None:
             raise ScreeningQualityError("screening-quality: semantic-validator-required")
         if semantic_validator is not None:

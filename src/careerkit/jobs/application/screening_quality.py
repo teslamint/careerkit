@@ -7,6 +7,7 @@ rejection conditions require review instead of heuristic interpretation.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 import re
 from typing import Mapping
 
@@ -30,8 +31,16 @@ _COUNT = re.compile(r"(필수|우대|주요업무)\s*(\d+)\s*(?:개|항목)")
 _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
 
 
-def _normalize(text: str) -> str:
-    return " ".join(text.split())
+# A quote may join adjacent list items or spell a separator differently from
+# the source (`- A, B` / `- C` quoted as `A, B, C`). Both sides drop list
+# markers and these separators, then the quote must still be one contiguous
+# span, so skipped, inserted, or changed words are still rejected.
+_LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
+_SEPARATOR = re.compile(r"[,·/|]")
+
+
+def _canonical(text: str) -> str:
+    return " ".join(_SEPARATOR.sub(" ", _LIST_MARKER.sub("", text)).split())
 
 
 def _sources(corpus: str) -> dict[str, list[str]]:
@@ -40,8 +49,51 @@ def _sources(corpus: str) -> dict[str, list[str]]:
     for index, marker in enumerate(markers):
         path = marker.group(1).strip()
         end = markers[index + 1].start() if index + 1 < len(markers) else len(corpus)
-        sources.setdefault(path, []).append(_normalize(corpus[marker.end():end]))
+        sources.setdefault(path, []).append(_canonical(corpus[marker.end():end]))
     return sources
+
+
+def _holds(sources: dict[str, list[str]], path: str, quote: str) -> bool:
+    canonical = _canonical(quote)
+    return bool(canonical) and any(canonical in block for block in sources.get(path, []))
+
+
+def _owner(sources: dict[str, list[str]], path: str, quote: str) -> str | None:
+    # Only a declared source may be corrected. An absolute, `..`, or unknown
+    # path is rejected as written; rewriting it would hide the escape from the
+    # containment check.
+    if path not in sources:
+        return None
+    if _holds(sources, path, quote):
+        return path
+    others = [other for other in sources if other != path and _holds(sources, other, quote)]
+    return others[0] if len(others) == 1 else None
+
+
+def reattribute_citations(assessment: ScreeningAssessment, candidate_context: str) -> ScreeningAssessment:
+    """Point each citation at the one source file that holds its quote.
+
+    Models often cite real text under the wrong declared file. When exactly one
+    other file holds the quote, the published record names that file. Undeclared
+    paths, ambiguous quotes, and unknown quotes are left as written for the gate
+    to reject.
+    """
+    sources = _sources(candidate_context)
+
+    def rewrite(citation: re.Match[str]) -> str:
+        owner = _owner(sources, citation.group(1).strip(), citation.group(2))
+        if owner is None:
+            return citation.group(0)
+        start, end = citation.span(1)
+        offset = citation.start()
+        return citation.group(0)[: start - offset] + owner + citation.group(0)[end - offset:]
+
+    matches = tuple(
+        replace(item, evidence=_CITATION.sub(rewrite, item.evidence)) for item in assessment.matches
+    )
+    if matches == assessment.matches:
+        return assessment
+    return replace(assessment, matches=matches)
 
 
 def count_quality_issues(
@@ -92,8 +144,7 @@ def assessment_quality_issues(
             continue
         for citation in citations:
             path, quote = citation.groups()
-            quote = _normalize(quote)
-            if not quote or not any(quote in block for block in sources.get(path.strip(), [])):
+            if not _holds(sources, path.strip(), quote):
                 issues.append(f"evidence-quote-not-in-source:{item.id}")
         # Affirmative evidence contains authenticated excerpts, not additional
         # model-written factual claims that a path-only check cannot verify.
@@ -142,7 +193,10 @@ def validate_assessment_quality(
     assessment: ScreeningAssessment,
     manifest: RequirementManifest,
     candidate_context: str,
-) -> None:
-    issues = assessment_quality_issues(assessment, manifest, candidate_context)
+) -> ScreeningAssessment:
+    """Re-attribute citations, then gate the result that will be published."""
+    corrected = reattribute_citations(assessment, candidate_context)
+    issues = assessment_quality_issues(corrected, manifest, candidate_context)
     if issues:
         raise ScreeningQualityError("screening-quality: " + ", ".join(issues))
+    return corrected

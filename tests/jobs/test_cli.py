@@ -1628,6 +1628,13 @@ def test_cli_screening_validate_assessment_checks_evidence(monkeypatch, capsys, 
     result = json.loads(capsys.readouterr().out)
     assert result['valid'] is False
     assert 'evidence-quote-not-in-source' in result['reason']
+    # The CLI applies the same citation re-attribution as the pipeline, so a
+    # quote cited to the wrong file but held by exactly one other file passes.
+    candidate.write_text('[source: profile.md] Python 서비스 운영\n[source: other.md] Ansible', encoding='utf-8')
+    payload['matches'][0]['citations'] = [{'source': 'other.md', 'quote': 'Python 서비스 운영'}]
+    answer.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    assert cli.main(args) == 0
+    assert json.loads(capsys.readouterr().out)['valid'] is True
 
 
 def test_cli_screening_lint_file_reports_screening_structure(monkeypatch, capsys, tmp_path: Path) -> None:
