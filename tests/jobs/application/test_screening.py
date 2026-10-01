@@ -291,7 +291,7 @@ def test_conditions_accept_several_requirement_ids_in_one_marker(tmp_path: Path,
         assert "condition-requirement-conflict" in assessment_quality_issues(grouped, manifest, candidate_context)
 
 
-@pytest.mark.parametrize("defect", ["count", "quote", "condition", "missing-condition", "valid", "borrowed-quote", "unstructured-condition", "extra-condition", "post-demotion-count"])
+@pytest.mark.parametrize("defect", ["count", "quote", "condition", "missing-condition", "valid", "ambiguous-borrowed-quote", "unstructured-condition", "extra-condition", "post-demotion-count"])
 def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> None:
     workspace, repository, stored = _create_record(tmp_path)
     repository.update_screening_result(
@@ -320,7 +320,7 @@ def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> 
         raw["reasons"][1] = "비추천 확정 조건: [requirement: required-001] 경험 필수 확인"
     elif defect == "missing-condition":
         raw["reasons"][1] = "처우 확인 필요"
-    elif defect == "borrowed-quote":
+    elif defect == "ambiguous-borrowed-quote":
         raw["matches"][0]["citations"] = [{"source": "private/profile/other.md", "quote": "Spring Boot"}]
     elif defect == "unstructured-condition":
         raw["reasons"][1] = "비추천 확정 조건: 연봉 하한 미달"
@@ -345,7 +345,12 @@ def test_quality_gate_preserves_existing_record(tmp_path: Path, defect: str) -> 
         run_screening(
             workspace=workspace, jd=stored, company_file=None,
             llm_provider=SequenceProvider([json.dumps(raw, ensure_ascii=False)]),
-            repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot, AWS\n[source: private/profile/other.md] Ansible",
+            repository=repository,
+            candidate_context=(
+                "[source: private/profile/skills-job.md] Spring Boot, AWS\n"
+                "[source: private/profile/other.md] Ansible\n"
+                "[source: private/profile/third.md] Spring Boot"
+            ),
         )
     after = repository.get(stored.record.key)
     assert after.record == before.record
@@ -392,6 +397,117 @@ def test_gate_still_rejects_evidence_text_the_form_cannot_produce(tmp_path: Path
 
     assert issue in issues
 
+
+_QUOTE_CONTEXT = (
+    "[source: private/companies/acme/projects/a.md]\n"
+    "### Tech Stack\n- Java, Spring Boot\n- JPA, Redis\n- MySQL\n\n"
+    "[source: private/profile/skills-job.md]\n빌드·테스트: Gradle 모듈·CI 분리 10→15개\n\n"
+    "[source: private/profile/summary-job.md]\nKafka 운영\n\n"
+    "[source: private/profile/core.md]\nKafka 운영\n"
+)
+_A = "private/companies/acme/projects/a.md"
+
+
+@pytest.mark.parametrize(
+    ("source", "quote", "published_source"),
+    [
+        # Adjacent bullet lines quoted as one comma-joined line.
+        (_A, "Java, Spring Boot, JPA, Redis", _A),
+        # Separator spelled differently from the source.
+        ("private/profile/skills-job.md", "Gradle 모듈, CI 분리", "private/profile/skills-job.md"),
+        # Real text cited to the wrong file, found in exactly one other file.
+        (_A, "빌드·테스트: Gradle 모듈·CI 분리", "private/profile/skills-job.md"),
+        # Found in the cited file and elsewhere: the cited file stays.
+        ("private/profile/summary-job.md", "Kafka 운영", "private/profile/summary-job.md"),
+    ],
+)
+def test_quote_matches_its_source_across_list_and_separator_formatting(
+    tmp_path: Path, source: str, quote: str, published_source: str
+) -> None:
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues, reattribute_citations
+
+    assessment = _single_citation_assessment(source, quote)
+    manifest = without_main_duty(extract_requirement_manifest(_create_record(tmp_path)[2].jd_markdown))
+
+    corrected = reattribute_citations(assessment, _QUOTE_CONTEXT)
+
+    assert corrected.matches[0].evidence == f"probable: [source: {published_source}] [quote: {quote}]"
+    assert not [i for i in assessment_quality_issues(corrected, manifest, _QUOTE_CONTEXT) if i.startswith("evidence-quote")]
+
+
+@pytest.mark.parametrize(
+    ("source", "quote"),
+    [
+        (_A, "Java, Spring Boot, MySQL"),  # skips the item between them
+        (_A, "Java, Spring Boot 리드"),  # inserted role word
+        ("private/profile/skills-job.md", "Gradle 모듈·CI 분리 10→16개"),  # changed number
+        (_A, "Kafka 운영"),  # in two other files: no single owner
+        (_A, "Kubernetes"),  # nowhere
+        ("private/profile/missing.md", "Kafka 운영"),  # undeclared path, ambiguous text
+        (_A, ", ·"),  # separators only: nothing left to match
+        # Undeclared paths are never re-attributed, even when one real file holds
+        # the quote: rewriting them would hide an escape from the containment check.
+        ("/etc/a.md", "JPA, Redis"),
+        ("../../outside.md", "JPA, Redis"),
+        (f"/{_A}", "JPA, Redis"),
+        ("private/profile/missing.md", "JPA, Redis"),
+    ],
+)
+def test_quote_outside_one_contiguous_source_span_is_still_rejected(tmp_path: Path, source: str, quote: str) -> None:
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues, reattribute_citations
+
+    assessment = _single_citation_assessment(source, quote)
+    manifest = without_main_duty(extract_requirement_manifest(_create_record(tmp_path)[2].jd_markdown))
+
+    corrected = reattribute_citations(assessment, _QUOTE_CONTEXT)
+
+    assert corrected == assessment
+    assert "evidence-quote-not-in-source:required-001" in assessment_quality_issues(corrected, manifest, _QUOTE_CONTEXT)
+
+
+def _single_citation_assessment(source: str, quote: str):
+    from careerkit.jobs.application.screening_assessment import AssessmentMatch, ScreeningAssessment
+
+    return ScreeningAssessment(
+        matches=(
+            AssessmentMatch(id="required-001", match="충족", evidence=f"probable: [source: {source}] [quote: {quote}]"),
+            AssessmentMatch(id="required-002", match="없음", evidence="possible: 근거 없음"),
+            AssessmentMatch(id="preferred-001", match="없음", evidence="possible: 근거 없음"),
+        ),
+        verdict="지원 보류",
+        decision_basis=(),
+        screening_summary=("필수 2항목: 충족 1, 부분 0, 없음 1",),
+        reasons=(
+            "추천 전환 조건: [requirement: required-002] 충족 확인",
+            "비추천 확정 조건: [requirement: required-002] 미충족 확정",
+            "서류 검토 필요",
+        ),
+    )
+
+
+def test_wrong_file_quote_is_published_under_the_file_that_holds_it(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    raw = json.loads(_assessment_json(manifest))
+    for item in raw["matches"]:
+        if item["citations"]:
+            item["citations"] = [{"source": "private/profile/other.md", "quote": "Spring Boot, Kafka"}]
+
+    result = run_screening(
+        workspace=workspace, jd=stored, company_file=None,
+        llm_provider=SequenceProvider([json.dumps(raw, ensure_ascii=False)]),
+        repository=repository, dry_run=False,
+        candidate_context=(
+            "[source: private/profile/skills-job.md]\n- Spring Boot\n- Kafka, 결제 운영, AWS\n"
+            "[source: private/profile/other.md] Ansible"
+        ),
+    )
+
+    published = repository.get(stored.record.key).screening_markdown
+    assert result.published is True
+    assert published is not None
+    assert "[source: private/profile/skills-job.md] [quote: Spring Boot, Kafka]" in published
+    assert "private/profile/other.md" not in published
 
 
 def test_build_prompt_embeds_source_owned_manifest_and_json_contract(tmp_path: Path) -> None:
