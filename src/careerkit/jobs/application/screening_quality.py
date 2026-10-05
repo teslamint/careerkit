@@ -46,7 +46,9 @@ _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
 _CAP_REJECT_MAX = 10
 _CAP_HOLD_MAX = 13
 # Collected JDs state experience as `| 경력 | … |`, `- **경력**: …`, or `- 경력: …`.
-_EXPERIENCE_ROW = re.compile(r"^\s*(?:\|\s*경력\s*\||[-*]\s*(?:\*\*)?경력(?:\*\*)?\s*:)\s*([^|\n]+)", re.MULTILINE)
+_EXPERIENCE_ROW = re.compile(
+    r"^[ \t]*(?:\|[ \t]*경력[ \t]*\||[-*][ \t]*(?:\*\*)?경력(?:\*\*)?[ \t]*:)[ \t]*([^|\n]+)", re.MULTILINE
+)
 
 
 # A quote may join adjacent list items or spell a separator differently from

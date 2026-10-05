@@ -470,6 +470,9 @@ def _capped_jd(experience_row: str) -> str:
         ("| 경력 | 3~100년 |", "지원 추천", False),
         ("| 경력 | 7년 이상 |", "지원 추천", False),
         ("| 경력 | 경력 무관 |", "지원 추천", False),
+        # An empty experience row never borrows the next line as its value.
+        ("| 경력 |\n5년 이하", "지원 추천", False),
+        ("- 경력:\n5년 이하", "지원 추천", False),
     ],
 )
 def test_experience_cap_blocks_conflicting_verdict(
