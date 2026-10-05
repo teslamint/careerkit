@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 import re
-from typing import Any, Optional
+from typing import Any, Optional, TypeGuard
 
 from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
 from careerkit.jobs.adapters.screening.cli_provider import CLIProvider, LLMProvider
@@ -145,13 +145,16 @@ def load_experience_cap_policy(workspace: WorkspacePaths) -> ExperienceCapPolicy
         return None
     if not isinstance(section, dict):
         raise ValueError("screening.experience_cap must be a mapping")
-    values = [section.get("reject_max"), section.get("hold_max")]
-    if any(type(value) is not int or value < 0 for value in values):
+    reject_max, hold_max = section.get("reject_max"), section.get("hold_max")
+    if not (_is_count(reject_max) and _is_count(hold_max)):
         raise ValueError("screening.experience_cap: reject_max and hold_max must be non-negative integers")
-    reject_max, hold_max = values
     if reject_max > hold_max:
         raise ValueError("screening.experience_cap: reject_max must not exceed hold_max")
     return ExperienceCapPolicy(reject_max=reject_max, hold_max=hold_max)
+
+
+def _is_count(value: object) -> TypeGuard[int]:
+    return type(value) is int and value >= 0
 
 
 def _load_text(path: Optional[Path]) -> str:
