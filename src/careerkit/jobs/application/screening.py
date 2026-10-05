@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 from typing import Any, Optional, TypeGuard
 
-from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
+import yaml
+
 from careerkit.jobs.adapters.screening.cli_provider import CLIProvider, LLMProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
 from careerkit.jobs.application.company_info import parse_company_file, validate_company
@@ -133,16 +134,34 @@ def load_screening_rules(workspace: WorkspacePaths) -> str:
     return path.read_text(encoding="utf-8")
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Rejects a repeated key, which would let a later empty value silently disable the policy."""
+
+
+def _unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    keys = [loader.construct_object(key_node) for key_node, _ in node.value]
+    if len(keys) != len(set(keys)):
+        raise ValueError("screening.experience_cap: search_config.yaml has a duplicate key")
+    return loader.construct_mapping(node)
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+
+
 def load_experience_cap_policy(workspace: WorkspacePaths) -> ExperienceCapPolicy | None:
     """Read `screening.experience_cap`; absent means the cap gate is skipped, malformed is an error."""
-    raw = YamlConfigFileAdapter(workspace.jobs_config_dir / "search_config.yaml").read()
+    path = workspace.jobs_config_dir / "search_config.yaml"
+    try:
+        raw = (yaml.load(path.read_text(encoding="utf-8"), _UniqueKeyLoader) or {}) if path.is_file() else {}
+    except yaml.YAMLError as exc:
+        raise ValueError("screening.experience_cap: search_config.yaml is not valid YAML") from exc
     screening = raw.get("screening", {}) if isinstance(raw, dict) else None
     if not isinstance(screening, dict):
         raise ValueError("screening.experience_cap: screening must be a mapping")
-    section = screening.get("experience_cap")
-    if section is None:
+    if "experience_cap" not in screening:
         logger.warning("screening.experience_cap is not configured; experience cap gate skipped")
         return None
+    section = screening["experience_cap"]
     if not isinstance(section, dict):
         raise ValueError("screening.experience_cap must be a mapping")
     reject_max, hold_max = section.get("reject_max"), section.get("hold_max")

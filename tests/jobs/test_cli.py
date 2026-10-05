@@ -1673,7 +1673,12 @@ def test_cli_screening_validate_assessment_applies_configured_experience_cap(mon
     args = ['screening', 'validate', str(answer), '--assessment-json', '--jd', str(jd), '--candidate', str(candidate), '--json']
     assert cli.main(args) == 2
     assert 'experience-cap-conflict' in json.loads(capsys.readouterr().out)['reason']
-
+    # A broken config is a validation failure, not a crash.
+    config.write_text('screening: [\n', encoding='utf-8')
+    assert cli.main(args) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['valid'] is False
+    assert 'screening.experience_cap' in result['reason']
 
 
 def test_cli_screening_lint_file_reports_screening_structure(monkeypatch, capsys, tmp_path: Path) -> None:

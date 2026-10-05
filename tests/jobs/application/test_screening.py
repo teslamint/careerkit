@@ -520,7 +520,12 @@ def test_experience_cap_blocks_conflicting_verdict(
         "screening:\n  experience_cap:\n    reject_max: true\n    hold_max: 9\n",
         "screening:\n  experience_cap:\n    reject_max: -1\n    hold_max: 9\n",
         "screening:\n  experience_cap: 9\n",
+        "screening:\n  experience_cap: null\n",
         "screening: []\n",
+        # A repeated key would otherwise let a later value silently replace or disable the policy.
+        "screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\nscreening: {}\n",
+        "screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\n  experience_cap:\n    reject_max: 0\n    hold_max: 0\n",
+        "screening: [\n",
     ],
 )
 def test_malformed_experience_cap_config_is_rejected(tmp_path: Path, config: str) -> None:
