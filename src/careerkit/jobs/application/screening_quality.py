@@ -7,7 +7,7 @@ rejection conditions require review instead of heuristic interpretation.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import re
 from typing import Mapping
 
@@ -34,17 +34,24 @@ _CONDITION_RULE = re.compile(r"\[rule:\s*([^\]]+)\]")
 # Anything else, such as pay, stays manual review.
 HOLD_RULE_CONDITIONS = ("employment-type", "leadership-scope", "domain", "experience-cap")
 # Final-decision sentences that alone give ❌: 2 (C-level), 4 (non-backend
-# domain), 5 (experience cap ≤ 10 years). Sentence 1 never applies alone, and
+# domain), 5 (experience cap at or below reject_max). Sentence 1 never applies alone, and
 # pay and employment type are not rejection grounds here.
 REJECTION_RULE_BASES = ("leadership-scope", "domain", "experience-cap")
 _REJECTION_EVIDENCE = re.compile(r"비추천 근거:\s*\[rule:\s*([^\]]+)\]\s*\[quote:\s*([^\]]+)\]")
 _COUNT = re.compile(r"(필수|우대|주요업무)\s*(\d+)\s*(?:개|항목)")
 _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
-# Final-decision sentence 5: a stated experience cap ≤ 10 years is ❌ and a
-# cap of 11–13 years is △. The model is told the rule but has ignored it, so
-# the verdict is checked against the JD here.
-_CAP_REJECT_MAX = 10
-_CAP_HOLD_MAX = 13
+# Final-decision sentence 5: a stated experience cap at or below one threshold
+# is ❌ and a cap at or below a second is △. The model is told the rule but has
+# ignored it, so the verdict is checked against the JD here. The thresholds
+# come from workspace configuration because they follow the candidate's career.
+
+
+@dataclass(frozen=True)
+class ExperienceCapPolicy:
+    reject_max: int
+    hold_max: int
+
+
 # Collected JDs state experience as `| 경력 | … |`, `- **경력**: …`, or `- 경력: …`.
 _EXPERIENCE_ROW = re.compile(
     r"^[ \t]*(?:\|[ \t]*경력[ \t]*\||[-*][ \t]*(?:\*\*)?경력(?:\*\*)?[ \t]*:)[ \t]*([^|\n]+)", re.MULTILINE
@@ -149,6 +156,7 @@ def assessment_quality_issues(
     candidate_context: str,
     *,
     jd_content: str,
+    experience_cap: ExperienceCapPolicy | None = None,
 ) -> tuple[str, ...]:
     """Return stable issue codes without disclosing source content in errors."""
     sources = _sources(candidate_context)
@@ -193,7 +201,8 @@ def assessment_quality_issues(
             if parent.kind != RequirementKind.REQUIRED or not parent.decisive or parent_matches[item_id] != "없음":
                 issues.append(f"rejection-basis-conflict:{item_id}")
     issues.extend(_rejection_rule_issues(assessment, jd_content))
-    issues.extend(_experience_cap_issues(assessment, jd_content))
+    if experience_cap is not None:
+        issues.extend(_experience_cap_issues(assessment, jd_content, experience_cap))
 
     narrative = (*assessment.screening_summary, *assessment.reasons)
     promote = [line for line in narrative if line.startswith("추천 전환 조건:")]
@@ -246,15 +255,15 @@ def _rejection_rule_issues(assessment: ScreeningAssessment, jd_content: str) -> 
     return issues
 
 
-def _experience_cap_issues(assessment: ScreeningAssessment, jd_content: str) -> list[str]:
+def _experience_cap_issues(assessment: ScreeningAssessment, jd_content: str, policy: ExperienceCapPolicy) -> list[str]:
     """Block a verdict the stated experience cap forbids; an unparsed range never trips this."""
     row = _EXPERIENCE_ROW.search(jd_content)
     _, cap = parse_experience_range(row.group(1).strip() if row else None)
     if cap is None:
         return []
-    if cap <= _CAP_REJECT_MAX and assessment.verdict != "지원 비추천":
+    if cap <= policy.reject_max and assessment.verdict != "지원 비추천":
         return ["experience-cap-conflict"]
-    if cap <= _CAP_HOLD_MAX and assessment.verdict == "지원 추천":
+    if cap <= policy.hold_max and assessment.verdict == "지원 추천":
         return ["experience-cap-conflict"]
     return []
 
@@ -274,10 +283,13 @@ def validate_assessment_quality(
     candidate_context: str,
     *,
     jd_content: str,
+    experience_cap: ExperienceCapPolicy | None = None,
 ) -> ScreeningAssessment:
     """Re-attribute citations, then gate the result that will be published."""
     corrected = reattribute_citations(assessment, candidate_context)
-    issues = assessment_quality_issues(corrected, manifest, candidate_context, jd_content=jd_content)
+    issues = assessment_quality_issues(
+        corrected, manifest, candidate_context, jd_content=jd_content, experience_cap=experience_cap
+    )
     if issues:
         raise ScreeningQualityError("screening-quality: " + ", ".join(issues))
     return corrected

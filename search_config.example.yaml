@@ -108,3 +108,13 @@ execution:
 # 정규화된 검색 직무 — full/quick 검색이 공유하는 유일한 role 지정 지점
 search:
   role: backend
+
+# 스크리닝 판정 기준
+screening:
+  # 공고의 경력 상한으로 판정을 제한한다 (jd-screening-rules.md의 경력 상한 규칙).
+  # 상한이 reject_max 이하이면 '지원 비추천'만, hold_max 이하이면 '지원 추천'을 막는다.
+  # 검색 필터(filters.min_experience_upper)와는 별개이며, 항목을 빼면 이 검사를 건너뛴다.
+  # 아래 값은 예시다. 실제 값은 후보자 경력에 맞춰 비공개 설정에만 둔다.
+  experience_cap:
+    reject_max: 6
+    hold_max: 9

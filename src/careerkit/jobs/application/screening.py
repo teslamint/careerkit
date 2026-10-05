@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib.resources as resources
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any, Optional
 
+from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
 from careerkit.jobs.adapters.screening.cli_provider import CLIProvider, LLMProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
 from careerkit.jobs.application.company_info import parse_company_file, validate_company
@@ -33,6 +35,7 @@ from careerkit.jobs.application.storage_migration import extract_metadata_from_j
 from careerkit.jobs.application.screening_quality import (
     HOLD_RULE_CONDITIONS,
     REJECTION_RULE_BASES,
+    ExperienceCapPolicy,
     ScreeningQualityError,
     count_quality_issues,
     validate_assessment_quality,
@@ -46,6 +49,8 @@ from careerkit.jobs.domain.verdict import (
     to_screening_verdict,
 )
 from careerkit.workspace import WorkspacePaths
+
+logger = logging.getLogger(__name__)
 
 MAX_FALLBACK_REASON_CHARS = 240
 _SENSITIVE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]*(?:SECRET|TOKEN|KEY)[A-Za-z0-9_-]*")
@@ -126,6 +131,27 @@ def load_screening_rules(workspace: WorkspacePaths) -> str:
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def load_experience_cap_policy(workspace: WorkspacePaths) -> ExperienceCapPolicy | None:
+    """Read `screening.experience_cap`; absent means the cap gate is skipped, malformed is an error."""
+    raw = YamlConfigFileAdapter(workspace.jobs_config_dir / "search_config.yaml").read()
+    screening = raw.get("screening", {}) if isinstance(raw, dict) else None
+    if not isinstance(screening, dict):
+        raise ValueError("screening.experience_cap: screening must be a mapping")
+    section = screening.get("experience_cap")
+    if section is None:
+        logger.warning("screening.experience_cap is not configured; experience cap gate skipped")
+        return None
+    if not isinstance(section, dict):
+        raise ValueError("screening.experience_cap must be a mapping")
+    values = [section.get("reject_max"), section.get("hold_max")]
+    if any(type(value) is not int or value < 0 for value in values):
+        raise ValueError("screening.experience_cap: reject_max and hold_max must be non-negative integers")
+    reject_max, hold_max = values
+    if reject_max > hold_max:
+        raise ValueError("screening.experience_cap: reject_max must not exceed hold_max")
+    return ExperienceCapPolicy(reject_max=reject_max, hold_max=hold_max)
 
 
 def _load_text(path: Optional[Path]) -> str:
@@ -587,6 +613,7 @@ def run_screening(
 ) -> ScreeningResult:
     jd_content = jd.jd_markdown
     rules = load_screening_rules(workspace)
+    experience_cap = load_experience_cap_policy(workspace)
     company_content = _load_text(company_file)
     risk_summary = build_company_risk_summary(company_file)
     candidate_context_text = candidate_context or "후보자 이력/경험 근거는 호출자가 제공하지 않았음"
@@ -670,7 +697,9 @@ def run_screening(
         if not valid:
             raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
-        assessment = validate_assessment_quality(assessment, filtered, candidate_context_text, jd_content=jd_content)
+        assessment = validate_assessment_quality(
+            assessment, filtered, candidate_context_text, jd_content=jd_content, experience_cap=experience_cap
+        )
         if require_semantic_validation and semantic_validator is None:
             raise ScreeningQualityError("screening-quality: semantic-validator-required")
         if semantic_validator is not None:

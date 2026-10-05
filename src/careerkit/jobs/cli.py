@@ -31,7 +31,13 @@ from careerkit.jobs.application.maintenance import CheckClosedResult, JobsMainte
 from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService, PrescreenedListing
 from careerkit.jobs.adapters.screening.cli_provider import resolve_commands
-from careerkit.jobs.application.screening import STRONG_PROVIDER_LABELS, is_fallback_document, run_screening, validate_screening_structure
+from careerkit.jobs.application.screening import (
+    STRONG_PROVIDER_LABELS,
+    is_fallback_document,
+    load_experience_cap_policy,
+    run_screening,
+    validate_screening_structure,
+)
 from careerkit.jobs.application.requirement_manifest import extract_requirement_manifest, without_main_duty
 from careerkit.jobs.application.screening_assessment import parse_screening_assessment
 from careerkit.jobs.application.screening_quality import validate_assessment_quality
@@ -1930,7 +1936,8 @@ def _handle_screening_validate(args: argparse.Namespace, workspace: WorkspacePat
             manifest = without_main_duty(extract_requirement_manifest(jd_content))
             assessment = parse_screening_assessment(content, manifest)
             validate_assessment_quality(
-                assessment, manifest, args.candidate.read_text(encoding="utf-8"), jd_content=jd_content
+                assessment, manifest, args.candidate.read_text(encoding="utf-8"),
+                jd_content=jd_content, experience_cap=load_experience_cap_policy(workspace),
             )
             valid, reason = True, ""
         except ValueError as exc:
