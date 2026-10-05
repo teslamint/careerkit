@@ -18,6 +18,7 @@ from careerkit.jobs.application.requirement_manifest import (
     aggregate_parent_matches,
 )
 from careerkit.jobs.application.screening_assessment import RULE_BASIS_PREFIX, ScreeningAssessment
+from careerkit.jobs.application.search import parse_experience_range
 
 
 class ScreeningQualityError(ValueError):
@@ -39,6 +40,13 @@ REJECTION_RULE_BASES = ("leadership-scope", "domain", "experience-cap")
 _REJECTION_EVIDENCE = re.compile(r"비추천 근거:\s*\[rule:\s*([^\]]+)\]\s*\[quote:\s*([^\]]+)\]")
 _COUNT = re.compile(r"(필수|우대|주요업무)\s*(\d+)\s*(?:개|항목)")
 _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
+# Final-decision sentence 5: a stated experience cap ≤ 10 years is ❌ and a
+# cap of 11–13 years is △. The model is told the rule but has ignored it, so
+# the verdict is checked against the JD here.
+_CAP_REJECT_MAX = 10
+_CAP_HOLD_MAX = 13
+# Collected JDs state experience as `| 경력 | … |`, `- **경력**: …`, or `- 경력: …`.
+_EXPERIENCE_ROW = re.compile(r"^\s*(?:\|\s*경력\s*\||[-*]\s*(?:\*\*)?경력(?:\*\*)?\s*:)\s*([^|\n]+)", re.MULTILINE)
 
 
 # A quote may join adjacent list items or spell a separator differently from
@@ -183,6 +191,7 @@ def assessment_quality_issues(
             if parent.kind != RequirementKind.REQUIRED or not parent.decisive or parent_matches[item_id] != "없음":
                 issues.append(f"rejection-basis-conflict:{item_id}")
     issues.extend(_rejection_rule_issues(assessment, jd_content))
+    issues.extend(_experience_cap_issues(assessment, jd_content))
 
     narrative = (*assessment.screening_summary, *assessment.reasons)
     promote = [line for line in narrative if line.startswith("추천 전환 조건:")]
@@ -233,6 +242,19 @@ def _rejection_rule_issues(assessment: ScreeningAssessment, jd_content: str) -> 
             issues.append(f"rejection-rule-quote-not-in-jd:{rule}")
     issues.extend(f"rejection-evidence-without-basis:{rule}" for rule in quotes if rule not in rules)
     return issues
+
+
+def _experience_cap_issues(assessment: ScreeningAssessment, jd_content: str) -> list[str]:
+    """Block a verdict the stated experience cap forbids; an unparsed range never trips this."""
+    row = _EXPERIENCE_ROW.search(jd_content)
+    _, cap = parse_experience_range(row.group(1).strip() if row else None)
+    if cap is None:
+        return []
+    if cap <= _CAP_REJECT_MAX and assessment.verdict != "지원 비추천":
+        return ["experience-cap-conflict"]
+    if cap <= _CAP_HOLD_MAX and assessment.verdict == "지원 추천":
+        return ["experience-cap-conflict"]
+    return []
 
 
 def _marker_ids(pattern: re.Pattern[str], line: str) -> list[str]:

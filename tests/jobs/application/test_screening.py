@@ -448,6 +448,80 @@ def test_parser_rejects_malformed_rule_basis(tmp_path: Path, basis: list[str]) -
         parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
 
 
+def _capped_jd(experience_row: str) -> str:
+    return BASE_JD.replace("# Gate Role\n", f"# Gate Role\n\n## 기본 정보\n\n{experience_row}\n", 1)
+
+
+@pytest.mark.parametrize(
+    ("experience_row", "verdict", "rejected"),
+    [
+        # Cap ≤ 10 years is ❌: only 지원 비추천 may pass.
+        ("| 경력 | 1~5년 |", "지원 추천", True),
+        ("| 경력 | 1~5년 |", "지원 보류", True),
+        ("- **경력**: 10년 이하", "지원 추천", True),
+        ("- 경력: 경력 3~10년", "지원 보류", True),
+        ("| 경력 | 1~5년 |", "지원 비추천", False),
+        # Cap 11–13 years is △: 지원 추천 is blocked, hold and rejection pass.
+        ("| 경력 | 5~13년 |", "지원 추천", True),
+        ("| 경력 | 5~11년 |", "지원 추천", True),
+        ("| 경력 | 5~13년 |", "지원 보류", False),
+        # Caps at or above 14 years, open ranges, and unparsed rows never trip the gate.
+        ("| 경력 | 5~14년 |", "지원 추천", False),
+        ("| 경력 | 3~100년 |", "지원 추천", False),
+        ("| 경력 | 7년 이상 |", "지원 추천", False),
+        ("| 경력 | 경력 무관 |", "지원 추천", False),
+    ],
+)
+def test_experience_cap_blocks_conflicting_verdict(
+    tmp_path: Path, experience_row: str, verdict: str, rejected: bool
+) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import assessment_quality_issues
+
+    jd = _capped_jd(experience_row)
+    _, _, stored = _create_record(tmp_path, jd_markdown=jd)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    if verdict == "지원 추천":
+        raw = json.loads(_assessment_json(manifest))
+        raw["matches"] = [
+            {"id": m["id"], "match": "충족", "citations": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}]}
+            for m in raw["matches"]
+        ]
+    elif verdict == "지원 보류":
+        raw = _rule_hold(
+            manifest, "추천 전환 조건: [rule: experience-cap] 충족 확인", "비추천 확정 조건: [rule: experience-cap] 미충족 확정"
+        )
+    else:
+        quote = experience_row.strip("|-* ").split("|")[-1].split(":")[-1].strip()
+        raw = _rule_reject(manifest, ["rule:experience-cap"], [f"비추천 근거: [rule: experience-cap] [quote: {quote}]"])
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    issues = assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot", jd_content=stored.jd_markdown
+    )
+
+    assert ("experience-cap-conflict" in issues) is rejected
+    assert not rejected or issues == ("experience-cap-conflict",)
+
+
+def test_run_screening_does_not_publish_recommendation_over_experience_cap(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_quality import ScreeningQualityError
+
+    workspace, repository, stored = _create_record(tmp_path, jd_markdown=_capped_jd("| 경력 | 1~5년 |"))
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+
+    with pytest.raises(ScreeningQualityError, match="experience-cap-conflict"):
+        run_screening(
+            workspace=workspace, jd=stored, company_file=None,
+            llm_provider=SequenceProvider([_assessment_json(manifest)]),
+            repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+        )
+
+    persisted = repository.get(stored.record.key)
+    assert persisted.record.screening_verdict is None
+    assert persisted.screening_markdown is None
+
+
 def test_run_screening_publishes_rule_based_rejection(tmp_path: Path) -> None:
     workspace, repository, stored = _create_record(tmp_path)
     manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
