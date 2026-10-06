@@ -526,6 +526,8 @@ def test_experience_cap_blocks_conflicting_verdict(
         "screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\nscreening: {}\n",
         "screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\n  experience_cap:\n    reject_max: 0\n    hold_max: 0\n",
         "screening: [\n",
+        "false\n",
+        "[]\n",
     ],
 )
 def test_malformed_experience_cap_config_is_rejected(tmp_path: Path, config: str) -> None:
@@ -536,6 +538,23 @@ def test_malformed_experience_cap_config_is_rejected(tmp_path: Path, config: str
 
     with pytest.raises(ValueError, match="screening.experience_cap"):
         load_experience_cap_policy(workspace)
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ("d: &d\n  reject_max: 6\n  hold_max: 9\nscreening:\n  experience_cap:\n    <<: *d\n", (6, 9)),
+        # An explicit key overrides a merged one; that is YAML merge semantics, not a duplicate.
+        ("d: &d\n  reject_max: 6\n  hold_max: 9\nscreening:\n  experience_cap:\n    <<: *d\n    hold_max: 12\n", (6, 12)),
+    ],
+)
+def test_experience_cap_config_accepts_yaml_merge_keys(tmp_path: Path, config: str, expected: tuple[int, int]) -> None:
+    from careerkit.jobs.application.screening import ExperienceCapPolicy, load_experience_cap_policy
+
+    workspace = make_workspace(tmp_path)
+    (tmp_path / "private/jd/config/search_config.yaml").write_text(config, encoding="utf-8")
+
+    assert load_experience_cap_policy(workspace) == ExperienceCapPolicy(reject_max=expected[0], hold_max=expected[1])
 
 
 def test_run_screening_does_not_publish_recommendation_over_experience_cap(tmp_path: Path) -> None:

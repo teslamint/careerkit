@@ -139,7 +139,12 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
 
 def _unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict[Any, Any]:
-    keys = [loader.construct_object(key_node) for key_node, _ in node.value]
+    # A merge key (<<) is flattened by construct_mapping, where explicit keys override merged ones.
+    keys = [
+        loader.construct_object(key_node)
+        for key_node, _ in node.value
+        if key_node.tag != "tag:yaml.org,2002:merge"
+    ]
     if len(keys) != len(set(keys)):
         raise ValueError("screening.experience_cap: search_config.yaml has a duplicate key")
     return loader.construct_mapping(node)
@@ -152,10 +157,15 @@ def load_experience_cap_policy(workspace: WorkspacePaths) -> ExperienceCapPolicy
     """Read `screening.experience_cap`; absent means the cap gate is skipped, malformed is an error."""
     path = workspace.jobs_config_dir / "search_config.yaml"
     try:
-        raw = (yaml.load(path.read_text(encoding="utf-8"), _UniqueKeyLoader) or {}) if path.is_file() else {}
+        raw = yaml.load(path.read_text(encoding="utf-8"), _UniqueKeyLoader) if path.is_file() else None
     except yaml.YAMLError as exc:
         raise ValueError("screening.experience_cap: search_config.yaml is not valid YAML") from exc
-    screening = raw.get("screening", {}) if isinstance(raw, dict) else None
+    # Only an empty file reads as no configuration; `false` or `[]` is malformed, not empty.
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("screening.experience_cap: search_config.yaml must be a mapping")
+    screening = raw.get("screening", {})
     if not isinstance(screening, dict):
         raise ValueError("screening.experience_cap: screening must be a mapping")
     if "experience_cap" not in screening:
