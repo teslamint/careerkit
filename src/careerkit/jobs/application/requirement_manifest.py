@@ -46,7 +46,7 @@ class _ParentDraft:
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 BRACKET_HEADING_RE = re.compile(r"^\[([^\]]+)\]\s*$")
-BULLET_RE = re.compile(r"^(?P<indent>\s*)(?P<marker>[-*+•◦■▪◼◾])\s+(?P<text>.*\S)\s*$")
+BULLET_RE = re.compile(r"^(?P<indent>\s*)(?P<marker>[-*+•·◦■▪◼◾])\s+(?P<text>.*\S)\s*$")
 SQUARE_MARKERS = frozenset("■▪◼◾")
 NUMBERED_RE = re.compile(r"^(?P<indent>\s*)\d+[.)]\s+(?P<text>.*\S)\s*$")
 DELIMITER_RE = re.compile(r",|·|;|/")
@@ -85,6 +85,59 @@ SECTION_KINDS = {
     "이런분이면더좋아요": RequirementKind.PREFERRED,
     "이런분이면더좋아요우대사항": RequirementKind.PREFERRED,
 }
+NON_REQUIREMENT_LABEL_TOKENS = (
+    "소개",
+    "근무",
+    "복리후생",
+    "복지",
+    "혜택",
+    "채용절차",
+    "전형",
+    "지원방법",
+    "참고",
+    "안내",
+    "확인",
+    "조건",
+    "스택",
+    "사용",
+    "개발환경",
+    "도구",
+    "지원",
+    "할수있",
+    "문화",
+    "블로그",
+    "방식",
+    "성장",
+)
+REQUIREMENT_SUBGROUP_TOKENS = (
+    "역량",
+    "기술",
+    "경험",
+    "경력",
+    "자격",
+    "요건",
+    "필수",
+    "공통",
+    "스킬",
+    "지식",
+    "학력",
+    "아키텍처",
+    "리더십",
+    "협업",
+    "실행력",
+    "태도",
+    "찾고",
+    "함께하고",
+    "원해요",
+    "어울려요",
+    "skill",
+    "knowledge",
+    "education",
+    "experience",
+    "qualification",
+    "requirement",
+    "attitude",
+)
 SECTION_HEADINGS = {
     RequirementKind.REQUIRED: "자격요건",
     RequirementKind.MAIN_DUTY: "주요업무",
@@ -165,6 +218,8 @@ def extract_requirement_manifest(jd_markdown: str) -> RequirementManifest:
     current_kind: RequirementKind | None = None
     current_heading = ""
     current_parent_index: int | None = None
+    heading_section_started = False
+    bracket_subgroups = False
     ambiguous_qualifications = False
     section_orders = {
         RequirementKind.REQUIRED: 0,
@@ -187,6 +242,8 @@ def extract_requirement_manifest(jd_markdown: str) -> RequirementManifest:
             current_kind = SECTION_KINDS.get(normalized)
             current_heading = heading_match.group(2).strip()
             current_parent_index = None
+            heading_section_started = current_kind is not None
+            bracket_subgroups = False
             continue
 
         bracket_match = BRACKET_HEADING_RE.match(line)
@@ -197,12 +254,27 @@ def extract_requirement_manifest(jd_markdown: str) -> RequirementManifest:
             if new_kind:
                 current_kind = new_kind
                 current_heading = bracket_text
+                heading_section_started = False
+                bracket_subgroups = False
+            elif (
+                current_kind is RequirementKind.REQUIRED
+                and (heading_section_started or bracket_subgroups)
+                # The denylist runs first: `[기술 스택]` matches both lists and must close.
+                and not any(token in normalized for token in NON_REQUIREMENT_LABEL_TOKENS)
+                and any(token in normalized for token in REQUIREMENT_SUBGROUP_TOKENS)
+            ):
+                # A `## 자격 요건` section that opens with `[...]` groups its items under
+                # subheadings; later `[...]` lines in that section are subgroups too.
+                bracket_subgroups = True
+                heading_section_started = False
             else:
                 if current_kind is RequirementKind.REQUIRED:
                     ambiguous_qualifications = True
                 current_kind = None
             current_parent_index = None
             continue
+
+        heading_section_started = False
 
         square_match = BULLET_RE.match(line)
         if square_match and square_match.group("marker") in SQUARE_MARKERS:
@@ -214,6 +286,7 @@ def extract_requirement_manifest(jd_markdown: str) -> RequirementManifest:
                 current_kind = divider_kind
                 current_heading = divider_text
                 current_parent_index = None
+                bracket_subgroups = False
                 continue
 
         if current_kind is None:
