@@ -60,3 +60,7 @@ scripts/sync_config.yaml
 
 # Browser extension native host — generated wrapper/manifest (contains local paths)
 ext/native-host/.generated/
+
+# Local agent copies (skills and rules mirrored per tool)
+.agents/
+.omp/
