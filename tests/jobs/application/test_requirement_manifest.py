@@ -384,6 +384,22 @@ def test_bracket_subgroups_opening_a_required_section_keep_its_kind() -> None:
     assert manifest.ambiguous_qualifications is False
 
 
+@pytest.mark.parametrize("label", ["필수 조건", "자격 조건"])
+def test_qualification_condition_label_opens_a_bracket_subgroup(label: str) -> None:
+    manifest = extract_requirement_manifest(
+        f"""
+## 자격 요건
+[{label}]
+- 백엔드 개발 경력 5년 이상
+""".strip()
+    )
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("백엔드 개발 경력 5년 이상", RequirementKind.REQUIRED)
+    ]
+    assert manifest.ambiguous_qualifications is False
+
+
 def test_non_requirement_label_closes_a_bracket_subgroup_section() -> None:
     manifest = extract_requirement_manifest(
         """
@@ -449,6 +465,8 @@ def test_non_requirement_bracket_label_closes_section_even_as_first_line(label: 
         "협업 방식",
         "동료와 성장하는 경험의 장",
         "팀에서 사용하는 기술",
+        "채용 조건",
+        "우대 조건",
     ],
 )
 def test_unlisted_bracket_label_closes_section_even_as_first_line(label: str) -> None:

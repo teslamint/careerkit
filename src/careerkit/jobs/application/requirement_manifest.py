@@ -97,7 +97,6 @@ NON_REQUIREMENT_LABEL_TOKENS = (
     "참고",
     "안내",
     "확인",
-    "조건",
     "스택",
     "사용",
     "개발환경",
