@@ -151,6 +151,31 @@ def test_extract_requirement_manifest_parses_unicode_bullet_and_ignores_unknown_
     assert manifest.ambiguous_qualifications is False
 
 
+def test_extract_requirement_manifest_parses_middle_dot_bullets() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+· 백엔드 개발 경력 3년 이상
+· 관계형 스키마 모델링 실무
+
+## 우대사항
+· 퍼블릭 클라우드 리소스 운영
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == [
+        "백엔드 개발 경력 3년 이상",
+        "관계형 스키마 모델링 실무",
+        "퍼블릭 클라우드 리소스 운영",
+    ]
+    assert [item.kind for item in manifest.parents] == [
+        RequirementKind.REQUIRED,
+        RequirementKind.REQUIRED,
+        RequirementKind.PREFERRED,
+    ]
+    assert manifest.ambiguous_qualifications is False
+
+
 def test_extract_requirement_manifest_ignores_unknown_headings_and_administrative_rows() -> None:
     manifest = extract_requirement_manifest(
         """
@@ -330,6 +355,178 @@ def test_bracket_boundary_unknown_resets_kind_and_excludes_items() -> None:
     assert manifest.parents[0].text == "Python 개발 경험 3년 이상"
     assert manifest.parents[0].kind == RequirementKind.REQUIRED
     assert manifest.ambiguous_qualifications is True
+
+
+def test_bracket_subgroups_opening_a_required_section_keep_its_kind() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 주요 업무
+[서비스 개발]
+- 결제 API 개발
+
+## 자격 요건
+[기술 역량]
+- 백엔드 개발 경력 5년 이상
+
+[협업 역량]
+- 문서로 설계를 공유한 경험
+
+## 우대사항
+- 초당 수천 건 요청 처리 경험
+""".strip()
+    )
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("백엔드 개발 경력 5년 이상", RequirementKind.REQUIRED),
+        ("문서로 설계를 공유한 경험", RequirementKind.REQUIRED),
+        ("초당 수천 건 요청 처리 경험", RequirementKind.PREFERRED),
+    ]
+    assert manifest.ambiguous_qualifications is False
+
+
+@pytest.mark.parametrize("label", ["필수 조건", "자격 조건"])
+def test_qualification_condition_label_opens_a_bracket_subgroup(label: str) -> None:
+    manifest = extract_requirement_manifest(
+        f"""
+## 자격 요건
+[{label}]
+- 백엔드 개발 경력 5년 이상
+""".strip()
+    )
+
+    assert [(item.text, item.kind) for item in manifest.parents] == [
+        ("백엔드 개발 경력 5년 이상", RequirementKind.REQUIRED)
+    ]
+    assert manifest.ambiguous_qualifications is False
+
+
+def test_non_requirement_label_closes_a_bracket_subgroup_section() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+[기술 역량]
+- 백엔드 개발 경력 5년 이상
+
+[근무 조건]
+- 정규직
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == ["백엔드 개발 경력 5년 이상"]
+    assert manifest.ambiguous_qualifications is True
+
+
+def test_bracket_subgroups_apply_only_to_required_sections() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 주요 업무
+[서비스 개발]
+- 결제 API 개발
+
+## 자격 요건
+- 백엔드 개발 경력 5년 이상
+
+[근무 환경]
+- 주체적으로 문제를 해결하는 분
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == ["백엔드 개발 경력 5년 이상"]
+    assert manifest.ambiguous_qualifications is True
+
+
+@pytest.mark.parametrize(
+    "label", ["복리후생", "근무 환경", "채용 절차", "회사 소개", "기술 스택", "개발 환경은요", "근무 조건"]
+)
+def test_non_requirement_bracket_label_closes_section_even_as_first_line(label: str) -> None:
+    manifest = extract_requirement_manifest(
+        f"""
+## 자격 요건
+[{label}]
+- 유연 근무제
+""".strip()
+    )
+
+    assert manifest.parents == ()
+    assert manifest.ambiguous_qualifications is True
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Tech Stack",
+        "Benefits",
+        "팀 문화",
+        "보상 및 처우 기준",
+        "입사 후 담당 업무",
+        "이런 경험을 할 수 있어요",
+        "커리어 성장 비용 지원",
+        "기술 블로그",
+        "협업 방식",
+        "동료와 성장하는 경험의 장",
+        "팀에서 사용하는 기술",
+        "채용 조건",
+        "우대 조건",
+    ],
+)
+def test_unlisted_bracket_label_closes_section_even_as_first_line(label: str) -> None:
+    manifest = extract_requirement_manifest(
+        f"""
+## 자격 요건
+[{label}]
+- 항목
+""".strip()
+    )
+
+    assert manifest.parents == ()
+    assert manifest.ambiguous_qualifications is True
+
+
+def test_square_divider_ends_bracket_subgroup_mode() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+[기술 역량]
+- 백엔드 개발 경력 5년 이상
+■ 우대사항
+- 초당 수천 건 요청 처리 경험
+■ 자격요건
+[협업 역량]
+- 문서로 설계를 공유한 경험
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == ["백엔드 개발 경력 5년 이상", "초당 수천 건 요청 처리 경험"]
+    assert manifest.ambiguous_qualifications is True
+
+
+def test_later_unlisted_label_closes_a_bracket_subgroup_section() -> None:
+    manifest = extract_requirement_manifest(
+        """
+## 자격 요건
+[기술 역량]
+1. 백엔드 개발 경력 5년 이상
+[협업 역량]
+2. 문서로 설계를 공유한 경험
+[커리어 성장 비용 지원]
+- 교육비 지원
+""".strip()
+    )
+
+    assert [item.text for item in manifest.parents] == ["백엔드 개발 경력 5년 이상", "문서로 설계를 공유한 경험"]
+    assert manifest.ambiguous_qualifications is True
+
+
+def test_unknown_bracket_without_heading_does_not_open_a_section() -> None:
+    manifest = extract_requirement_manifest(
+        """
+[기술 역량]
+- 백엔드 개발 경력 5년 이상
+""".strip()
+    )
+
+    assert manifest.parents == ()
+    assert manifest.ambiguous_qualifications is False
 
 
 def test_wanted_bracket_label_preserves_required_section() -> None:

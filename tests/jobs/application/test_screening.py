@@ -574,7 +574,7 @@ def test_gate_still_rejects_evidence_text_the_form_cannot_produce(tmp_path: Path
 
 _QUOTE_CONTEXT = (
     "[source: private/companies/acme/projects/a.md]\n"
-    "### Tech Stack\n- Java, Spring Boot\n- JPA, Redis\n- MySQL\n\n"
+    "### Tech Stack\n- Java, Spring Boot\n- JPA, Redis\n- MySQL\n- **Batch**: Python, Airflow\n\n"
     "[source: private/profile/skills-job.md]\n빌드·테스트: Gradle 모듈·CI 분리 10→15개\n\n"
     "[source: private/profile/summary-job.md]\nKafka 운영\n\n"
     "[source: private/profile/core.md]\nKafka 운영\n"
@@ -591,6 +591,10 @@ _A = "private/companies/acme/projects/a.md"
         ("private/profile/skills-job.md", "Gradle 모듈, CI 분리", "private/profile/skills-job.md"),
         # Real text cited to the wrong file, found in exactly one other file.
         (_A, "빌드·테스트: Gradle 모듈·CI 분리", "private/profile/skills-job.md"),
+        # Adjacent bullet lines flattened onto one line with their markers kept.
+        (_A, "- Java, Spring Boot - JPA, Redis", _A),
+        # Markdown bold dropped from a label.
+        (_A, "Batch: Python, Airflow", _A),
         # Found in the cited file and elsewhere: the cited file stays.
         ("private/profile/summary-job.md", "Kafka 운영", "private/profile/summary-job.md"),
     ],
@@ -621,6 +625,8 @@ def test_quote_matches_its_source_across_list_and_separator_formatting(
         (_A, "Kubernetes"),  # nowhere
         ("private/profile/missing.md", "Kafka 운영"),  # undeclared path, ambiguous text
         (_A, ", ·"),  # separators only: nothing left to match
+        (_A, "- Java, Spring Boot - MySQL"),  # flattened markers still skip an item
+        (_A, "Batch: Python, Airflow, Spark"),  # bold dropped, item added
         # Undeclared paths are never re-attributed, even when one real file holds
         # the quote: rewriting them would hide an escape from the containment check.
         ("/etc/a.md", "JPA, Redis"),

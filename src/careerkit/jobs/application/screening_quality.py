@@ -42,10 +42,13 @@ _MATCH_COUNT = re.compile(r"(충족|부분|없음)\s*(\d+)")
 
 
 # A quote may join adjacent list items or spell a separator differently from
-# the source (`- A, B` / `- C` quoted as `A, B, C`). Both sides drop list
-# markers and these separators, then the quote must still be one contiguous
-# span, so skipped, inserted, or changed words are still rejected.
+# the source (`- A, B` / `- C` quoted as `A, B, C` or `- A, B - C`), and may
+# drop Markdown bold (`**Admin**:` quoted as `Admin:`). Both sides drop list
+# markers, bold marks, and these separators, then the quote must still be one
+# contiguous span, so skipped, inserted, or changed words are still rejected.
 _LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
+_INLINE_MARKER = re.compile(r"(?<!\S)[-*+](?!\S)")
+_BOLD = re.compile(r"\*\*")
 _SEPARATOR = re.compile(r"[,·/|]")
 
 
@@ -55,7 +58,8 @@ def _normalize(text: str) -> str:
 
 
 def _canonical(text: str) -> str:
-    return " ".join(_SEPARATOR.sub(" ", _LIST_MARKER.sub("", text)).split())
+    text = _LIST_MARKER.sub("", _BOLD.sub("", text))
+    return " ".join(_SEPARATOR.sub(" ", _INLINE_MARKER.sub(" ", text)).split())
 
 
 def _sources(corpus: str) -> dict[str, list[str]]:
