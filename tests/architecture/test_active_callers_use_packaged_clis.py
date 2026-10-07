@@ -96,7 +96,8 @@ def test_claude_and_codex_skills_share_command_storage_and_privacy_contracts() -
             assert _assert_extract_company_info_shared_contract(codex_text) == _assert_extract_company_info_shared_contract(claude_text)
             assert codex_text != claude_text, name
             assert "브라우저 fallback" in claude_text, name
-            assert "브라우저 도구가 없다" in codex_text, name
+            assert "브라우저 사용 가능 여부는 현재 도구 목록으로 확인한다" in codex_text, name
+            assert "브라우저 도구가 없다" not in codex_text, name
             continue
         assert codex_text == claude_text, name
 

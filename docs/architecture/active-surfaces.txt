@@ -11,6 +11,7 @@
 .claude/skills/verify-interview-content/SKILL.md
 .codex/hooks.json
 .codex/skills/extract-company-info/SKILL.md
+.codex/skills/extract-company-info/references/jotso.md
 .codex/skills/extract-job-posting/SKILL.md
 .codex/skills/extract-recruitment-info/CLAUDE.md
 .codex/skills/extract-recruitment-info/SKILL.md

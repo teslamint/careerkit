@@ -1,9 +1,9 @@
 ---
 name: extract-company-info
-description: This skill should be used when the user asks to "extract company info", "회사 정보 추출", "기업 정보", "company profile", or provides Wanted company page URLs (wanted.co.kr/company/*)
+description: This skill should be used when the user asks to "extract company info", "회사 정보 추출", "기업 정보", "company profile", or provides Wanted or Jotso company URLs (wanted.co.kr/company/*, jotso.net/company/*)
 ---
 
-# 회사 정보 추출 스킬 (Codex — HTTP/CLI 전용)
+# 회사 정보 추출 스킬 (Codex — HTTP/CLI 우선)
 
 <!-- shared-contract:start -->
 ## Shared Contract: packaged writer, storage, and privacy
@@ -15,7 +15,7 @@ description: This skill should be used when the user asks to "extract company in
 - Never add, commit, push, publish, or quote private company information files or their contents.
 <!-- shared-contract:end -->
 
-Codex 환경에는 브라우저 도구가 없다. CLI와 HTTP 요청만으로 추출한다.
+CLI와 HTTP 요청을 우선 사용한다. 브라우저 사용 가능 여부는 현재 도구 목록으로 확인한다.
 
 ## 사용 가능한 도구
 
@@ -24,8 +24,8 @@ Codex 환경에는 브라우저 도구가 없다. CLI와 HTTP 요청만으로 �
 | `career-jobs company fetch` | Remember, Saramin, TheVC, Wanted 구조화 추출 |
 | `career-jobs company validate` | 저장 후 검증 (필수) |
 
-브라우저 전용 데이터(Wanted 경력별 제보 연봉, TheVC 투자 세부)는 이 환경에서 추출 불가.
-해당 데이터가 필요하면 사용자에게 Claude Code 환경에서 추출하도록 안내한다.
+브라우저 전용 데이터는 현재 브라우저 도구와 로그인 상태가 허용할 때 확인한다.
+도구나 접근 권한이 없으면 추출하지 못한 필드를 명시한다.
 
 ## CLI 레퍼런스
 
@@ -93,6 +93,13 @@ curl -s 'https://m.saramin.co.kr/job-search/company-search?searchword={name}' | 
 ```
 
 ### Phase 3: 플랫폼별 데이터 추출
+
+#### Jotso — 인원·연봉 보완
+
+요청한 Jotso URL을 처리하거나 기존 소스에서 인원·평균연봉을 찾지 못했을 때 [Jotso 추출 절차](references/jotso.md)를 읽는다.
+검색은 `GET https://jotso.net/api/search?q={회사명}`, 상세는 `GET https://jotso.net/company/{bizNo}`를 사용한다.
+`company fetch --platform jotso`는 현재 지원하지 않는다. 후보 문서는 기존 `company apply` 명령으로 저장한다.
+동명 기업을 확인하고, 국민연금 가입자 수의 기준월과 추정연봉·공시연봉의 구분을 보존한다.
 
 #### Wanted
 
@@ -168,7 +175,7 @@ slug은 thevc.kr/{slug} URL에서 추출. `--json` 플래그로 구조화 데이
 
 > **주의 — 투자 금액은 신뢰 불가**: TheVC API의 `totalAmount` 값은 스크램블(난독화)되어 있어 CLI 출력에 금액이 포함되지 않는다. 실제 금액은 뉴스 기사(ZDNet, 벤처스퀘어 등)나 DART 공시로 보완.
 
-투자사명(PLAN:BASIC+), 직원수/재무(PLAN:PRO) 등 로그인/구독 데이터는 이 환경에서 추출 불가 — 필요하면 사용자에게 Claude Code 환경에서 추출하도록 안내.
+투자사명(PLAN:BASIC+), 직원수/재무(PLAN:PRO) 등 로그인/구독 데이터는 현재 브라우저 도구와 접근 권한이 있을 때만 확인한다.
 
 ### Phase 4: 데이터 병합 → 마크다운 작성
 
@@ -177,6 +184,7 @@ slug은 thevc.kr/{slug} URL에서 추출. `--json` 플래그로 구조화 데이
 - 투자: TheVC only
 - 인원: Remember(정확 수치) > Wanted > Saramin
 - 복지: Saramin > Wanted
+- Jotso: 기존 인원·연봉의 누락 보완. 기준월·추정/공시 구분은 참고 문서 적용
 
 출력 파일: `private/company_info/{company_slug}.md`
 
@@ -274,7 +282,7 @@ validator는 `숫자+억` 패턴 요구. "미공개"는 투자 필드를 충족�
 
 스크리닝 **지원 보류** 건만 추가 소스 심화 조사. 추천/비추천 확정 건은 불필요.
 
-## 브라우저 전용 데이터 (Codex에서 추출 불가)
+## 브라우저 전용 데이터 (도구·접근 권한 확인)
 
 | 데이터 | 플랫폼 | 이유 |
 |--------|--------|------|
@@ -282,4 +290,4 @@ validator는 `숫자+억` 패턴 요구. "미공개"는 투자 필드를 충족�
 | TheVC 투자 세부 | TheVC | 로그인 필요 |
 | 복지 상세/면접후기 | Saramin | 브라우저 스크롤 |
 
-이 데이터가 필요하면: "Claude Code에서 `/extract-company-info`로 브라우저 추출 필요" 안내.
+현재 브라우저 도구로 확인한다. 도구나 접근 권한이 없으면 추출하지 못한 항목을 보고한다.
