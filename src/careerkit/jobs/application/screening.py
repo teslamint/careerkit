@@ -156,13 +156,15 @@ _UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
 def load_experience_cap_policy(workspace: WorkspacePaths) -> ExperienceCapPolicy | None:
     """Read `screening.experience_cap`; absent means the cap gate is skipped, malformed is an error."""
     path = workspace.jobs_config_dir / "search_config.yaml"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
     try:
-        raw = yaml.load(path.read_text(encoding="utf-8"), _UniqueKeyLoader) if path.is_file() else None
+        raw = yaml.load(text, _UniqueKeyLoader)
+        # Only a stream with no document (empty or comment-only) reads as no configuration;
+        # an explicit top-level `null`, `false`, or `[]` is a document and is malformed.
+        if raw is None and yaml.compose(text, _UniqueKeyLoader) is None:
+            raw = {}
     except yaml.YAMLError as exc:
         raise ValueError("screening.experience_cap: search_config.yaml is not valid YAML") from exc
-    # Only an empty file reads as no configuration; `false` or `[]` is malformed, not empty.
-    if raw is None:
-        raw = {}
     if not isinstance(raw, dict):
         raise ValueError("screening.experience_cap: search_config.yaml must be a mapping")
     screening = raw.get("screening", {})

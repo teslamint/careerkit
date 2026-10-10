@@ -528,6 +528,9 @@ def test_experience_cap_blocks_conflicting_verdict(
         "screening: [\n",
         "false\n",
         "[]\n",
+        # An explicit top-level null is a document, not an empty file; it must not disable the gate.
+        "null\n",
+        "~\n",
     ],
 )
 def test_malformed_experience_cap_config_is_rejected(tmp_path: Path, config: str) -> None:
@@ -538,6 +541,16 @@ def test_malformed_experience_cap_config_is_rejected(tmp_path: Path, config: str
 
     with pytest.raises(ValueError, match="screening.experience_cap"):
         load_experience_cap_policy(workspace)
+
+
+@pytest.mark.parametrize("config", ["", "# no settings yet\n"])
+def test_empty_experience_cap_config_skips_gate(tmp_path: Path, config: str) -> None:
+    from careerkit.jobs.application.screening import load_experience_cap_policy
+
+    workspace = make_workspace(tmp_path)
+    (tmp_path / "private/jd/config/search_config.yaml").write_text(config, encoding="utf-8")
+
+    assert load_experience_cap_policy(workspace) is None
 
 
 @pytest.mark.parametrize(
