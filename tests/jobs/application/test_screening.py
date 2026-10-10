@@ -448,6 +448,162 @@ def test_parser_rejects_malformed_rule_basis(tmp_path: Path, basis: list[str]) -
         parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
 
 
+def _capped_jd(experience_row: str) -> str:
+    return BASE_JD.replace("# Gate Role\n", f"# Gate Role\n\n## 기본 정보\n\n{experience_row}\n", 1)
+
+
+# Illustrative thresholds; the real ones live only in the private workspace config.
+_CAP_CONFIG = "search:\n  role: backend\nscreening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\n"
+
+
+@pytest.mark.parametrize(
+    ("experience_row", "verdict", "rejected"),
+    [
+        # Cap ≤ reject_max is ❌: only 지원 비추천 may pass.
+        ("| 경력 | 1~5년 |", "지원 추천", True),
+        ("| 경력 | 1~5년 |", "지원 보류", True),
+        ("- **경력**: 6년 이하", "지원 추천", True),
+        ("- 경력: 경력 3~6년", "지원 보류", True),
+        ("| 경력 | 1~5년 |", "지원 비추천", False),
+        # reject_max < cap ≤ hold_max is △: 지원 추천 is blocked, hold and rejection pass.
+        ("| 경력 | 5~9년 |", "지원 추천", True),
+        ("| 경력 | 5~7년 |", "지원 추천", True),
+        ("| 경력 | 5~9년 |", "지원 보류", False),
+        # Caps above hold_max, open ranges, and unparsed rows never trip the gate.
+        ("| 경력 | 5~10년 |", "지원 추천", False),
+        ("| 경력 | 3~100년 |", "지원 추천", False),
+        ("| 경력 | 7년 이상 |", "지원 추천", False),
+        ("| 경력 | 경력 무관 |", "지원 추천", False),
+        # An empty experience row never borrows the next line as its value.
+        ("| 경력 |\n5년 이하", "지원 추천", False),
+        ("- 경력:\n5년 이하", "지원 추천", False),
+    ],
+)
+def test_experience_cap_blocks_conflicting_verdict(
+    tmp_path: Path, experience_row: str, verdict: str, rejected: bool
+) -> None:
+    from careerkit.jobs.application.screening_assessment import parse_screening_assessment
+    from careerkit.jobs.application.screening_quality import ExperienceCapPolicy, assessment_quality_issues
+
+    jd = _capped_jd(experience_row)
+    _, _, stored = _create_record(tmp_path, jd_markdown=jd)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    if verdict == "지원 추천":
+        raw = json.loads(_assessment_json(manifest))
+        raw["matches"] = [
+            {"id": m["id"], "match": "충족", "citations": [{"source": "private/profile/skills-job.md", "quote": "Spring Boot"}]}
+            for m in raw["matches"]
+        ]
+    elif verdict == "지원 보류":
+        raw = _rule_hold(
+            manifest, "추천 전환 조건: [rule: experience-cap] 충족 확인", "비추천 확정 조건: [rule: experience-cap] 미충족 확정"
+        )
+    else:
+        quote = experience_row.strip("|-* ").split("|")[-1].split(":")[-1].strip()
+        raw = _rule_reject(manifest, ["rule:experience-cap"], [f"비추천 근거: [rule: experience-cap] [quote: {quote}]"])
+    assessment = parse_screening_assessment(json.dumps(raw, ensure_ascii=False), manifest)
+
+    issues = assessment_quality_issues(
+        assessment, manifest, "[source: private/profile/skills-job.md] Spring Boot",
+        jd_content=stored.jd_markdown, experience_cap=ExperienceCapPolicy(reject_max=6, hold_max=9),
+    )
+
+    assert ("experience-cap-conflict" in issues) is rejected
+    assert not rejected or issues == ("experience-cap-conflict",)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "screening:\n  experience_cap:\n    reject_max: 6\n",
+        "screening:\n  experience_cap:\n    reject_max: 9\n    hold_max: 6\n",
+        "screening:\n  experience_cap:\n    reject_max: true\n    hold_max: 9\n",
+        "screening:\n  experience_cap:\n    reject_max: -1\n    hold_max: 9\n",
+        "screening:\n  experience_cap: 9\n",
+        "screening:\n  experience_cap: null\n",
+        "screening: []\n",
+        # A repeated key would otherwise let a later value silently replace or disable the policy.
+        "screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\nscreening: {}\n",
+        "screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\n  experience_cap:\n    reject_max: 0\n    hold_max: 0\n",
+        "screening: [\n",
+        "false\n",
+        "[]\n",
+        # An explicit top-level null is a document, not an empty file; it must not disable the gate.
+        "null\n",
+        "~\n",
+    ],
+)
+def test_malformed_experience_cap_config_is_rejected(tmp_path: Path, config: str) -> None:
+    from careerkit.jobs.application.screening import load_experience_cap_policy
+
+    workspace = make_workspace(tmp_path)
+    (tmp_path / "private/jd/config/search_config.yaml").write_text(config, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="screening.experience_cap"):
+        load_experience_cap_policy(workspace)
+
+
+@pytest.mark.parametrize("config", ["", "# no settings yet\n"])
+def test_empty_experience_cap_config_skips_gate(tmp_path: Path, config: str) -> None:
+    from careerkit.jobs.application.screening import load_experience_cap_policy
+
+    workspace = make_workspace(tmp_path)
+    (tmp_path / "private/jd/config/search_config.yaml").write_text(config, encoding="utf-8")
+
+    assert load_experience_cap_policy(workspace) is None
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ("d: &d\n  reject_max: 6\n  hold_max: 9\nscreening:\n  experience_cap:\n    <<: *d\n", (6, 9)),
+        # An explicit key overrides a merged one; that is YAML merge semantics, not a duplicate.
+        ("d: &d\n  reject_max: 6\n  hold_max: 9\nscreening:\n  experience_cap:\n    <<: *d\n    hold_max: 12\n", (6, 12)),
+    ],
+)
+def test_experience_cap_config_accepts_yaml_merge_keys(tmp_path: Path, config: str, expected: tuple[int, int]) -> None:
+    from careerkit.jobs.application.screening import ExperienceCapPolicy, load_experience_cap_policy
+
+    workspace = make_workspace(tmp_path)
+    (tmp_path / "private/jd/config/search_config.yaml").write_text(config, encoding="utf-8")
+
+    assert load_experience_cap_policy(workspace) == ExperienceCapPolicy(reject_max=expected[0], hold_max=expected[1])
+
+
+def test_run_screening_does_not_publish_recommendation_over_experience_cap(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_quality import ScreeningQualityError
+
+    workspace, repository, stored = _create_record(tmp_path, jd_markdown=_capped_jd("| 경력 | 1~5년 |"))
+    (tmp_path / "private/jd/config/search_config.yaml").write_text(_CAP_CONFIG, encoding="utf-8")
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+
+    with pytest.raises(ScreeningQualityError, match="experience-cap-conflict"):
+        run_screening(
+            workspace=workspace, jd=stored, company_file=None,
+            llm_provider=SequenceProvider([_assessment_json(manifest)]),
+            repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+        )
+
+    persisted = repository.get(stored.record.key)
+    assert persisted.record.screening_verdict is None
+    assert persisted.screening_markdown is None
+
+
+def test_run_screening_skips_experience_cap_without_config(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    workspace, repository, stored = _create_record(tmp_path, jd_markdown=_capped_jd("| 경력 | 1~5년 |"))
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+
+    with caplog.at_level("WARNING"):
+        result = run_screening(
+            workspace=workspace, jd=stored, company_file=None,
+            llm_provider=SequenceProvider([_assessment_json(manifest)]),
+            repository=repository, candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+        )
+
+    assert result.verdict == "지원 추천"
+    assert "screening.experience_cap" in caplog.text
+
+
 def test_run_screening_publishes_rule_based_rejection(tmp_path: Path) -> None:
     workspace, repository, stored = _create_record(tmp_path)
     manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))

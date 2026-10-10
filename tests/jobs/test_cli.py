@@ -1647,6 +1647,40 @@ def test_cli_screening_validate_assessment_checks_evidence(monkeypatch, capsys, 
     assert 'rejection-rule-quote-not-in-jd:domain' in json.loads(capsys.readouterr().out)['reason']
 
 
+def test_cli_screening_validate_assessment_applies_configured_experience_cap(monkeypatch, capsys, tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: cli.ServiceBundle(
+        maintenance=FakeMaintenance(), pipeline=FakePipeline(), automation=FakeAutomation(),
+    ))
+    config = workspace.jobs_config_dir / 'search_config.yaml'
+    config.parent.mkdir(parents=True)
+    config.write_text('screening:\n  experience_cap:\n    reject_max: 6\n    hold_max: 9\n', encoding='utf-8')
+    jd = tmp_path / 'jd.md'
+    candidate = tmp_path / 'candidate.md'
+    answer = tmp_path / 'answer.json'
+    jd.write_text('| 경력 | 3~8년 |\n\n## 자격 요건\n- Python 경험 필수', encoding='utf-8')
+    candidate.write_text('[source: profile.md] Python 서비스 운영', encoding='utf-8')
+    answer.write_text(json.dumps({
+        'schema_version': 2,
+        'matches': [{'id': 'required-001', 'match': '충족',
+                     'citations': [{'source': 'profile.md', 'quote': 'Python 서비스 운영'}]}],
+        'verdict': '지원 추천', 'decision_basis': [],
+        'screening_summary': ['필수 1항목: 충족 1, 부분 0, 없음 0'],
+        'reasons': ['직접 운영 경험', '백엔드 직무', '필수 요건 확인'],
+    }, ensure_ascii=False), encoding='utf-8')
+
+    args = ['screening', 'validate', str(answer), '--assessment-json', '--jd', str(jd), '--candidate', str(candidate), '--json']
+    assert cli.main(args) == 2
+    assert 'experience-cap-conflict' in json.loads(capsys.readouterr().out)['reason']
+    # A broken config is a validation failure, not a crash.
+    config.write_text('screening: [\n', encoding='utf-8')
+    assert cli.main(args) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['valid'] is False
+    assert 'screening.experience_cap' in result['reason']
+
+
 def test_cli_screening_lint_file_reports_screening_structure(monkeypatch, capsys, tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     records_root = tmp_path / 'private/jd/records'
