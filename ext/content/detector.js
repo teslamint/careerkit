@@ -21,6 +21,11 @@
       platform: "saramin",
       hosts: ["www.saramin.co.kr"],
       match: function (p) { return p.searchParams.get("rec_idx") || null; }
+    },
+    {
+      platform: "zighang",
+      hosts: ["zighang.com"],
+      match: function (p) { var m = p.pathname.match(/^\/recruitment\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#]|$)/); return m && m[1]; }
     }
   ];
 

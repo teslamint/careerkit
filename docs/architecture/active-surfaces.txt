@@ -93,6 +93,7 @@ src/careerkit/jobs/adapters/platforms/remember.py
 src/careerkit/jobs/adapters/platforms/saramin.py
 src/careerkit/jobs/adapters/platforms/thevc.py
 src/careerkit/jobs/adapters/platforms/wanted.py
+src/careerkit/jobs/adapters/platforms/zighang.py
 src/careerkit/jobs/adapters/screening/__init__.py
 src/careerkit/jobs/adapters/screening/cli_provider.py
 src/careerkit/jobs/adapters/semantic_eval_files.py
@@ -257,6 +258,7 @@ tests/jobs/platforms/test_remember_company.py
 tests/jobs/platforms/test_saramin.py
 tests/jobs/platforms/test_thevc_company.py
 tests/jobs/platforms/test_wanted_company.py
+tests/jobs/platforms/test_zighang.py
 tests/jobs/storage/test_activation.py
 tests/jobs/storage/test_cutover.py
 tests/jobs/storage/test_index.py
