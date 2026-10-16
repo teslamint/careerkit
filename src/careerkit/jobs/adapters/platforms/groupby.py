@@ -20,6 +20,9 @@ GROUPBY_HEADERS = {
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-site",
 }
+# Without that metadata the detail endpoint answers 200 with a placeholder posting for
+# any ID, including closed ones, and titles it with this marker (verified 2026-10-16).
+GROUPBY_PLACEHOLDER_MARKER = "[표시 제한]"
 GROUPBY_BACKEND_MAPPING = {"position_types": [2]}
 _DEFAULT_LIMIT = 10
 _MAX_PAGES = 1000
@@ -177,6 +180,15 @@ def groupby_company_from_position(payload: dict) -> GroupByCompanyInfo:
         service_areas=tuple(areas),
         location=loc,
     )
+
+
+def is_groupby_placeholder(data: object) -> bool:
+    """True when a detail payload's ``data`` is the placeholder posting, not a real one."""
+    if not isinstance(data, dict):
+        return False
+    startup = data.get("startup")
+    titles = (data.get("name"), startup.get("name") if isinstance(startup, dict) else None)
+    return any(isinstance(title, str) and GROUPBY_PLACEHOLDER_MARKER in title for title in titles)
 
 
 def format_groupby_experience(item: dict) -> str:

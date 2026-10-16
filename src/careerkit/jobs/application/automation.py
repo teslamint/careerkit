@@ -15,7 +15,12 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
 from careerkit.jobs.adapters.http import HttpClient, HttpError, UrllibHttpClient
-from careerkit.jobs.adapters.platforms.groupby import format_groupby_experience
+from careerkit.jobs.adapters.platforms.groupby import (
+    GROUPBY_API_BASE,
+    GROUPBY_HEADERS,
+    format_groupby_experience,
+    is_groupby_placeholder,
+)
 from careerkit.jobs.adapters.platforms.remember import remember_company_http
 from careerkit.jobs.adapters.platforms.saramin import extract_csn_from_html, saramin_company_http
 from careerkit.jobs.adapters.platforms.wanted import (
@@ -642,13 +647,17 @@ class JobsExtractionStage:
     def _extract_groupby(
         self, url: str, job_id: str
     ) -> tuple[str, str, str, CompanyEnrichmentContext]:
-        payload = self.http_client.request_json(f"https://api.groupby.kr/startup-positions/{job_id}")
+        payload = self.http_client.request_json(
+            f"{GROUPBY_API_BASE}/startup-positions/{job_id}", headers=GROUPBY_HEADERS
+        )
         try:
             if payload.get("status") != 200:
                 raise ValueError(f"GroupBy API status {payload.get('status')}")
             data = payload["data"]
         except (AttributeError, KeyError, TypeError) as exc:
             raise ValueError(f"invalid GroupBy payload for {url}") from exc
+        if is_groupby_placeholder(data):
+            raise ValueError(f"GroupBy served a placeholder posting for {url}")
         position = _normalize_text(data.get("name", "")) or f"groupby-{job_id}"
         startup = data.get("startup") or {}
         company = _normalize_text(startup.get("name", "")) or "unknown-company"

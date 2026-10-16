@@ -1205,6 +1205,68 @@ def test_groupby_extraction_preserves_startup_metadata(tmp_path: Path) -> None:
     )
 
 
+class GroupByFetchMetadataClient:
+    """Mirrors the live GroupBy API recorded on 2026-10-16.
+
+    Without browser fetch metadata the API answers 200 with a placeholder posting whose
+    titles carry ``[표시 제한]``, even for IDs that do not exist. With the metadata it
+    serves the real posting.
+    """
+
+    def __init__(self, real_payload: dict[str, Any], *, always_placeholder: bool = False) -> None:
+        self.real_payload = real_payload
+        self.always_placeholder = always_placeholder
+        self.requested_headers: list[dict[str, str]] = []
+
+    def request_json(self, url: str, *, headers: dict[str, str] | None = None, **_: Any) -> dict[str, Any]:
+        sent = dict(headers or {})
+        self.requested_headers.append(sent)
+        if not self.always_placeholder and ("Sec-Fetch-Mode" in sent or "Sec-Fetch-Site" in sent):
+            return self.real_payload
+        return {
+            "status": 200,
+            "data": {
+                "name": "[표시 제한] Placeholder Role (7년 이상)",
+                "careerType": "경력무관",
+                "task": "<p>Placeholder duty</p>",
+                "startup": {"name": "[표시 제한] Placeholder Co"},
+            },
+        }
+
+
+def test_groupby_extraction_sends_browser_fetch_metadata(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    http_client = GroupByFetchMetadataClient(
+        _groupby_payload(task="<p>서비스 개발</p>", qualification="<p>정보 없음</p>", preferred="")
+    )
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+
+    batch = stage.extract(["https://groupby.kr/positions/456"], dry_run=True, screening_only=False)
+
+    assert batch.metadata["failures"] == []
+    assert batch.records[0].record.company == "Group Co"
+    assert batch.records[0].record.position == "Backend Engineer"
+    assert "[표시 제한]" not in batch.records[0].jd_markdown
+
+
+def test_groupby_extraction_rejects_placeholder_posting_without_persisting(tmp_path: Path) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    http_client = GroupByFetchMetadataClient(
+        _groupby_payload(task="<p>서비스 개발</p>", qualification="", preferred=""),
+        always_placeholder=True,
+    )
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+
+    batch = stage.extract(["https://groupby.kr/positions/456"], dry_run=False, screening_only=False)
+
+    assert batch.records == ()
+    assert batch.failed_urls == ("https://groupby.kr/positions/456",)
+    key = JobKey("groupby", "456")
+    assert batch.metadata["failures"][0]["item_id"] == f"{key.platform}:{key.job_id}"
+    assert "placeholder" in batch.metadata["failures"][0]["error"]
+    assert repository.find(key) is None
+
+
 def test_run_auto_keeps_only_failed_urls_for_resume_after_partial_batch() -> None:
     class PartialExtraction(FakeExtractionStage):
         def extract(self, urls, *, dry_run, screening_only):
