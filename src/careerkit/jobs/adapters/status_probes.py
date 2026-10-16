@@ -162,7 +162,8 @@ def _probe_groupby(job_id, http, source_url, sleep):
         return ProbeOutcome.UNKNOWN
     except HttpError:
         return ProbeOutcome.UNKNOWN
-    if not isinstance(payload, dict) or is_groupby_placeholder(payload.get("data")):
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or is_groupby_placeholder(data):
         return ProbeOutcome.UNKNOWN
     return ProbeOutcome.ACTIVE
 

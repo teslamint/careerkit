@@ -15,6 +15,7 @@ from typing import Any, Sequence
 import pytest
 
 from careerkit.jobs import cli
+from careerkit.jobs.adapters.http import HttpError
 from careerkit.jobs.adapters.platforms.saramin import SaraminAdapter
 from careerkit.jobs.adapters.screening.cli_provider import FakeProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
@@ -1218,7 +1219,16 @@ class GroupByFetchMetadataClient:
         self.always_placeholder = always_placeholder
         self.requested_headers: list[dict[str, str]] = []
 
-    def request_json(self, url: str, *, headers: dict[str, str] | None = None, **_: Any) -> dict[str, Any]:
+    def request_json(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 15,
+        method: str = "GET",
+        body: bytes | None = None,
+        error_cls: type[Exception] = HttpError,
+    ) -> dict[str, Any]:
         sent = dict(headers or {})
         self.requested_headers.append(sent)
         if not self.always_placeholder and ("Sec-Fetch-Mode" in sent or "Sec-Fetch-Site" in sent):
@@ -1232,6 +1242,19 @@ class GroupByFetchMetadataClient:
                 "startup": {"name": "[표시 제한] Placeholder Co"},
             },
         }
+
+    def request_text(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 15,
+        method: str = "GET",
+        body: bytes | None = None,
+        max_bytes: int | None = None,
+        error_cls: type[Exception] = HttpError,
+    ) -> str:
+        raise AssertionError(f"unexpected text request: {url}")
 
 
 def test_groupby_extraction_sends_browser_fetch_metadata(tmp_path: Path) -> None:

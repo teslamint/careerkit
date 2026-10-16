@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+import pytest
+
 from careerkit.jobs.adapters.http import HttpError, HttpStatusError
 from careerkit.jobs.adapters.status_probes import (
     SUPPORTED_PLATFORMS,
@@ -148,13 +150,22 @@ class GroupByFetchMetadataClient(FakeHttpClient):
     """Mirrors the live GroupBy API recorded on 2026-10-16: without browser fetch
     metadata it answers 200 with a ``[표시 제한]`` placeholder even for closed postings."""
 
-    def __init__(self, with_metadata, *, always_placeholder=False) -> None:
+    def __init__(self, with_metadata: dict | Exception, *, always_placeholder: bool = False) -> None:
         super().__init__()
         self.with_metadata = with_metadata
         self.always_placeholder = always_placeholder
         self.sent_headers: list[dict[str, str]] = []
 
-    def request_json(self, url, *, headers=None, **_):
+    def request_json(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 15,
+        method: str = "GET",
+        body: bytes | None = None,
+        error_cls: type[Exception] = HttpError,
+    ) -> dict:
         sent = dict(headers or {})
         self.sent_headers.append(sent)
         self.requests.append(("json", url))
@@ -437,3 +448,9 @@ def test_plain_http_error_is_unknown():
 def test_missing_indicator_field_is_unknown():
     http = FakeHttpClient(json_queue=[{"data": {}}])
     assert probe_posting_status("wanted", "1", http, sleep=_no_sleep) is ProbeOutcome.UNKNOWN
+
+
+@pytest.mark.parametrize("payload", [{"status": 200, "data": None}, {"status": 200}, {"status": 200, "data": "x"}])
+def test_groupby_payload_without_posting_data_is_unknown(payload):
+    http = GroupByFetchMetadataClient(payload)
+    assert probe_posting_status("groupby", "999999", http, sleep=_no_sleep) is ProbeOutcome.UNKNOWN
