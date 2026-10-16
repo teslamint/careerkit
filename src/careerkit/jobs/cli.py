@@ -578,7 +578,7 @@ def _payload_from_ingest(command: str, workspace: WorkspacePaths, result: Ingest
     platform = get_platform_from_url(result.source)
     if platform is None:
         platform = result.source.replace(":", "/").split("/", 1)[0]
-        if platform not in {"wanted", "remember", "groupby", "saramin", "thevc"}:
+        if platform not in {"wanted", "remember", "groupby", "saramin", "thevc", "zighang"}:
             platform = None
     payload = _base_payload(command, workspace)
     payload.update(

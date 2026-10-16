@@ -84,6 +84,48 @@ def test_posting_url_matches_platform_urls() -> None:
     assert run("posting at https://www.wanted.co.kr/wd/12345678") == ["posting-url"]
 
 
+def test_posting_url_matches_zighang_urls() -> None:
+    found = run("posting at https://zighang.com/recruitment/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d")
+    assert found == ["posting-url"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '"https://zighang.com/*",',
+        '"https://*.rememberapp.co.kr/*"',
+        "`https://www.wanted.co.kr/*`",
+        '"https://www.saramin.co.kr/*"',
+    ],
+)
+def test_posting_url_exempts_host_wide_match_patterns(line: str) -> None:
+    assert run(line) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "https://zighang.com/recruitment/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+        '"https://zighang.com/*foo",',
+        "https://zighang.com/x/*",
+        "https://zighang.com/*?id=12345678",
+        "https://zighang.com/*#12345678",
+        "https://zighang.com:8443/*",
+        "https://example.com/*?u=zighang.com",
+        "https://zighang.com.example.com/*",
+        "https://123456.wanted.co.kr/*",
+        "https://0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.zighang.com/*",
+        "https://career.rememberapp.co.kr/*",
+    ],
+)
+def test_posting_url_keeps_flagging_anything_but_the_bare_wildcard_path(line: str) -> None:
+    assert run(line) == ["posting-url"]
+
+
+def test_record_key_matches_a_zighang_uuid_key() -> None:
+    assert run("zighang:0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d processed") == ["record-key"]
+
+
 def test_email_flags_real_addresses_but_not_exemptions() -> None:
     assert run("contact a.person+tag@company.io") == ["email"]
     assert run("noreply@github.com is exempt") == []

@@ -15,20 +15,24 @@ import struct
 import sys
 import threading
 import uuid
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, NamedTuple
 
 from urllib.parse import urlparse
 
+from careerkit.jobs.adapters.platforms.zighang import parse_zighang_page, supported_origin_url
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, JobRecordNotFound
 from careerkit.jobs.application.automation import JobsExtractionStage, JobsScreeningStage, load_candidate_context
 from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.screening import is_fallback_document
-from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url
+from careerkit.jobs.application.storage_migration import posting_key_from_url
 from careerkit.jobs.domain.model import JobKey, ScreeningVerdict
 from careerkit.workspace import resolve_workspace
 
 _MAX_MESSAGE_BYTES = 1_048_576  # 1 MB defensive cap on incoming messages
 _MAX_RESPONSE_BYTES = 900_000
+# A captured page travels inside one native message, so it stays below the message cap
+# with room for the envelope; badge.js enforces the same bound before sending.
+_MAX_PAGE_BYTES = 900_000
 
 _VERDICT_LABELS = {
     ScreeningVerdict.RECOMMENDED: "지원 추천",
@@ -98,7 +102,15 @@ _ALLOWED_HOSTS: dict[str, str] = {
     "groupby.kr": "groupby",
     "www.groupby.kr": "groupby",
     "www.saramin.co.kr": "saramin",
+    "zighang.com": "zighang",
 }
+
+
+class WorkItem(NamedTuple):
+    url: str
+    tracking_id: str
+    screening_only: bool
+    page: str | None = None
 
 
 def _resolve_key(msg: dict[str, Any]) -> JobKey | None:
@@ -113,11 +125,28 @@ def _resolve_key(msg: dict[str, Any]) -> JobKey | None:
         host = "www.rememberapp.co.kr"
     if host not in _ALLOWED_HOSTS:
         return None
-    platform = get_platform_from_url(url)
-    job_id = extract_job_id(url)
-    if platform is None or job_id is None:
+    posting_key = posting_key_from_url(url)
+    if posting_key is None or posting_key[0] != _ALLOWED_HOSTS[host]:
         return None
-    return JobKey(platform, job_id)
+    return JobKey(*posting_key)
+
+
+def _captured_page(msg: dict[str, Any], key: JobKey) -> tuple[str | None, str | None, str | None]:
+    """Validate an optional captured page; returns (page, supported origin URL, error)."""
+    if "page" not in msg:
+        return None, None, None
+    if key.platform != "zighang":
+        return None, None, "a captured page is only accepted for zighang URLs"
+    page = msg["page"]
+    if not isinstance(page, str) or not page:
+        return None, None, "captured page must be a non-empty string"
+    if len(page.encode("utf-8")) > _MAX_PAGE_BYTES:
+        return None, None, "captured page is too large"
+    try:
+        posting = parse_zighang_page(page, key.job_id)
+    except ValueError:
+        return None, None, "captured page could not be read — reload the page and retry"
+    return page, supported_origin_url(posting), None
 
 
 def handle_ping(msg: dict[str, Any], repository: JDRecordRepository) -> dict[str, Any]:
@@ -208,7 +237,7 @@ _MAX_IN_FLIGHT = 10
 def handle_rescreen(
     msg: dict[str, Any],
     repository: JDRecordRepository,
-    work_queue: "queue.Queue[tuple[str, str, bool]]",
+    work_queue: "queue.Queue[WorkItem]",
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
@@ -225,7 +254,7 @@ def handle_rescreen(
 def handle_collect(
     msg: dict[str, Any],
     repository: JDRecordRepository,
-    work_queue: "queue.Queue[tuple[str, str, bool]]",
+    work_queue: "queue.Queue[WorkItem]",
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
@@ -259,7 +288,7 @@ def _prepare_collect(
     repository: JDRecordRepository,
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
-) -> tuple[dict[str, Any], tuple[str, str, bool] | None]:
+) -> tuple[dict[str, Any], WorkItem | None]:
     key = _resolve_key(msg)
     if key is None:
         return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
@@ -267,6 +296,17 @@ def _prepare_collect(
     url = msg.get("url")
     if not isinstance(url, str):
         return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
+    page, origin_url, error = _captured_page(msg, key)
+    if error is not None:
+        return {"status": "error", "message": error}, None
+    if key.platform == "zighang" and page is None:
+        return {"status": "error", "message": "zighang collection requires the captured page"}, None
+    # A posting 직행 aggregates from a supported platform is collected there, under the
+    # origin key, so the same posting never gets two records.
+    if origin_url is not None:
+        url, key, page = origin_url, _resolve_key({"url": origin_url}), None
+        if key is None:
+            return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
 
     if in_flight is not None and in_flight_lock is not None:
         with in_flight_lock:
@@ -284,10 +324,10 @@ def _prepare_collect(
         if stored.record.screening_verdict is not None or stored.record.prescreen_reason is not None:
             return {"status": "duplicate", "action": "collect", "data": stored.record.to_dict()}, None
         tracking_id = str(uuid.uuid4())
-        return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, (url, tracking_id, True)
+        return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, WorkItem(url, tracking_id, True, page)
 
     tracking_id = str(uuid.uuid4())
-    return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, (url, tracking_id, False)
+    return {"status": "accepted", "action": "collect", "tracking_id": tracking_id}, WorkItem(url, tracking_id, False, page)
 
 
 def _prepare_rescreen(
@@ -295,7 +335,7 @@ def _prepare_rescreen(
     repository: JDRecordRepository,
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
-) -> tuple[dict[str, Any], tuple[str, str, bool] | None]:
+) -> tuple[dict[str, Any], WorkItem | None]:
     key = _resolve_key(msg)
     if key is None:
         return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
@@ -303,6 +343,11 @@ def _prepare_rescreen(
     url = msg.get("url")
     if not isinstance(url, str):
         return {"status": "error", "message": "unrecognized or unsupported job URL"}, None
+    # Rescreen keeps the record it was asked about: no origin redirect, and the page is
+    # optional because the stored JD is reused when no fresh page comes with the request.
+    page, _origin_url, error = _captured_page(msg, key)
+    if error is not None:
+        return {"status": "error", "message": error}, None
     stored = repository.find(key)
     if stored is None:
         return {"status": "error", "message": "record not found — collect first"}, None
@@ -315,7 +360,7 @@ def _prepare_rescreen(
                 return {"status": "error", "message": "queue full"}, None
 
     tracking_id = str(uuid.uuid4())
-    return {"status": "accepted", "action": "rescreen", "tracking_id": tracking_id}, (url, tracking_id, True)
+    return {"status": "accepted", "action": "rescreen", "tracking_id": tracking_id}, WorkItem(url, tracking_id, True, page)
 
 
 def _ensure_worker_alive() -> None:
@@ -367,11 +412,11 @@ def _ensure_worker_alive() -> None:
 def dispatch(
     msg: dict[str, Any],
     repository: JDRecordRepository,
-    work_queue: "queue.Queue[tuple[str, str, bool]] | None" = None,
+    work_queue: "queue.Queue[WorkItem] | None" = None,
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
     company_info_service: CompanyInfoService | None = None,
-) -> tuple[dict[str, Any], tuple[str, str, bool] | None]:
+) -> tuple[dict[str, Any], WorkItem | None]:
     action = msg.get("action")
     if not isinstance(action, str):
         return {"status": "error", "message": "unknown action: None"}, None
@@ -423,7 +468,7 @@ def _failure_message_from_item(failure: dict[str, Any] | None, *, default: str) 
 
 
 def run_screening_worker(
-    work_queue: "queue.Queue[tuple[str, str, bool]]",
+    work_queue: "queue.Queue[WorkItem]",
     repository: JDRecordRepository,
     extraction_stage: JobsExtractionStage,
     screening_stage: JobsScreeningStage,
@@ -447,9 +492,12 @@ def run_screening_worker(
     for the desktop notification text.
     """
     while True:
-        url, tracking_id, screening_only = work_queue.get()
+        url, tracking_id, screening_only, page = WorkItem(*work_queue.get())
         try:
-            batch = extraction_stage.extract([url], dry_run=False, screening_only=screening_only)
+            if page is None:
+                batch = extraction_stage.extract([url], dry_run=False, screening_only=screening_only)
+            else:
+                batch = extraction_stage.extract([url], dry_run=False, screening_only=screening_only, captured_pages={url: page})
             if not batch.records:
                 failures = batch.metadata.get("failures") or []
                 error = _failure_message_from_item(failures[0] if failures else None, default=_EXTRACTION_FAILURE_MESSAGE)
@@ -540,7 +588,7 @@ def serve(
     stdout: BinaryIO,
     repository: JDRecordRepository,
     *,
-    work_queue: "queue.Queue[tuple[str, str, bool]] | None" = None,
+    work_queue: "queue.Queue[WorkItem] | None" = None,
     stdout_lock: threading.Lock | None = None,
     in_flight: set[str] | None = None,
     in_flight_lock: threading.Lock | None = None,
@@ -597,7 +645,7 @@ def serve_with_worker(
 ) -> None:
     global _worker_context
 
-    work_queue: "queue.Queue[tuple[str, str, bool]]" = queue.Queue()
+    work_queue: "queue.Queue[WorkItem]" = queue.Queue()
     stdout_lock = threading.Lock()
     in_flight: set[str] = set()
     in_flight_lock = threading.Lock()

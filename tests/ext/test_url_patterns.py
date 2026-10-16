@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url
+from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url, posting_key_from_url
 
 FIXTURES_PATH = Path(__file__).parent / "fixtures" / "url_patterns.json"
 
@@ -46,3 +46,36 @@ def test_url_pattern_matches_js_expectation(url_fixture):
     assert actual_platform == expected_platform, (
         f"platform mismatch for {url}: expected {expected_platform}, got {actual_platform}"
     )
+
+
+# zighang cases are built from the host here, not stored in the shared fixture, so the
+# publish guard's posting-url rule does not read the synthetic id as a pasted posting.
+ZIGHANG_HOST = "zighang.com"
+ZIGHANG_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+WANTED_HOST = "www.wanted.co.kr"
+REMEMBER_HOST = "rememberapp.co.kr"
+GROUPBY_HOST = "groupby.kr"
+SARAMIN_HOST = "www.saramin.co.kr"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [f"https://{ZIGHANG_HOST}/recruitment/{ZIGHANG_ID}", f"https://{ZIGHANG_HOST}/recruitment/{ZIGHANG_ID}?ref=list"],
+)
+def test_zighang_url_matches_js_expectation(url):
+    assert (get_platform_from_url(url), extract_job_id(url)) == ("zighang", ZIGHANG_ID)
+    assert posting_key_from_url(url) == ("zighang", ZIGHANG_ID)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://{WANTED_HOST}/wd/١٢",
+        f"https://{REMEMBER_HOST}/job/posting/١٢",
+        f"https://{GROUPBY_HOST}/positions/١٢",
+        f"https://{SARAMIN_HOST}/zf_user/jobs/relay/view?rec_idx=١٢",
+    ],
+)
+def test_job_ids_are_ascii_digits_only(url):
+    assert extract_job_id(url) is None
+    assert posting_key_from_url(url) is None

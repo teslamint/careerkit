@@ -26,7 +26,7 @@ uv run python install.py
 
 ## 사용법
 
-- **수집**: 채용 사이트(Wanted, Remember, GroupBy, Saramin) 공고 페이지 방문 → 우하단 "수집" 버튼 클릭
+- **수집**: 채용 사이트(Wanted, Remember, GroupBy, Saramin, 직행) 공고 페이지 방문 → 우하단 "수집" 버튼 클릭
 - **결과 확인**: 판정 배지(🟢추천/🟡보류/🔴비추천) 자동 표시
 - **상세 보기**: 배지 클릭 또는 확장 아이콘 클릭 → 사이드바에서 스크리닝 상세 확인
 
@@ -51,3 +51,16 @@ rm -rf ext/native-host/.generated/
 | Remember | rememberapp.co.kr/job/* |
 | GroupBy | groupby.kr/positions/* |
 | Saramin | saramin.co.kr (rec_idx=*) |
+| 직행 | zighang.com/recruitment/* (공고 UUID) |
+
+직행은 robots.txt로 자동 접근을 막는다. 그래서 careerkit은 직행 서버에 요청을 보내지 않는다.
+배지의 "수집"은 사용자가 연 공고 페이지의 스크립트에서 공고 데이터를 읽어 native host로 보낸다.
+
+- 사이트 안에서 다른 공고로 이동한 뒤 "새로고침 후 다시 시도"가 뜨면 페이지를 새로고침한다.
+- 원본 공고가 지원 플랫폼(Wanted, Remember, GroupBy, Saramin)에 있으면 원본 URL로 수집한다.
+  기록은 원본 URL에 남으므로 직행 페이지를 다시 열면 배지는 "수집" 버튼을 보인다. 누르면 원본 기록의 판정을 보여 준다.
+- 사이드바의 "수집"은 페이지를 읽을 수 없으므로 직행 공고에는 배지의 "수집"을 쓴다. 이미 있는 기록의 재스크리닝은 사이드바에서 된다.
+- 확장의 직행 호스트 권한은 사이드바가 탭 URL을 읽기 위한 것이다. 호스트 권한만으로는 요청이 나가지 않는다. 확장 코드에는 `fetch` 호출이 없고 native host는 직행에 요청하지 않는다.
+- 본문이 이미지뿐인 공고는 직행의 요약 텍스트로 수집하고 출처를 "직행 (사이트 요약)"으로 표시한다.
+
+자세한 결정 배경은 `docs/adr/0001-zighang-extension-only-collection.md`에 있다.

@@ -2,7 +2,8 @@
   "use strict";
 
   // Message contract (matches ext/content/badge.js and ext/background/service-worker.js):
-  // requests to background are {action, url}; the native host resolves
+  // requests to background are {action, url} (badge.js adds `page` for a 직행
+  // collect, which the panel cannot read); the native host resolves
   // (platform, job_id) from `url` itself (careerkit_host.py:_resolve_key), so
   // we never send platform/job_id directly.
 
@@ -10,7 +11,8 @@
     wanted: "원티드",
     remember: "리멤버",
     saramin: "사람인",
-    groupby: "그룹바이"
+    groupby: "그룹바이",
+    zighang: "직행"
   };
 
   var VERDICT_CONFIG = {

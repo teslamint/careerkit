@@ -137,10 +137,16 @@ _RECORD_KEY = re.compile(
     r"(?<![\w/-])(?P<platform>[a-z][a-z0-9]*)/(?P<key>[0-9]{2,}|[A-Za-z0-9-]{20,})"
     r"(?![\w/-])"
 )
-_POSTING_URL = re.compile(
-    r"https?://[^\s]*?(?:wanted\.co\.kr|saramin\.co\.kr|jobkorea\.co\.kr|jumpit\.co\.kr"
-    r"|rememberapp\.co\.kr|groupby\.co\.kr|offercent\.kr|greeting\.hr)[^\s]*",
-    re.IGNORECASE,
+_POSTING_HOST = (
+    r"(?:wanted\.co\.kr|saramin\.co\.kr|jobkorea\.co\.kr|jumpit\.co\.kr"
+    r"|rememberapp\.co\.kr|groupby\.co\.kr|offercent\.kr|greeting\.hr|zighang\.com)"
+)
+_POSTING_URL = re.compile(r"https?://[^\s]*?" + _POSTING_HOST + r"[^\s]*", re.IGNORECASE)
+# A host-wide match pattern (extension manifests) names a site, not a posting: only a
+# bare `/*` path on a posting host (subdomain label `*` or `www` only) passes, with the
+# quoting around it stripped.
+_HOST_WIDE_PATTERN = re.compile(
+    r"https?://(?:\*\.|www\.)?" + _POSTING_HOST + r"/\*[\"'`,]*", re.IGNORECASE
 )
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _EMAIL_EXEMPT = re.compile(r"^(?:noreply@|[^@]*@example\.)", re.IGNORECASE)
@@ -190,7 +196,8 @@ def _layer1(text: str, line: int) -> Iterator[Finding]:
         if match.group("platform") in platform_names():
             yield Finding("record-key", match.group(0), line)
     for match in _POSTING_URL.finditer(text):
-        yield Finding("posting-url", match.group(0), line)
+        if not _HOST_WIDE_PATTERN.fullmatch(match.group(0)):
+            yield Finding("posting-url", match.group(0), line)
     for match in _EMAIL.finditer(text):
         if not _EMAIL_EXEMPT.match(match.group(0)):
             yield Finding("email", match.group(0), line)
