@@ -112,6 +112,7 @@ src/careerkit/jobs/application/linking.py
 src/careerkit/jobs/application/maintenance.py
 src/careerkit/jobs/application/pipeline.py
 src/careerkit/jobs/application/preflight.py
+src/careerkit/jobs/application/record_refresh.py
 src/careerkit/jobs/application/requirement_manifest.py
 src/careerkit/jobs/application/screening.py
 src/careerkit/jobs/application/screening_assessment.py
@@ -238,6 +239,7 @@ tests/jobs/application/test_evidence_checks.py
 tests/jobs/application/test_linking.py
 tests/jobs/application/test_maintenance.py
 tests/jobs/application/test_pipeline.py
+tests/jobs/application/test_record_refresh.py
 tests/jobs/application/test_requirement_manifest.py
 tests/jobs/application/test_screening.py
 tests/jobs/application/test_screening_assessment.py

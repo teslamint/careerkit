@@ -3831,3 +3831,64 @@ def test_cli_company_fetch_thevc_error_returns_1(monkeypatch, capsys) -> None:
     err = capsys.readouterr().err
     assert 'error' in err.lower()
     assert 'company not found' in err
+
+
+def test_cli_record_refresh_placeholders_dry_run_then_apply(tmp_path, monkeypatch, capsys) -> None:
+    from careerkit.jobs.application.automation import JobsExtractionStage
+    from careerkit.jobs.domain.model import JobKey, JobRecord
+
+    from tests.jobs.application.test_record_refresh import GroupByDetailClient
+
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    repository = JDRecordRepository(tmp_path / 'records')
+    key = JobKey('groupby', '456')
+    repository.create(
+        JobRecord(
+            platform='groupby',
+            job_id='456',
+            company='[표시 제한] Placeholder Co',
+            position='[표시 제한] Placeholder Role',
+            source_url='https://groupby.kr/positions/456',
+        ),
+        jd_markdown='# [표시 제한] Placeholder Role\n',
+    )
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=cast(Any, SimpleNamespace(repository=repository)),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+    monkeypatch.setattr(
+        cli,
+        'JobsExtractionStage',
+        lambda *, repository: JobsExtractionStage(repository=repository, http_client=GroupByDetailClient()),
+    )
+    job_key = f'{key.platform}:{key.job_id}'
+
+    assert cli.main(['record', 'refresh', '--placeholders', '--json']) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run['dry_run'] is True
+    assert dry_run['outcome_counts'] == {'would_refresh': 1}
+    assert repository.get(key).record.company == '[표시 제한] Placeholder Co'
+
+    assert cli.main(['record', 'refresh', '--placeholders', '--apply']) == 0
+    assert capsys.readouterr().out == (
+        'apply=true selected=1\n'
+        f'- {job_key} refreshed: Group Co / Backend Engineer 456\n'
+    )
+    assert repository.get(key).record.company == 'Group Co'
+
+
+def test_cli_record_refresh_requires_exactly_one_selector(monkeypatch, capsys) -> None:
+    workspace = WorkspacePaths(root=Path('/workspace'), source='explicit')
+    bundle = cli.ServiceBundle(
+        maintenance=FakeMaintenance(),
+        pipeline=FakePipeline(),
+        automation=FakeAutomation(),
+    )
+    monkeypatch.setattr(cli, 'resolve_workspace', lambda explicit=None: workspace)
+    monkeypatch.setattr(cli, '_build_services', lambda resolved: bundle)
+
+    assert cli.main(['record', 'refresh']) == 2
+    assert 'either job keys or --placeholders' in capsys.readouterr().err

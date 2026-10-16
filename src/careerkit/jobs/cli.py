@@ -28,6 +28,7 @@ from careerkit.jobs.application.automation import (
 )
 from careerkit.cli_logging import configure_cli_logging
 from careerkit.jobs.application.maintenance import CheckClosedResult, JobsMaintenanceService
+from careerkit.jobs.application.record_refresh import placeholder_keys, refresh_records
 from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService, PrescreenedListing
 from careerkit.jobs.adapters.screening.cli_provider import resolve_commands
@@ -233,6 +234,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--recheck-closed", action="store_true", dest="recheck_closed"
     )
     record_check_closed.set_defaults(handler=_handle_record_check_closed)
+    record_refresh = record_subparsers.add_parser(
+        "refresh",
+        help="Re-extract records stored from wrong content and clear their screening",
+    )
+    record_refresh.add_argument(
+        "job_key", nargs="*", default=[],
+        help="platform:job_id keys to re-extract from their source_url",
+    )
+    record_refresh.add_argument(
+        "--placeholders", action="store_true",
+        help="Select GroupBy records stored from the API's placeholder posting",
+    )
+    record_refresh.add_argument("--apply", action="store_true")
+    record_refresh.add_argument("--json", action="store_true")
+    record_refresh.set_defaults(handler=_handle_record_refresh)
 
     queue = subparsers.add_parser("queue", help="Inspect queue and classification flows")
     queue.set_defaults(handler=_handle_missing_operation)
@@ -1078,6 +1094,40 @@ def _handle_record_check_closed(args: argparse.Namespace, workspace: WorkspacePa
         return 0
     _print_check_closed_human(payload)
     return 0
+
+
+def _handle_record_refresh(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
+    if bool(args.job_key) == args.placeholders:
+        raise ValueError("give either job keys or --placeholders, not both or neither")
+    repository = services.pipeline.repository
+    keys = (
+        placeholder_keys(repository)
+        if args.placeholders
+        else [_parse_job_key(raw) for raw in args.job_key]
+    )
+    outcomes = refresh_records(
+        keys,
+        repository=repository,
+        extraction=JobsExtractionStage(repository=repository),
+        apply=args.apply,
+    )
+    payload = _base_payload("record refresh", workspace)
+    payload.update(
+        {
+            "apply": args.apply,
+            "dry_run": not args.apply,
+            "outcome_counts": dict(Counter(item.outcome for item in outcomes)),
+            "items": [item.to_dict() for item in outcomes],
+        }
+    )
+    if args.json:
+        _print_json(payload)
+    else:
+        print(f"apply={str(args.apply).lower()} selected={len(outcomes)}")
+        for item in outcomes:
+            detail = item.error if item.outcome == "failed" else f"{item.company} / {item.position}"
+            print(f"- {item.job_key} {item.outcome}: {detail}")
+    return 1 if any(item.outcome == "failed" for item in outcomes) else 0
 
 
 def _handle_queue_status(args: argparse.Namespace, workspace: WorkspacePaths, services: ServiceBundle) -> int:
