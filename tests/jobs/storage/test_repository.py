@@ -504,6 +504,65 @@ def test_update_prescreen_preserves_an_existing_verdict(tmp_path: Path) -> None:
     assert reread.prescreen_reason == "closed"
 
 
+def test_replace_jd_clears_derived_screening_and_keeps_status(tmp_path: Path) -> None:
+    repo = JDRecordRepository(tmp_path)
+    key = JobKey("wanted", "100001")
+    repo.create(_record(company="Wrong Co", position="Wrong Role"), jd_markdown="wrong body\n")
+    repo.update_screening_result(
+        key,
+        screening_markdown="# judged on wrong body",
+        screening_verdict=ScreeningVerdict.HOLD,
+        screening_provider="claude",
+        verdict_capped=True,
+    )
+    repo.update_prescreen(key, "title_exclude")
+    repo.update_status(
+        key,
+        application_status=ApplicationStatus.APPLIED,
+        posting_status=PostingStatus.CLOSED,
+        application_status_updated_at="2026-07-13T09:00:00+09:00",
+    )
+    before = repo.get(key).record
+
+    returned = repo.replace_jd(
+        key,
+        company="Right Co",
+        position="Right Role",
+        source_url="https://example.com/wanted/100001?fixed",
+        jd_markdown="right body\n",
+    )
+
+    reread = repo.get(key)
+    assert reread == returned
+    assert reread.jd_markdown == "right body\n"
+    assert reread.screening_markdown is None
+    assert reread.record == replace(
+        before,
+        company="Right Co",
+        position="Right Role",
+        source_url="https://example.com/wanted/100001?fixed",
+        screening_verdict=None,
+        screening_provider=None,
+        verdict_capped=False,
+        prescreen_reason=None,
+    )
+    assert repo.validate_integrity(key).has_screening is False
+    assert len(list((tmp_path / "wanted" / "100001" / "content").iterdir())) == 1
+
+
+def test_replace_jd_rejects_missing_record(tmp_path: Path) -> None:
+    repo = JDRecordRepository(tmp_path)
+
+    with pytest.raises(JobRecordNotFound):
+        repo.replace_jd(
+            JobKey("wanted", "100001"),
+            company="Co",
+            position="Role",
+            source_url="https://example.com",
+            jd_markdown="body\n",
+        )
+
+
 def test_screening_result_atomically_preserves_newer_status_metadata(tmp_path: Path) -> None:
     repo = JDRecordRepository(tmp_path)
     repo.create(_record(), jd_markdown="body")

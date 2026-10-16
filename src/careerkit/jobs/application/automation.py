@@ -495,6 +495,10 @@ class JobsExtractionStage:
             company_contexts=company_contexts,
         )
 
+    def preview(self, url: str) -> StoredJobRecord:
+        """Extract ``url`` without persisting; a failed extraction raises."""
+        return self._extract_url(url, dry_run=True)[0]
+
     def _resolve_existing(self, url: str, *, dry_run: bool = False) -> StoredJobRecord:
         key = _job_key_from_url(url)
         if key is None:

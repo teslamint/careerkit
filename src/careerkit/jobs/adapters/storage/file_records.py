@@ -231,6 +231,49 @@ class JDRecordRepository:
                 screening_markdown=screening_markdown,
             )
 
+    def replace_jd(
+        self,
+        key: JobKey,
+        *,
+        company: str,
+        position: str,
+        source_url: str,
+        jd_markdown: str,
+    ) -> StoredJobRecord:
+        """Replace wrong JD content and drop everything derived from it.
+
+        The screening document, verdict and prescreen reason were judged against the
+        old content, so they are cleared. Application and posting status describe the
+        user's dealings with the posting, not the content, and are kept.
+        """
+        record_dir = self._record_dir(key)
+        if not self._manifest_path(record_dir).exists():
+            raise JobRecordNotFound(f"Record not found: {key!r}")
+        with self._locked(record_dir, exclusive=True):
+            current = self._read_existing_locked(key, record_dir)
+            updated_record = replace(
+                current.record,
+                company=company,
+                position=position,
+                source_url=source_url,
+                screening_verdict=None,
+                screening_provider=None,
+                verdict_capped=False,
+                prescreen_reason=None,
+            )
+            content = self._write_revision_content(
+                record_dir,
+                jd_markdown=jd_markdown,
+                screening_markdown=None,
+            )
+            self._publish_manifest(record_dir, updated_record, content)
+            self._cleanup_stale_revisions(record_dir, keep_revision=content.revision)
+            return StoredJobRecord(
+                record=updated_record,
+                jd_markdown=jd_markdown,
+                screening_markdown=None,
+            )
+
     def update_verdict(
         self,
         key: JobKey,
