@@ -10,6 +10,11 @@ from typing import Callable, cast
 from urllib.parse import urlparse
 
 from careerkit.jobs.adapters.http import HttpClient, HttpError, HttpStatusError
+from careerkit.jobs.adapters.platforms.groupby import (
+    GROUPBY_API_BASE,
+    GROUPBY_HEADERS,
+    is_groupby_placeholder,
+)
 
 _KST = timezone(timedelta(hours=9))
 _RETRYABLE_STATUSES = (429, 503)
@@ -146,9 +151,9 @@ def _probe_jumpit(job_id, http, source_url, sleep):
 
 def _probe_groupby(job_id, http, source_url, sleep):
     del source_url
-    url = f"https://api.groupby.kr/startup-positions/{job_id}"
+    url = f"{GROUPBY_API_BASE}/startup-positions/{job_id}"
     try:
-        _call(lambda: http.request_json(url, headers={"Accept": "application/json"}), sleep)
+        payload = _call(lambda: http.request_json(url, headers=GROUPBY_HEADERS), sleep)
     except _RetryExhausted:
         return ProbeOutcome.UNKNOWN
     except HttpStatusError as exc:
@@ -156,6 +161,9 @@ def _probe_groupby(job_id, http, source_url, sleep):
             return ProbeOutcome.CLOSED
         return ProbeOutcome.UNKNOWN
     except HttpError:
+        return ProbeOutcome.UNKNOWN
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or is_groupby_placeholder(data):
         return ProbeOutcome.UNKNOWN
     return ProbeOutcome.ACTIVE
 
