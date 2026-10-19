@@ -21,6 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `parse_remember_experience` moved to `jd_content.py`
 
 ### Fixed
+- Summary rebuild falls back to the record creation date when a legacy source filename is too long.
 - Resume logic with stage-based skip and protected status files
 - Per-link exception isolation in search helpers
 - `ensure_company_info` connected to Playwright-based extraction
