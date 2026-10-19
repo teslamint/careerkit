@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+import pytest
+
 from careerkit.jobs.adapters.http import HttpError, HttpStatusError
 from careerkit.jobs.adapters.status_probes import (
     SUPPORTED_PLATFORMS,
@@ -142,6 +144,52 @@ def test_groupby_closed_via_404_with_unicode_escaped_body():
     body = '{"status": 404, "data": null, "msg": "\\ube44\\uacf5\\uac1c\\ub41c \\ucc44\\uc6a9 \\uacf5\\uace0\\uc785\\ub2c8\\ub2e4."}'
     http = FakeHttpClient(json_queue=[HttpStatusError("not found", status=404, body=body)])
     assert probe_posting_status("groupby", "999999", http, sleep=_no_sleep) is ProbeOutcome.CLOSED
+
+
+class GroupByFetchMetadataClient(FakeHttpClient):
+    """Mirrors the live GroupBy API recorded on 2026-10-16: without browser fetch
+    metadata it answers 200 with a ``[표시 제한]`` placeholder even for closed postings."""
+
+    def __init__(self, with_metadata: dict | Exception, *, always_placeholder: bool = False) -> None:
+        super().__init__()
+        self.with_metadata = with_metadata
+        self.always_placeholder = always_placeholder
+        self.sent_headers: list[dict[str, str]] = []
+
+    def request_json(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 15,
+        method: str = "GET",
+        body: bytes | None = None,
+        error_cls: type[Exception] = HttpError,
+    ) -> dict:
+        sent = dict(headers or {})
+        self.sent_headers.append(sent)
+        self.requests.append(("json", url))
+        if not self.always_placeholder and ("Sec-Fetch-Mode" in sent or "Sec-Fetch-Site" in sent):
+            if isinstance(self.with_metadata, Exception):
+                raise self.with_metadata
+            return self.with_metadata
+        return {"status": 200, "data": {"name": "[표시 제한] Placeholder Role", "startup": {"name": "[표시 제한] Placeholder Co"}}}
+
+
+def test_groupby_closed_posting_is_detected_behind_placeholder():
+    closed = HttpStatusError("not found", status=404, body='{"status": 404, "msg": "비공개된 채용 공고입니다."}')
+    http = GroupByFetchMetadataClient(closed)
+    assert probe_posting_status("groupby", "999999", http, sleep=_no_sleep) is ProbeOutcome.CLOSED
+
+
+def test_groupby_active_posting_with_fetch_metadata():
+    http = GroupByFetchMetadataClient({"status": 200, "data": {"name": "Backend Engineer", "startup": {"name": "Group Co"}}})
+    assert probe_posting_status("groupby", "100013", http, sleep=_no_sleep) is ProbeOutcome.ACTIVE
+
+
+def test_groupby_placeholder_payload_is_unknown():
+    http = GroupByFetchMetadataClient({}, always_placeholder=True)
+    assert probe_posting_status("groupby", "100013", http, sleep=_no_sleep) is ProbeOutcome.UNKNOWN
 
 
 def test_groupby_bare_404_is_unknown():
@@ -400,3 +448,9 @@ def test_plain_http_error_is_unknown():
 def test_missing_indicator_field_is_unknown():
     http = FakeHttpClient(json_queue=[{"data": {}}])
     assert probe_posting_status("wanted", "1", http, sleep=_no_sleep) is ProbeOutcome.UNKNOWN
+
+
+@pytest.mark.parametrize("payload", [{"status": 200, "data": None}, {"status": 200}, {"status": 200, "data": "x"}])
+def test_groupby_payload_without_posting_data_is_unknown(payload):
+    http = GroupByFetchMetadataClient(payload)
+    assert probe_posting_status("groupby", "999999", http, sleep=_no_sleep) is ProbeOutcome.UNKNOWN
