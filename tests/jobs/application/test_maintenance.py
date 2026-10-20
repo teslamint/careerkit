@@ -150,6 +150,32 @@ def test_summary_omits_collection_date_when_creation_time_is_unavailable(
     assert '| wanted:1 | Acme | Backend | 지원 보류 | pending | active | - |' in summary.output_path.read_text(encoding='utf-8')
 
 
+def test_summary_survives_legacy_source_name_longer_than_filesystem_limit(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    service = JobsMaintenanceService(workspace=workspace)
+    service.repository.create(
+        JobRecord(
+            'wanted',
+            '1',
+            'Acme',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            # 300 syllables exceed both limits: ext4 counts 255 bytes, APFS counts 255 characters.
+            migration_source='job_postings/pass/' + '가' * 300 + '.md',
+        ),
+        jd_markdown='# JD',
+    )
+
+    (tmp_path / 'private' / 'job_postings' / 'pass').mkdir(parents=True)
+    # The parent must exist so lookup reaches the overlong final component; otherwise ENOENT masks ENAMETOOLONG.
+    summary = service.rebuild_summary()
+
+    assert summary.record_count == 1
+    assert '| wanted:1 | Acme | Backend | 지원 보류 | pending | active | ' in summary.output_path.read_text(
+        encoding='utf-8'
+    )
+
+
 def test_seen_search_state_is_merged_and_replaced_without_temp_files(tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     service = JobsMaintenanceService(workspace=workspace)
