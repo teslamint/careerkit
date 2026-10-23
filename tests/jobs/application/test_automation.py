@@ -1290,6 +1290,23 @@ def test_groupby_extraction_rejects_placeholder_posting_without_persisting(tmp_p
     assert repository.find(key) is None
 
 
+@pytest.mark.parametrize("data", [None, {}, "x"])
+def test_groupby_extraction_rejects_payload_without_posting_data(tmp_path: Path, data: object) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    http_client = GroupByFetchMetadataClient({"status": 200, "data": data})
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+    url = "https://groupby.kr/positions/456"
+
+    batch = stage.extract([url], dry_run=False, screening_only=False)
+
+    assert batch.records == ()
+    assert batch.failed_urls == (url,)
+    assert "no posting data" in batch.metadata["failures"][0]["error"]
+    assert repository.find(JobKey("groupby", "456")) is None
+    with pytest.raises(ValueError, match="no posting data"):
+        stage.preview(url)
+
+
 def test_run_auto_keeps_only_failed_urls_for_resume_after_partial_batch() -> None:
     class PartialExtraction(FakeExtractionStage):
         def extract(self, urls, *, dry_run, screening_only):

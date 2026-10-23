@@ -660,6 +660,8 @@ class JobsExtractionStage:
             data = payload["data"]
         except (AttributeError, KeyError, TypeError) as exc:
             raise ValueError(f"invalid GroupBy payload for {url}") from exc
+        if not isinstance(data, dict) or not data:
+            raise ValueError(f"GroupBy payload has no posting data for {url}")
         if is_groupby_placeholder(data):
             raise ValueError(f"GroupBy served a placeholder posting for {url}")
         position = _normalize_text(data.get("name", "")) or f"groupby-{job_id}"
