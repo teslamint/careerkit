@@ -1290,7 +1290,10 @@ def test_groupby_extraction_rejects_placeholder_posting_without_persisting(tmp_p
     assert repository.find(key) is None
 
 
-@pytest.mark.parametrize("data", [None, {}, "x"])
+@pytest.mark.parametrize(
+    "data",
+    [None, {}, "x", {"message": "not found"}, {"name": "Backend", "startup": {}}, {"name": " ", "startup": {"name": "Co"}}],
+)
 def test_groupby_extraction_rejects_payload_without_posting_data(tmp_path: Path, data: object) -> None:
     repository = JDRecordRepository(tmp_path / "records")
     http_client = GroupByFetchMetadataClient({"status": 200, "data": data})

@@ -131,7 +131,7 @@ def test_jumpit_non_string_deadline_is_unknown():
 
 
 def test_groupby_active():
-    http = FakeHttpClient(json_queue=[{"status": 200, "data": {"name": "Backend Engineer"}}])
+    http = FakeHttpClient(json_queue=[{"status": 200, "data": {"name": "Backend Engineer", "startup": {"name": "Co"}}}])
     assert probe_posting_status("groupby", "100013", http, sleep=_no_sleep) is ProbeOutcome.ACTIVE
 
 
@@ -452,7 +452,14 @@ def test_missing_indicator_field_is_unknown():
 
 @pytest.mark.parametrize(
     "payload",
-    [{"status": 200, "data": None}, {"status": 200}, {"status": 200, "data": "x"}, {"status": 200, "data": {}}],
+    [
+        {"status": 200, "data": None},
+        {"status": 200},
+        {"status": 200, "data": "x"},
+        {"status": 200, "data": {}},
+        {"status": 200, "data": {"message": "not found"}},
+        {"status": 200, "data": {"name": "Backend", "startup": {}}},
+    ],
 )
 def test_groupby_payload_without_posting_data_is_unknown(payload):
     http = GroupByFetchMetadataClient(payload)

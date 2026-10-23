@@ -178,6 +178,7 @@ class JDRecordRepository:
         expected_screening_provider: str | None = None,
         require_expected_screening_provider: bool = False,
         expected_screening_sha256: str | None = None,
+        expected_jd_sha256: str | None = None,
     ) -> StoredJobRecord:
         """Atomically publish screening content against the latest record metadata."""
         record_dir = self._record_dir(key)
@@ -200,6 +201,8 @@ class JDRecordRepository:
                 ).hexdigest()
                 if current_sha256 != expected_screening_sha256:
                     raise ScreeningStateConflict
+            if expected_jd_sha256 is not None and self._sha256_text(current.jd_markdown) != expected_jd_sha256:
+                raise ScreeningStateConflict
             content = self._write_revision_content(
                 record_dir,
                 jd_markdown=current.jd_markdown,

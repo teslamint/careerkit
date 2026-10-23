@@ -216,6 +216,40 @@ def test_run_screening_passes_expected_publication_state(tmp_path: Path, monkeyp
     assert captured["expected_screening_sha256"] == expected_digest
 
 
+def test_run_screening_does_not_publish_against_jd_replaced_mid_screening(tmp_path: Path) -> None:
+    from careerkit.jobs.adapters.storage.file_records import ScreeningStateConflict
+
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    new_jd = stored.jd_markdown.replace("Spring Boot", "Rust")
+
+    class ReplacingProvider(SequenceProvider):
+        def run(self, prompt, timeout, local_timeout=None, selected_provider=None):
+            repository.replace_jd(
+                stored.record.key,
+                company=stored.record.company,
+                position=stored.record.position,
+                source_url=stored.record.source_url or "",
+                jd_markdown=new_jd,
+            )
+            return super().run(prompt, timeout, local_timeout, selected_provider)
+
+    with pytest.raises(ScreeningStateConflict):
+        run_screening(
+            workspace=workspace,
+            jd=stored,
+            company_file=None,
+            llm_provider=ReplacingProvider([_assessment_json(manifest)]),
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 운영, AWS",
+        )
+
+    current = repository.get(stored.record.key)
+    assert current.jd_markdown == new_jd
+    assert current.screening_markdown is None
+    assert current.record.screening_verdict is None
+
+
 def test_run_screening_passes_selected_provider_to_both_attempts(tmp_path: Path) -> None:
     workspace, _repository, stored = _create_record(tmp_path)
     manifest = extract_requirement_manifest(stored.jd_markdown)

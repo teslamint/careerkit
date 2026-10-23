@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import importlib.resources as resources
 import json
 import logging
@@ -836,6 +837,8 @@ def run_screening(
             expected_screening_provider=expected_screening_provider,
             require_expected_screening_provider=require_expected_screening_provider,
             expected_screening_sha256=expected_screening_sha256,
+            # The JD the model judged; a refresh during screening must not inherit this result.
+            expected_jd_sha256=hashlib.sha256(jd_content.encode("utf-8")).hexdigest(),
         )
         if used_fallback:
             verdict_capped = bool(stored_after.record.verdict_capped)

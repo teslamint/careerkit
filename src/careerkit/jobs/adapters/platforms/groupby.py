@@ -182,6 +182,15 @@ def groupby_company_from_position(payload: dict) -> GroupByCompanyInfo:
     )
 
 
+def is_groupby_posting(data: object) -> bool:
+    """True when ``data`` names a posting and its company; error objects carry neither."""
+    if not isinstance(data, dict):
+        return False
+    startup = data.get("startup")
+    titles = (data.get("name"), startup.get("name") if isinstance(startup, dict) else None)
+    return all(isinstance(title, str) and title.strip() for title in titles)
+
+
 def is_groupby_placeholder(data: object) -> bool:
     """True when a detail payload's ``data`` is the placeholder posting, not a real one."""
     if not isinstance(data, dict):
