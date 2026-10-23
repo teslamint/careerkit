@@ -2882,7 +2882,7 @@ def test_run_auto_real_services_extract_screen_classify_and_clear_resume_state(t
                 "initialData": {
                     "position": "Senior Backend Engineer",
                     "company": {"company_name": "GoldenCo"},
-                    "career": {"annual_from": 3, "annual_to": 7},
+                    "career": {"annual_from": 3, "annual_to": 15},
                     "address": {"full_location": "Seoul"},
                     "intro": "서비스 소개",
                     "main_tasks": "• 백엔드 시스템 개발",
@@ -2966,7 +2966,7 @@ def test_run_auto_and_queue_rescreen_share_the_same_structured_manifest_contract
                 "initialData": {
                     "position": "Senior Backend Engineer",
                     "company": {"company_name": "GoldenCo"},
-                    "career": {"annual_from": 3, "annual_to": 7},
+                    "career": {"annual_from": 3, "annual_to": 15},
                     "address": {"full_location": "Seoul"},
                     "intro": "서비스 소개",
                     "main_tasks": "• 백엔드 시스템 개발",

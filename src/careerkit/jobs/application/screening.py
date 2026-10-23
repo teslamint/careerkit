@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib.resources as resources
 import json
+import logging
 from pathlib import Path
 import re
-from typing import Any, Optional
+from typing import Any, Optional, TypeGuard
+
+import yaml
 
 from careerkit.jobs.adapters.screening.cli_provider import CLIProvider, LLMProvider
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
@@ -33,6 +36,7 @@ from careerkit.jobs.application.storage_migration import extract_metadata_from_j
 from careerkit.jobs.application.screening_quality import (
     HOLD_RULE_CONDITIONS,
     REJECTION_RULE_BASES,
+    ExperienceCapPolicy,
     ScreeningQualityError,
     count_quality_issues,
     validate_assessment_quality,
@@ -46,6 +50,8 @@ from careerkit.jobs.domain.verdict import (
     to_screening_verdict,
 )
 from careerkit.workspace import WorkspacePaths
+
+logger = logging.getLogger(__name__)
 
 MAX_FALLBACK_REASON_CHARS = 240
 _SENSITIVE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]*(?:SECRET|TOKEN|KEY)[A-Za-z0-9_-]*")
@@ -126,6 +132,60 @@ def load_screening_rules(workspace: WorkspacePaths) -> str:
     if not path.is_file():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Rejects a repeated key, which would let a later empty value silently disable the policy."""
+
+
+def _unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    # A merge key (<<) is flattened by construct_mapping, where explicit keys override merged ones.
+    keys = [
+        loader.construct_object(key_node)
+        for key_node, _ in node.value
+        if key_node.tag != "tag:yaml.org,2002:merge"
+    ]
+    if len(keys) != len(set(keys)):
+        raise ValueError("screening.experience_cap: search_config.yaml has a duplicate key")
+    return loader.construct_mapping(node)
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+
+
+def load_experience_cap_policy(workspace: WorkspacePaths) -> ExperienceCapPolicy | None:
+    """Read `screening.experience_cap`; absent means the cap gate is skipped, malformed is an error."""
+    path = workspace.jobs_config_dir / "search_config.yaml"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    try:
+        raw = yaml.load(text, _UniqueKeyLoader)
+        # Only a stream with no document (empty or comment-only) reads as no configuration;
+        # an explicit top-level `null`, `false`, or `[]` is a document and is malformed.
+        if raw is None and yaml.compose(text, _UniqueKeyLoader) is None:
+            raw = {}
+    except yaml.YAMLError as exc:
+        raise ValueError("screening.experience_cap: search_config.yaml is not valid YAML") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("screening.experience_cap: search_config.yaml must be a mapping")
+    screening = raw.get("screening", {})
+    if not isinstance(screening, dict):
+        raise ValueError("screening.experience_cap: screening must be a mapping")
+    if "experience_cap" not in screening:
+        logger.warning("screening.experience_cap is not configured; experience cap gate skipped")
+        return None
+    section = screening["experience_cap"]
+    if not isinstance(section, dict):
+        raise ValueError("screening.experience_cap must be a mapping")
+    reject_max, hold_max = section.get("reject_max"), section.get("hold_max")
+    if not (_is_count(reject_max) and _is_count(hold_max)):
+        raise ValueError("screening.experience_cap: reject_max and hold_max must be non-negative integers")
+    if reject_max > hold_max:
+        raise ValueError("screening.experience_cap: reject_max must not exceed hold_max")
+    return ExperienceCapPolicy(reject_max=reject_max, hold_max=hold_max)
+
+
+def _is_count(value: object) -> TypeGuard[int]:
+    return type(value) is int and value >= 0
 
 
 def _load_text(path: Optional[Path]) -> str:
@@ -587,6 +647,7 @@ def run_screening(
 ) -> ScreeningResult:
     jd_content = jd.jd_markdown
     rules = load_screening_rules(workspace)
+    experience_cap = load_experience_cap_policy(workspace)
     company_content = _load_text(company_file)
     risk_summary = build_company_risk_summary(company_file)
     candidate_context_text = candidate_context or "후보자 이력/경험 근거는 호출자가 제공하지 않았음"
@@ -670,7 +731,9 @@ def run_screening(
         if not valid:
             raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
-        assessment = validate_assessment_quality(assessment, filtered, candidate_context_text, jd_content=jd_content)
+        assessment = validate_assessment_quality(
+            assessment, filtered, candidate_context_text, jd_content=jd_content, experience_cap=experience_cap
+        )
         if require_semantic_validation and semantic_validator is None:
             raise ScreeningQualityError("screening-quality: semantic-validator-required")
         if semantic_validator is not None:

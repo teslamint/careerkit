@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 from dataclasses import dataclass, replace
 from datetime import datetime
 import csv
 import inspect
 import json
 import os
+import stat as stat_module
 import resource
 import shlex
 import subprocess
@@ -155,6 +157,10 @@ class _SemanticScorerWithOverrides:
     def close(self) -> None:
         self._scorer.close()
 
+
+# The first four are what Path.is_file() already ignored; ENAMETOOLONG is added because
+# legacy migration_source names can exceed NAME_MAX.
+_UNREADABLE_LEGACY_PATH_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP, errno.ENAMETOOLONG})
 
 _CLOSED_MARKERS = (
     "채용 마감",
@@ -470,8 +476,14 @@ class JobsMaintenanceService:
         source = stored.record.migration_source
         if source:
             source_path = self.workspace.root / "private" / source
-            if source_path.is_file():
-                return datetime.fromtimestamp(source_path.stat().st_mtime).date().isoformat()
+            try:
+                source_stat = source_path.stat()
+            except OSError as exc:
+                if exc.errno not in _UNREADABLE_LEGACY_PATH_ERRNOS:
+                    raise
+            else:
+                if stat_module.S_ISREG(source_stat.st_mode):
+                    return datetime.fromtimestamp(source_stat.st_mtime).date().isoformat()
 
         manifest = self.records_root / stored.record.platform / stored.record.job_id / "record.json"
         stat = manifest.stat()
