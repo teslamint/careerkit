@@ -202,7 +202,7 @@ class JDRecordRepository:
                 if current_sha256 != expected_screening_sha256:
                     raise ScreeningStateConflict
             if expected_jd_sha256 is not None and self._sha256_text(current.jd_markdown) != expected_jd_sha256:
-                raise ScreeningStateConflict
+                raise ScreeningStateConflict("jd changed during screening")
             content = self._write_revision_content(
                 record_dir,
                 jd_markdown=current.jd_markdown,

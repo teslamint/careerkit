@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -2836,6 +2837,34 @@ def test_screening_stage_warns_each_record_for_shared_missing_company(tmp_path: 
         "wanted:1": _COMPANY_INFO_MISSING,
         "wanted:2": _COMPANY_INFO_MISSING,
     }
+
+
+def test_screening_stage_records_jd_change_conflict_as_item_failure(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    rec_a = repository.create(JobRecord("wanted", "1", "Ghost Co", "Backend Developer"), jd_markdown="# JD A\n")
+    rec_b = repository.create(JobRecord("wanted", "2", "Ghost Co", "Backend Engineer"), jd_markdown="# JD B\n")
+
+    def fake_run_screening(**kwargs):
+        if kwargs["jd"].record.job_id == "1":
+            repository.update_screening_result(
+                rec_a.record.key,
+                screening_markdown="# stale\n",
+                expected_jd_sha256=hashlib.sha256(b"# JD before refresh\n").hexdigest(),
+            )
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(("a", "b"), ("wanted:1", "wanted:2"), (rec_a, rec_b), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["failures"] == [{"job_key": "wanted:1", "error": "jd changed during screening"}]
+    assert result.item_ids == ("wanted:2",)
+    assert repository.get(rec_a.record.key).screening_markdown is None
 
 
 def test_auto_result_service_persists_success_and_failure_payloads(tmp_path: Path) -> None:
