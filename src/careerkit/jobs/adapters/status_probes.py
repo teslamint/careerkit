@@ -14,6 +14,7 @@ from careerkit.jobs.adapters.platforms.groupby import (
     GROUPBY_API_BASE,
     GROUPBY_HEADERS,
     is_groupby_placeholder,
+    is_groupby_posting,
 )
 
 _KST = timezone(timedelta(hours=9))
@@ -163,7 +164,7 @@ def _probe_groupby(job_id, http, source_url, sleep):
     except HttpError:
         return ProbeOutcome.UNKNOWN
     data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, dict) or is_groupby_placeholder(data):
+    if not is_groupby_posting(data) or is_groupby_placeholder(data):
         return ProbeOutcome.UNKNOWN
     return ProbeOutcome.ACTIVE
 

@@ -20,6 +20,7 @@ from careerkit.jobs.adapters.platforms.groupby import (
     GROUPBY_HEADERS,
     format_groupby_experience,
     is_groupby_placeholder,
+    is_groupby_posting,
 )
 from careerkit.jobs.adapters.platforms.remember import remember_company_http
 from careerkit.jobs.adapters.platforms.saramin import extract_csn_from_html, saramin_company_http
@@ -31,7 +32,11 @@ from careerkit.jobs.adapters.platforms.wanted import (
     wanted_search_company_id,
 )
 from careerkit.jobs.adapters.screening.cli_provider import LLMProvider
-from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
+from careerkit.jobs.adapters.storage.file_records import (
+    JDRecordRepository,
+    ScreeningStateConflict,
+    StoredJobRecord,
+)
 from careerkit.jobs.application.company_enrichment import (
     CompanyEnrichmentContext,
     CompanyEnrichmentService,
@@ -495,6 +500,10 @@ class JobsExtractionStage:
             company_contexts=company_contexts,
         )
 
+    def preview(self, url: str) -> StoredJobRecord:
+        """Extract ``url`` without persisting; a failed extraction raises."""
+        return self._extract_url(url, dry_run=True)[0]
+
     def _resolve_existing(self, url: str, *, dry_run: bool = False) -> StoredJobRecord:
         key = _job_key_from_url(url)
         if key is None:
@@ -656,11 +665,13 @@ class JobsExtractionStage:
             data = payload["data"]
         except (AttributeError, KeyError, TypeError) as exc:
             raise ValueError(f"invalid GroupBy payload for {url}") from exc
+        if not is_groupby_posting(data):
+            raise ValueError(f"GroupBy payload has no posting data for {url}")
         if is_groupby_placeholder(data):
             raise ValueError(f"GroupBy served a placeholder posting for {url}")
-        position = _normalize_text(data.get("name", "")) or f"groupby-{job_id}"
-        startup = data.get("startup") or {}
-        company = _normalize_text(startup.get("name", "")) or "unknown-company"
+        position = _normalize_text(data["name"])
+        startup = data["startup"]
+        company = _normalize_text(startup["name"])
         location = _normalize_text(data.get("address", ""))
         if not location:
             loc_obj = data.get("location") or {}
@@ -992,7 +1003,7 @@ class JobsScreeningStage:
                     semantic_validator=self.semantic_validator,
                     require_semantic_validation=self.require_semantic_validation,
                 )
-            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            except (FileNotFoundError, RuntimeError, ScreeningStateConflict, ValueError) as exc:
                 failures.append({"job_key": item_id, "error": str(exc)})
                 logger.info("screening failed: %s error=%s elapsed_s=%.3f",
                             item_id, type(exc).__name__, time.monotonic() - started)

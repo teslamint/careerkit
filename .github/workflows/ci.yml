@@ -56,7 +56,8 @@ jobs:
         run: npm ci && npm run lint:js
 
   test:
-    runs-on: ubuntu-latest
+    # Playwright 1.58 supports Ubuntu through 24.04; keep its browser installation supported.
+    runs-on: ubuntu-24.04
     env:
       HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
       SEMANTIC_MODEL_NAME: jhgan/ko-sroberta-multitask

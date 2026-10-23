@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -1288,6 +1289,26 @@ def test_groupby_extraction_rejects_placeholder_posting_without_persisting(tmp_p
     assert batch.metadata["failures"][0]["item_id"] == f"{key.platform}:{key.job_id}"
     assert "placeholder" in batch.metadata["failures"][0]["error"]
     assert repository.find(key) is None
+
+
+@pytest.mark.parametrize(
+    "data",
+    [None, {}, "x", {"message": "not found"}, {"name": "Backend", "startup": {}}, {"name": " ", "startup": {"name": "Co"}}],
+)
+def test_groupby_extraction_rejects_payload_without_posting_data(tmp_path: Path, data: object) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    http_client = GroupByFetchMetadataClient({"status": 200, "data": data})
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+    url = "https://groupby.kr/positions/456"
+
+    batch = stage.extract([url], dry_run=False, screening_only=False)
+
+    assert batch.records == ()
+    assert batch.failed_urls == (url,)
+    assert "no posting data" in batch.metadata["failures"][0]["error"]
+    assert repository.find(JobKey("groupby", "456")) is None
+    with pytest.raises(ValueError, match="no posting data"):
+        stage.preview(url)
 
 
 def test_run_auto_keeps_only_failed_urls_for_resume_after_partial_batch() -> None:
@@ -2816,6 +2837,34 @@ def test_screening_stage_warns_each_record_for_shared_missing_company(tmp_path: 
         "wanted:1": _COMPANY_INFO_MISSING,
         "wanted:2": _COMPANY_INFO_MISSING,
     }
+
+
+def test_screening_stage_records_jd_change_conflict_as_item_failure(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    rec_a = repository.create(JobRecord("wanted", "1", "Ghost Co", "Backend Developer"), jd_markdown="# JD A\n")
+    rec_b = repository.create(JobRecord("wanted", "2", "Ghost Co", "Backend Engineer"), jd_markdown="# JD B\n")
+
+    def fake_run_screening(**kwargs):
+        if kwargs["jd"].record.job_id == "1":
+            repository.update_screening_result(
+                rec_a.record.key,
+                screening_markdown="# stale\n",
+                expected_jd_sha256=hashlib.sha256(b"# JD before refresh\n").hexdigest(),
+            )
+        return _screening_result()
+
+    monkeypatch.setattr("careerkit.jobs.application.automation.run_screening", fake_run_screening)
+
+    result = JobsScreeningStage(workspace=workspace, repository=repository).screen(
+        ExtractionBatch(("a", "b"), ("wanted:1", "wanted:2"), (rec_a, rec_b), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert result.metadata["failures"] == [{"job_key": "wanted:1", "error": "jd changed during screening"}]
+    assert result.item_ids == ("wanted:2",)
+    assert repository.get(rec_a.record.key).screening_markdown is None
 
 
 def test_auto_result_service_persists_success_and_failure_payloads(tmp_path: Path) -> None:
