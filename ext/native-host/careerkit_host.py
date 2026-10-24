@@ -117,6 +117,9 @@ def _resolve_key(msg: dict[str, Any]) -> JobKey | None:
     url = msg.get("url")
     if not isinstance(url, str) or not url:
         return None
+    posting_key = posting_key_from_url(url)
+    if posting_key is None:
+        return None
     parsed = urlparse(url)
     if parsed.scheme != "https":
         return None
@@ -125,8 +128,7 @@ def _resolve_key(msg: dict[str, Any]) -> JobKey | None:
         host = "www.rememberapp.co.kr"
     if host not in _ALLOWED_HOSTS:
         return None
-    posting_key = posting_key_from_url(url)
-    if posting_key is None or posting_key[0] != _ALLOWED_HOSTS[host]:
+    if posting_key[0] != _ALLOWED_HOSTS[host]:
         return None
     return JobKey(*posting_key)
 

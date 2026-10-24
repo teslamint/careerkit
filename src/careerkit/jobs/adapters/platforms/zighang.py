@@ -251,8 +251,8 @@ _SARAMIN_HOST = "www.saramin.co.kr"
 # Origins resolve through the same exact-host, anchored-path lookup the extraction stage
 # uses, and the URL is rebuilt from the id: the raw redirect URL is never passed on.
 def _origin(url: str) -> str | None:
-    posting = posting_key_from_url(url) if urlparse(url).scheme == "https" else None
-    if posting is None:
+    posting = posting_key_from_url(url)
+    if posting is None or urlparse(url).scheme != "https":
         return None
     platform, job_id = posting
     if platform == "wanted":

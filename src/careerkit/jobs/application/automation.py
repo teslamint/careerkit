@@ -50,7 +50,7 @@ from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService
 from careerkit.jobs.application.screening import run_screening
 from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
-from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url, posting_key_from_url
+from careerkit.jobs.application.storage_migration import posting_key_from_url
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
     duties_show_server_work,
@@ -1722,13 +1722,13 @@ def _html_to_text(html: str | None) -> str:
     return text.strip()
 
 
-# Platforms this stage never fetches keep their legacy lookup so stored records still
-# resolve for re-screening, but only when the URL's own host belongs to that platform.
-_KEY_ONLY_DOMAINS = {
-    "jumpit": "jumpit.saramin.co.kr",
-    "jobkorea": "jobkorea.co.kr",
-    "offercent": "offercent.co.kr",
-    "greeting": "greetinghr.com",
+# These platforms resolve stored records for re-screening but are never fetched here.
+# Match the URL's own host and posting path, not an address embedded in its query.
+_KEY_ONLY_PATHS = {
+    "jumpit": ("jumpit.saramin.co.kr", re.compile(r"/position/([0-9]+)/?")),
+    "jobkorea": ("jobkorea.co.kr", re.compile(r"/Recruit/GI_Read/([0-9]+)/?")),
+    "offercent": ("offercent.co.kr", re.compile(r"/jd/([0-9]+)/?")),
+    "greeting": ("greetinghr.com", re.compile(r"/(?:[a-z]{2}/)?o/([0-9]+)/?")),
 }
 
 
@@ -1736,13 +1736,18 @@ def _job_key_from_url(url: str) -> JobKey | None:
     posting = posting_key_from_url(url)
     if posting is not None:
         return JobKey(*posting)
-    domain = _KEY_ONLY_DOMAINS.get(get_platform_from_url(url) or "")
-    host = urlparse(url).hostname or ""
-    if domain is None or not (host == domain or host.endswith(f".{domain}")):
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
         return None
-    job_id = extract_job_id(url)
-    platform = get_platform_from_url(url)
-    return JobKey(platform, job_id) if job_id and platform else None
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host:
+        return None
+    for platform, (domain, pattern) in _KEY_ONLY_PATHS.items():
+        if host == domain or host.endswith(f".{domain}"):
+            match = pattern.fullmatch(parsed.path)
+            return JobKey(platform, match.group(1)) if match else None
+    return None
 
 
 def _save_or_preview_record(

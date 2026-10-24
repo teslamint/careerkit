@@ -34,6 +34,7 @@ from careerkit.jobs.application.automation import (
     _COMPANY_INFO_MISSING,
     _COMPANY_INFO_INCOMPLETE,
     _enrichment_context_with_fetched_facts,
+    _job_key_from_url,
     _render_json,
 )
 from careerkit.jobs.application.company_enrichment import (
@@ -1284,6 +1285,41 @@ def test_jobs_extraction_stage_ignores_posting_urls_smuggled_into_a_query(
     assert batch.failed_urls == (url,)
     assert batch.metadata["failures"][0]["item_id"] == f"zighang:{ZIGHANG_ID}"
     assert http_client.requested_text == http_client.requested_json == []
+
+
+def test_jobs_extraction_stage_isolates_an_unparseable_url(tmp_path: Path) -> None:
+    http_client = FakeHttpClient()
+    stage = JobsExtractionStage(repository=JDRecordRepository(tmp_path / "records"), http_client=http_client)
+
+    batch = stage.extract(
+        ["https://[malformed", ZIGHANG_URL], dry_run=False, screening_only=False, captured_pages={ZIGHANG_URL: _zighang_page()}
+    )
+
+    assert batch.failed_urls == ("https://[malformed",)
+    assert [record.record.key for record in batch.records] == [JobKey("zighang", ZIGHANG_ID)]
+
+
+JOBKOREA_HOST = "www.jobkorea.co.kr"
+JUMPIT_HOST = "jumpit.saramin.co.kr"
+OFFERCENT_HOST = "offercent.co.kr"
+GREETING_HOST = "career.greetinghr.com"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"https://{JOBKOREA_HOST}/Recruit/GI_Read/42", JobKey("jobkorea", "42")),
+        (f"https://{JOBKOREA_HOST}/other?next=https://{JOBKOREA_HOST}/Recruit/GI_Read/42", None),
+        (f"https://{JUMPIT_HOST}/position/7", JobKey("jumpit", "7")),
+        (f"https://{JUMPIT_HOST}/company?from={JUMPIT_HOST}/position/7", None),
+        (f"https://{OFFERCENT_HOST}/jd/9", JobKey("offercent", "9")),
+        (f"https://{OFFERCENT_HOST}/list?jd={OFFERCENT_HOST}/jd/9", None),
+        (f"https://{GREETING_HOST}/ko/o/11", JobKey("greeting", "11")),
+        (f"https://{GREETING_HOST}/about?next={GREETING_HOST}/o/11", None),
+    ],
+)
+def test_legacy_key_lookup_reads_the_id_from_the_posting_path_only(url: str, expected: JobKey | None) -> None:
+    assert _job_key_from_url(url) == expected
 
 
 @pytest.mark.parametrize(

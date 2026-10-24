@@ -181,8 +181,11 @@ _SARAMIN_POSTING_PATHS = frozenset({"/zf_user/jobs/view", "/zf_user/jobs/relay/v
 # userinfo, and an anchored path, so a posting address inside a query string or a
 # look-alike host never decides the platform.
 def posting_key_from_url(url: str) -> tuple[str, str] | None:
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return None
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host or host not in _POSTING_HOSTS:
         return None
     platform = _POSTING_HOSTS[host]

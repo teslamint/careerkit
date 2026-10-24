@@ -1312,6 +1312,7 @@ _REMEMBER_HOST = "career.rememberapp.co.kr"
         f"https://{_WANTED_HOST}/company/1?next=https://{_WANTED_HOST}/wd/5",
         f"https://{_SARAMIN_HOST}/zf_user/company/view?rec_idx=1",
         f"https://{_REMEMBER_HOST}/job/company/9?x=https://{_REMEMBER_HOST}/job/posting/3",
+        "https://[malformed",
     ],
 )
 def test_resolve_key_rejects_posting_path_smuggled_into_another_page(url):

@@ -283,6 +283,7 @@ class TestSupportedOriginUrl:
             (f"https://{GROUPBY}/positions/١٢", None),
             (f"https://{WANTED}:8443/wd/123", None),
             (f"https://{ZIGHANG}/recruitment/{JOB_ID}", None),
+            ("https://[malformed/wd/123", None),
         ],
     )
     def test_top_level_redirect(self, raw, expected):

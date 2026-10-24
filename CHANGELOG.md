@@ -21,6 +21,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `parse_remember_experience` moved to `jd_content.py`
 
 ### Fixed
+- Reject malformed posting URLs without stopping extraction of the remaining batch or browser-origin candidates.
+- Resolve legacy stored postings only from their own posting path, not from addresses embedded in query strings.
 - Reject empty or malformed GroupBy posting data during extraction and report its status as unknown.
 - Summary rebuild falls back to the record creation date when a legacy source filename is too long.
 - Resume logic with stage-based skip and protected status files
