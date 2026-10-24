@@ -232,9 +232,45 @@
     }, 3000);
   }
 
+  // Matches the host's page cap (careerkit_host.py:_MAX_PAGE_BYTES), which keeps the whole
+  // request under the host's 1 MB message cap (_MAX_MESSAGE_BYTES).
+  var MAX_PAGE_BYTES = 900000;
+
+  // 직행 disallows automated access, so its posting is read from the scripts of the
+  // page the user already loaded and nothing is fetched. A client-side navigation keeps
+  // the first page's scripts, so a page without the posting id needs a reload.
+  function captureZighangPage(jobId) {
+    var parts = [];
+    var scripts = document.querySelectorAll("script");
+    for (var i = 0; i < scripts.length; i++) {
+      var text = scripts[i].textContent || "";
+      if (text.indexOf("self.__next_f.push") >= 0) {
+        parts.push("<script>" + text + "</script>");
+      }
+    }
+    var page = parts.join("\n");
+    if (page.indexOf(jobId) < 0) return { error: "새로고침 후 다시 시도" };
+    if (new TextEncoder().encode(JSON.stringify(page)).length > MAX_PAGE_BYTES) {
+      return { error: "페이지가 너무 큽니다" };
+    }
+    return { page: page };
+  }
+
   function startCollectAndPoll(url) {
+    var message = { action: "collect", url: url };
+    var detection = detectJobPosting(url);
+    if (detection && detection.platform === "zighang") {
+      var captured = captureZighangPage(detection.jobId);
+      if (captured.error) {
+        stopPolling();
+        render(buildError(captured.error));
+        return;
+      }
+      message.page = captured.page;
+    }
     render(buildLoading("스크리닝 중"));
-    safeSend({ action: "collect", url: url }, function (response, err) {
+    pollForVerdict(url);
+    safeSend(message, function (response, err) {
       if (url !== CURRENT_URL) return;
       if (err) { stopPolling(); return; }
       if (response && response.status === "error") {
@@ -243,11 +279,11 @@
         return;
       }
       if (response && isDecided(response.data)) {
+        stopPolling();
         renderFromRecord(response.data);
         return;
       }
     });
-    pollForVerdict(url);
   }
 
   function buildScreenButton() {

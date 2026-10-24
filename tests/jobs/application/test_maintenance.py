@@ -313,6 +313,22 @@ def test_check_closed_counts_unsupported_platform_without_http_call(tmp_path: Pa
     assert result.unknown_keys == ()
 
 
+def test_check_closed_skips_zighang_without_http_call(tmp_path: Path) -> None:
+    # robots.txt disallows automated access to 직행, so no status probe may exist for it.
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    http = FakeHttpClient(json_queue=[])
+    service = JobsMaintenanceService(workspace=workspace, http=http)
+    job_id = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+    service.repository.create(JobRecord('zighang', job_id, '예시회사', 'Backend'), jd_markdown='# JD')
+
+    result = service.check_closed(dry_run=True, delay=0.0)
+
+    assert result.skipped_platform_counts == {'zighang': 1}
+    assert http.requests == []
+    assert result.closed_keys == ()
+    assert result.unknown_keys == ()
+
+
 def test_check_closed_circuit_breaker_trips_after_three_consecutive_unknowns(tmp_path: Path) -> None:
     workspace = WorkspacePaths(root=tmp_path, source='explicit')
     http = FakeHttpClient(json_queue=[HttpError('boom'), HttpError('boom'), HttpError('boom')])
