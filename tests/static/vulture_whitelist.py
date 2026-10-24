@@ -57,6 +57,9 @@ _.queue_case_count
 _.incomplete_error_code
 build_gold_dataset
 
+# The browser-extension native host (ext/, outside the scanned tree) calls this.
+supported_origin_url
+
 # HTMLParser dispatches this callback by name.
 _.handle_data
 

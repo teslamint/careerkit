@@ -96,10 +96,15 @@ function createHarness(options) {
   var intervals = {};
   var nextIntervalId = 1;
 
+  var scripts = options.scripts || [];
   var documentMock = {
     documentElement: createElement("html"),
     body: createElement("body"),
-    createElement: function (tag) { return createElement(tag); }
+    createElement: function (tag) { return createElement(tag); },
+    querySelectorAll: function (selector) {
+      assert.strictEqual(selector, "script");
+      return scripts;
+    }
   };
 
   var chromeMock = {
@@ -122,8 +127,9 @@ function createHarness(options) {
     chrome: chromeMock,
     detectJobPosting: function (href) {
       if (!href) return null;
-      return { platform: "example", jobId: "1" };
+      return options.posting || { platform: "example", jobId: "1" };
     },
+    TextEncoder: TextEncoder,
     // Interval ids start at 1: badge.js gates cleanup on truthiness.
     setInterval: function (fn, ms) {
       var id = nextIntervalId++;
@@ -302,6 +308,93 @@ test("duplicate collect reply carrying a reason renders the recorded state", fun
   harness.tickPoll(130);
   assert.ok(harness.text().indexOf(SET_ASIDE_LABEL) >= 0, harness.text());
   assert.strictEqual(harness.text().indexOf("시간 초과"), -1, harness.text());
+});
+
+test("decided collect reply stops the poll it started", function () {
+  var harness = createHarness({
+    handlers: {
+      lookup: function () { return okResponse(null); },
+      collect: function () { return { status: "duplicate", action: "collect", data: setAsideRecord() }; }
+    }
+  });
+  harness.click("수집");
+  assert.strictEqual(harness.pollCount(), 0);
+});
+
+// --- zighang page capture ---
+
+var ZIGHANG_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+
+function script(text, type) {
+  return { type: type || "", textContent: text };
+}
+
+function zighangHarness(scripts) {
+  return createHarness({
+    posting: { platform: "zighang", jobId: ZIGHANG_ID },
+    scripts: scripts,
+    handlers: {
+      lookup: function () { return okResponse(null); },
+      collect: function () { return { status: "accepted", data: null }; }
+    }
+  });
+}
+
+function collectMessages(harness) {
+  return harness.sendMessageLog.filter(function (m) { return m.action === "collect"; });
+}
+
+test("zighang collect sends only the flight scripts", function () {
+  var push = 'self.__next_f.push([1,"{\\"id\\":\\"' + ZIGHANG_ID + '\\"}"])';
+  var harness = zighangHarness([
+    script("window.analytics = 1;"),
+    script('{"@type":"JobPosting"}', "application/ld+json"),
+    script(push)
+  ]);
+  harness.click("수집");
+  var sent = collectMessages(harness);
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].page, "<script>" + push + "</script>");
+  assert.strictEqual(harness.pollCount(), 1);
+});
+
+test("zighang page without the posting id asks for a reload and sends nothing", function () {
+  var harness = zighangHarness([script('self.__next_f.push([1,"other"])')]);
+  harness.click("수집");
+  assert.strictEqual(collectMessages(harness).length, 0);
+  assert.ok(harness.text().indexOf("새로고침 후 다시 시도") >= 0, harness.text());
+  assert.strictEqual(harness.pollCount(), 0);
+});
+
+test("zighang page over the size cap is not sent", function () {
+  var big = new Array(900001).join("a");
+  var harness = zighangHarness([script('self.__next_f.push([1,"' + ZIGHANG_ID + big + '"])')]);
+  harness.click("수집");
+  assert.strictEqual(collectMessages(harness).length, 0);
+  assert.ok(harness.text().indexOf("너무 큽니다") >= 0, harness.text());
+  assert.strictEqual(harness.pollCount(), 0);
+});
+
+test("zighang page under the cap in characters but over it in UTF-8 bytes is not sent", function () {
+  var korean = new Array(300001).join("가");
+  assert.ok(korean.length < 900000);
+  var harness = zighangHarness([script('self.__next_f.push([1,"' + ZIGHANG_ID + korean + '"])')]);
+  harness.click("수집");
+  assert.strictEqual(collectMessages(harness).length, 0);
+  assert.ok(harness.text().indexOf("너무 큽니다") >= 0, harness.text());
+});
+
+test("non-zighang collect carries no page", function () {
+  var harness = createHarness({
+    handlers: {
+      lookup: function () { return okResponse(null); },
+      collect: function () { return { status: "accepted", data: null }; }
+    }
+  });
+  harness.click("수집");
+  var sent = collectMessages(harness);
+  assert.strictEqual(sent.length, 1);
+  assert.ok(!("page" in sent[0]), JSON.stringify(sent[0]));
 });
 
 // --- runtime listener (host -> service worker -> content script) ---

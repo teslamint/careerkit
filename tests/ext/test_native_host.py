@@ -446,7 +446,8 @@ def test_handle_collect_record_without_verdict_or_reason_still_screens():
     )
 
     assert response["status"] == "accepted"
-    queued_url, queued_tracking_id, queued_screening_only = work_queue.get_nowait()
+    queued_url, queued_tracking_id, queued_screening_only, queued_page = work_queue.get_nowait()
+    assert queued_page is None
     assert queued_url == "https://www.wanted.co.kr/wd/123456"
     assert queued_tracking_id == response["tracking_id"]
     assert queued_screening_only is True
@@ -467,7 +468,8 @@ def test_handle_collect_new_url_returns_accepted_and_enqueues():
     tracking_id = response["tracking_id"]
     assert tracking_id
 
-    queued_url, queued_tracking_id, queued_screening_only = work_queue.get_nowait()
+    queued_url, queued_tracking_id, queued_screening_only, queued_page = work_queue.get_nowait()
+    assert queued_page is None
     assert queued_url == "https://www.wanted.co.kr/wd/123456"
     assert queued_tracking_id == tracking_id
     assert queued_screening_only is False
@@ -936,7 +938,8 @@ def test_handle_rescreen_existing_record_returns_accepted_and_enqueues():
     tracking_id = response["tracking_id"]
     assert tracking_id
 
-    queued_url, queued_tracking_id, queued_screening_only = work_queue.get_nowait()
+    queued_url, queued_tracking_id, queued_screening_only, queued_page = work_queue.get_nowait()
+    assert queued_page is None
     assert queued_url == "https://www.wanted.co.kr/wd/123456"
     assert queued_tracking_id == tracking_id
     assert queued_screening_only is True
@@ -1262,3 +1265,236 @@ def test_dispatch_get_company_info_without_service():
 
     assert response == {"status": "error", "message": "company info unavailable"}
     assert work_item is None
+
+
+# --- zighang: the extension sends the captured detail page; the host never fetches it ---
+
+# Hosts stay separate from the scheme so the publish guard's posting-url rule does not
+# read the synthetic ids below as pasted postings.
+_ZIGHANG_HOST = "zighang.com"
+_WANTED_HOST = "www.wanted.co.kr"
+_ZIGHANG_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+_ZIGHANG_URL = f"https://{_ZIGHANG_HOST}/recruitment/{_ZIGHANG_ID}"
+_ORIGIN_URL = f"https://{_WANTED_HOST}/wd/777"
+
+
+def _zighang_page(*, job_id: str = _ZIGHANG_ID, redirect_url: str | None = None) -> str:
+    recruitment = {
+        "id": job_id,
+        "title": "백엔드 개발자",
+        "company": {"name": "예시회사"},
+        "summary": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "예시 업무"}]}]},
+        "redirectUrl": redirect_url,
+        "careerMin": 0,
+        "careerMax": 0,
+        "regions": [],
+    }
+    payload = "5:" + json.dumps({"recruitment": recruitment}, ensure_ascii=False)
+    return f"<script>self.__next_f.push([1,{json.dumps(payload)}])</script>"
+
+
+def _collect(msg: dict[str, Any], repository: Any, **kwargs: Any) -> tuple[dict[str, Any], queue.Queue]:
+    work_queue: queue.Queue = queue.Queue()
+    return host.handle_collect({"action": "collect", **msg}, repository, work_queue, **kwargs), work_queue
+
+
+def test_resolve_key_accepts_zighang_recruitment_url():
+    assert host._resolve_key({"url": _ZIGHANG_URL}) == JobKey("zighang", _ZIGHANG_ID)
+
+
+_SARAMIN_HOST = "www.saramin.co.kr"
+_REMEMBER_HOST = "career.rememberapp.co.kr"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://{_WANTED_HOST}/company/1?next=https://{_WANTED_HOST}/wd/5",
+        f"https://{_SARAMIN_HOST}/zf_user/company/view?rec_idx=1",
+        f"https://{_REMEMBER_HOST}/job/company/9?x=https://{_REMEMBER_HOST}/job/posting/3",
+        "https://[malformed",
+    ],
+)
+def test_resolve_key_rejects_posting_path_smuggled_into_another_page(url):
+    assert host._resolve_key({"url": url}) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "key"),
+    [
+        (f"https://{_SARAMIN_HOST}/zf_user/jobs/relay/view/?rec_idx=7", JobKey("saramin", "7")),
+        (f"https://{_REMEMBER_HOST}/job/posting/3", JobKey("remember", "3")),
+        (f"https://{_WANTED_HOST}/wd/5", JobKey("wanted", "5")),
+    ],
+)
+def test_resolve_key_accepts_posting_urls(url, key):
+    assert host._resolve_key({"url": url}) == key
+
+
+def test_resolve_key_takes_the_key_from_host_and_path_not_the_query():
+    key = host._resolve_key({"url": f"{_ZIGHANG_URL}?ref={_WANTED_HOST}/wd/1"})
+    assert key == JobKey("zighang", _ZIGHANG_ID)
+
+
+@pytest.mark.parametrize(
+    ("page", "message"),
+    [
+        (None, "requires the captured page"),
+        (123, "must be a non-empty string"),
+        ("", "must be a non-empty string"),
+        ("x" * (host._MAX_PAGE_BYTES + 1), "too large"),
+        # Under the cap in characters, over it in UTF-8 bytes (3 bytes per 가).
+        ("가" * (host._MAX_PAGE_BYTES // 3 + 1), "too large"),
+        ("<html>no payload</html>", "could not be read"),
+        (_zighang_page(job_id="ffffffff-4e5f-4a6b-8c7d-9e0f1a2b3c4d"), "could not be read"),
+    ],
+)
+def test_handle_collect_zighang_rejects_bad_pages_before_any_lookup(page, message):
+    repository = MagicMock()
+    msg: dict[str, Any] = {"url": _ZIGHANG_URL}
+    if page is not None:
+        msg["page"] = page
+
+    response, work_queue = _collect(msg, repository)
+
+    assert response["status"] == "error"
+    assert message in response["message"]
+    assert work_queue.empty()
+    repository.find.assert_not_called()
+
+
+def test_handle_collect_rejects_page_for_non_zighang_url():
+    repository = MagicMock()
+
+    response, work_queue = _collect({"url": _ORIGIN_URL, "page": _zighang_page()}, repository)
+
+    assert response["status"] == "error"
+    assert work_queue.empty()
+    repository.find.assert_not_called()
+
+
+def test_handle_collect_zighang_enqueues_the_captured_page():
+    repository = MagicMock()
+    repository.find.return_value = None
+    page = _zighang_page()
+
+    response, work_queue = _collect({"url": _ZIGHANG_URL, "page": page}, repository)
+
+    assert response["status"] == "accepted"
+    assert work_queue.get_nowait() == host.WorkItem(_ZIGHANG_URL, response["tracking_id"], False, page)
+    repository.find.assert_called_once_with(JobKey("zighang", _ZIGHANG_ID))
+
+
+def test_handle_collect_zighang_duplicate_returns_existing_record():
+    record = _make_record(platform="zighang", job_id=_ZIGHANG_ID, source_url=_ZIGHANG_URL)
+    repository = MagicMock()
+    repository.find.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown="# S")
+
+    response, work_queue = _collect({"url": _ZIGHANG_URL, "page": _zighang_page()}, repository)
+
+    assert response["status"] == "duplicate"
+    assert response["data"] == record.to_dict()
+    assert work_queue.empty()
+
+
+def test_handle_collect_zighang_with_supported_origin_enqueues_the_origin_without_page():
+    repository = MagicMock()
+    repository.find.return_value = None
+    in_flight: set[str] = set()
+
+    response, work_queue = _collect(
+        {"url": _ZIGHANG_URL, "page": _zighang_page(redirect_url=f"{_ORIGIN_URL}?utm_source=x")},
+        repository,
+        in_flight=in_flight,
+        in_flight_lock=threading.Lock(),
+    )
+
+    assert response["status"] == "accepted"
+    assert work_queue.get_nowait() == host.WorkItem(_ORIGIN_URL, response["tracking_id"], False, None)
+    assert in_flight == {_ORIGIN_URL}
+    repository.find.assert_called_once_with(JobKey("wanted", "777"))
+
+
+def test_handle_collect_zighang_origin_duplicate_returns_the_origin_record():
+    record = _make_record(job_id="777", source_url=_ORIGIN_URL)
+    repository = MagicMock()
+    repository.find.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown="# S")
+
+    response, work_queue = _collect({"url": _ZIGHANG_URL, "page": _zighang_page(redirect_url=_ORIGIN_URL)}, repository)
+
+    assert response["status"] == "duplicate"
+    assert response["data"] == record.to_dict()
+    assert work_queue.empty()
+
+
+def test_handle_collect_zighang_origin_checks_in_flight_against_the_origin_url():
+    repository = MagicMock()
+
+    response, work_queue = _collect(
+        {"url": _ZIGHANG_URL, "page": _zighang_page(redirect_url=_ORIGIN_URL)},
+        repository,
+        in_flight={_ORIGIN_URL},
+        in_flight_lock=threading.Lock(),
+    )
+
+    assert response == {"status": "error", "message": "already queued"}
+    assert work_queue.empty()
+
+
+def test_handle_collect_zighang_unsupported_origin_keeps_the_zighang_url():
+    repository = MagicMock()
+    repository.find.return_value = None
+    page = _zighang_page(redirect_url=f"https://{_WANTED_HOST}.example/wd/1")
+
+    response, work_queue = _collect({"url": _ZIGHANG_URL, "page": page}, repository)
+
+    assert work_queue.get_nowait() == host.WorkItem(_ZIGHANG_URL, response["tracking_id"], False, page)
+
+
+def test_handle_rescreen_zighang_carries_an_optional_page_without_origin_redirect():
+    record = _make_record(platform="zighang", job_id=_ZIGHANG_ID, source_url=_ZIGHANG_URL)
+    repository = MagicMock()
+    repository.find.return_value = StoredJobRecord(record=record, jd_markdown="# JD", screening_markdown="# S")
+    page = _zighang_page(redirect_url=_ORIGIN_URL)
+
+    with_page: queue.Queue = queue.Queue()
+    response = host.handle_rescreen({"action": "rescreen", "url": _ZIGHANG_URL, "page": page}, repository, with_page)
+    without_page: queue.Queue = queue.Queue()
+    bare = host.handle_rescreen({"action": "rescreen", "url": _ZIGHANG_URL}, repository, without_page)
+
+    assert with_page.get_nowait() == host.WorkItem(_ZIGHANG_URL, response["tracking_id"], True, page)
+    assert without_page.get_nowait() == host.WorkItem(_ZIGHANG_URL, bare["tracking_id"], True, None)
+
+
+@pytest.mark.parametrize(
+    ("url", "page"),
+    [
+        (_ZIGHANG_URL, _zighang_page(job_id="ffffffff-4e5f-4a6b-8c7d-9e0f1a2b3c4d")),
+        (_ORIGIN_URL, _zighang_page()),
+    ],
+)
+def test_handle_rescreen_rejects_mismatched_or_misplaced_pages(url, page):
+    repository = MagicMock()
+    work_queue: queue.Queue = queue.Queue()
+
+    response = host.handle_rescreen({"action": "rescreen", "url": url, "page": page}, repository, work_queue)
+
+    assert response["status"] == "error"
+    assert work_queue.empty()
+    repository.find.assert_not_called()
+
+
+def test_run_screening_worker_passes_the_captured_page_to_extraction():
+    extraction_stage = MagicMock()
+    extraction_stage.extract.return_value = SimpleNamespace(records=(), metadata={"failures": []})
+    work_queue: queue.Queue = queue.Queue()
+    page = _zighang_page()
+    work_queue.put(host.WorkItem(_ZIGHANG_URL, "track-z", False, page))
+
+    with patch.object(work_queue, "get", side_effect=[work_queue.get_nowait(), KeyboardInterrupt]):
+        with pytest.raises(KeyboardInterrupt):
+            host.run_screening_worker(work_queue, MagicMock(), extraction_stage, MagicMock(), io.BytesIO(), threading.Lock())
+
+    extraction_stage.extract.assert_called_once_with(
+        [_ZIGHANG_URL], dry_run=False, screening_only=False, captured_pages={_ZIGHANG_URL: page}
+    )

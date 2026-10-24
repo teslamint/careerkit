@@ -8,6 +8,7 @@
     "https://www.wanted.co.kr/*",
     "https://*.rememberapp.co.kr/*",
     "https://groupby.kr/*",
+    "https://zighang.com/*",
     "https://www.saramin.co.kr/*"
   ],
   "background": {
@@ -22,6 +23,7 @@
         "https://*.wanted.co.kr/*",
         "https://*.rememberapp.co.kr/*",
         "https://*.groupby.kr/*",
+        "https://zighang.com/*",
         "https://www.saramin.co.kr/*"
       ],
       "js": ["content/detector.js", "content/badge.js"]

@@ -93,7 +93,7 @@ def _run_host_with_fixture_worker(workspace_root: Path, messages: list[dict], tm
             class FixtureExtractionStage:
                 def extract(self, urls, *, dry_run, screening_only):
                     url = urls[0]
-                    key = JobKey(host.get_platform_from_url(url), host.extract_job_id(url))
+                    key = JobKey(*host.posting_key_from_url(url))
                     stored = repository.find(key)
                     if stored is None:
                         record = JobRecord(

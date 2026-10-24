@@ -34,6 +34,7 @@ from careerkit.jobs.application.automation import (
     _COMPANY_INFO_MISSING,
     _COMPANY_INFO_INCOMPLETE,
     _enrichment_context_with_fetched_facts,
+    _job_key_from_url,
     _render_json,
 )
 from careerkit.jobs.application.company_enrichment import (
@@ -1141,6 +1142,228 @@ def test_jobs_extraction_stage_groupby_separates_company_context_and_task_sectio
         RequirementKind.PREFERRED,
     ]
     assert manifest.ambiguous_qualifications is False
+
+
+# The host stays separate from the scheme so the publish guard's posting-url rule does
+# not read the synthetic ids below as pasted postings.
+ZIGHANG_HOST = "zighang.com"
+ZIGHANG_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+ZIGHANG_URL = f"https://{ZIGHANG_HOST}/recruitment/{ZIGHANG_ID}"
+
+
+def _zighang_page(*, job_id: str = ZIGHANG_ID, summary: object = "default") -> str:
+    def node(kind: str, *children: dict, **attrs: object) -> dict:
+        return {"type": kind, "content": list(children), **({"attrs": attrs} if attrs else {})}
+
+    def bullets(*values: str) -> dict:
+        return node("bulletList", *(node("listItem", node("paragraph", {"type": "text", "text": value})) for value in values))
+
+    def heading(value: str) -> dict:
+        return node("heading", {"type": "text", "text": value}, level=3)
+
+    if summary == "default":
+        summary = node(
+            "doc",
+            heading("담당업무"), bullets("예시 서비스 API 개발"),
+            heading("필요 역량"), bullets("백엔드 개발 경험 3년 이상"),
+            heading("우대사항"), bullets("클라우드 운영 경험"),
+        )
+    recruitment = {
+        "id": job_id,
+        "title": "백엔드 개발자",
+        "company": {"id": "c-1", "name": "예시회사"},
+        "summary": summary,
+        "content": node("doc", node("image")),
+        "careerMin": 3,
+        "careerMax": 100,
+        "regions": ["서울 강남구"],
+    }
+    payload = "5:" + json.dumps({"recruitment": recruitment}, ensure_ascii=False)
+    return f"<script>self.__next_f.push([1,{json.dumps(payload)}])</script>"
+
+
+def test_jobs_extraction_stage_zighang_requires_a_captured_page_without_http(tmp_path: Path) -> None:
+    http_client = FakeHttpClient()
+    stage = JobsExtractionStage(repository=JDRecordRepository(tmp_path / "records"), http_client=http_client)
+
+    batch = stage.extract([ZIGHANG_URL], dry_run=False, screening_only=False)
+
+    assert batch.records == ()
+    assert batch.failed_urls == (ZIGHANG_URL,)
+    assert batch.metadata["failures"] == [
+        {"item_id": f"zighang:{ZIGHANG_ID}", "error": "zighang extraction requires a browser-captured page"}
+    ]
+    assert http_client.requested_text == http_client.requested_json == []
+
+
+def test_jobs_extraction_stage_zighang_rejects_a_page_for_another_posting(tmp_path: Path) -> None:
+    http_client = FakeHttpClient()
+    repository = JDRecordRepository(tmp_path / "records")
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+    other_page = _zighang_page(job_id="ffffffff-4e5f-4a6b-8c7d-9e0f1a2b3c4d")
+
+    batch = stage.extract([ZIGHANG_URL], dry_run=False, screening_only=False, captured_pages={ZIGHANG_URL: other_page})
+
+    assert batch.records == ()
+    assert batch.failed_urls == (ZIGHANG_URL,)
+    assert "no complete recruitment payload" in batch.metadata["failures"][0]["error"]
+    assert repository.find(JobKey("zighang", ZIGHANG_ID)) is None
+    assert http_client.requested_text == http_client.requested_json == []
+
+
+def test_jobs_extraction_stage_zighang_saves_the_captured_page(tmp_path: Path) -> None:
+    http_client = FakeHttpClient()
+    repository = JDRecordRepository(tmp_path / "records")
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+
+    batch = stage.extract([ZIGHANG_URL], dry_run=False, screening_only=False, captured_pages={ZIGHANG_URL: _zighang_page()})
+
+    stored = repository.get(JobKey("zighang", ZIGHANG_ID))
+    assert batch.records[0].jd_markdown == stored.jd_markdown
+    assert (stored.record.company, stored.record.position) == ("예시회사", "백엔드 개발자")
+    markdown = stored.jd_markdown
+    assert f"| 출처 | [직행 (사이트 요약)]({ZIGHANG_URL}) |" in markdown
+    assert "| 경력 | 3년 이상 |" in markdown
+    assert _section_body(markdown, "주요 업무") == "- 예시 서비스 API 개발"
+    assert _section_body(markdown, "자격 요건") == "- 백엔드 개발 경험 3년 이상"
+    assert _section_body(markdown, "우대사항") == "- 클라우드 운영 경험"
+    assert batch.company_contexts[f"zighang:{ZIGHANG_ID}"] == CompanyEnrichmentContext(
+        platform="zighang",
+        item_id=f"zighang:{ZIGHANG_ID}",
+        company_name="예시회사",
+        company_id=None,
+        source_url=ZIGHANG_URL,
+        facts={"location": "서울 강남구"},
+        fact_sources={"location": (ZIGHANG_URL,)},
+    )
+    assert http_client.requested_text == http_client.requested_json == []
+
+
+def test_jobs_extraction_stage_zighang_rescreen_without_page_reuses_stored_record_without_http(tmp_path: Path) -> None:
+    http_client = FakeHttpClient()
+    repository = JDRecordRepository(tmp_path / "records")
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+    # A stored JD without assessable requirements makes re-screening try a refresh, which
+    # must fail closed without a page rather than fetch zighang.
+    stored = repository.save(
+        JobRecord(platform="zighang", job_id=ZIGHANG_ID, company="예시회사", position="백엔드 개발자", source_url=ZIGHANG_URL),
+        jd_markdown="# 백엔드 개발자\n",
+    )
+
+    batch = stage.extract([ZIGHANG_URL], dry_run=False, screening_only=True)
+
+    assert batch.records[0].jd_markdown == stored.jd_markdown
+    assert batch.company_contexts == {}
+    assert http_client.requested_text == http_client.requested_json == []
+
+
+WANTED_HOST = "www.wanted.co.kr"
+REMEMBER_HOST = "career.rememberapp.co.kr"
+SARAMIN_HOST = "www.saramin.co.kr"
+# A posting address smuggled into another URL's query must not decide the platform: the
+# wanted/remember extractors would otherwise fetch the zighang URL itself.
+SMUGGLED_URLS = {
+    "wanted": f"https://{ZIGHANG_HOST}/recruitment/{ZIGHANG_ID}?ref=https://{WANTED_HOST}/wd/123",
+    "remember": f"https://{ZIGHANG_HOST}/recruitment/{ZIGHANG_ID}?from={REMEMBER_HOST}/job/posting/55",
+}
+
+
+@pytest.mark.parametrize("screening_only", [False, True])
+@pytest.mark.parametrize(("platform", "job_id"), [("wanted", "123"), ("remember", "55")])
+def test_jobs_extraction_stage_ignores_posting_urls_smuggled_into_a_query(
+    tmp_path: Path, platform: str, job_id: str, screening_only: bool
+) -> None:
+    repository = JDRecordRepository(tmp_path / "records")
+    repository.save(JobRecord(platform=platform, job_id=job_id, company="예시회사", position="백엔드"), jd_markdown="# 백엔드\n")
+    http_client = FakeHttpClient()
+    stage = JobsExtractionStage(repository=repository, http_client=http_client)
+    url = SMUGGLED_URLS[platform]
+
+    batch = stage.extract([url], dry_run=False, screening_only=screening_only)
+
+    assert batch.records == ()
+    assert batch.failed_urls == (url,)
+    assert batch.metadata["failures"][0]["item_id"] == f"zighang:{ZIGHANG_ID}"
+    assert http_client.requested_text == http_client.requested_json == []
+
+
+def test_jobs_extraction_stage_isolates_an_unparseable_url(tmp_path: Path) -> None:
+    http_client = FakeHttpClient()
+    stage = JobsExtractionStage(repository=JDRecordRepository(tmp_path / "records"), http_client=http_client)
+
+    batch = stage.extract(
+        ["https://[malformed", ZIGHANG_URL], dry_run=False, screening_only=False, captured_pages={ZIGHANG_URL: _zighang_page()}
+    )
+
+    assert batch.failed_urls == ("https://[malformed",)
+    assert [record.record.key for record in batch.records] == [JobKey("zighang", ZIGHANG_ID)]
+
+
+JOBKOREA_HOST = "www.jobkorea.co.kr"
+JUMPIT_HOST = "jumpit.saramin.co.kr"
+OFFERCENT_HOST = "offercent.co.kr"
+GREETING_HOST = "career.greetinghr.com"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"https://{JOBKOREA_HOST}/Recruit/GI_Read/42", JobKey("jobkorea", "42")),
+        (f"https://{JOBKOREA_HOST}/other?next=https://{JOBKOREA_HOST}/Recruit/GI_Read/42", None),
+        (f"https://{JUMPIT_HOST}/position/7", JobKey("jumpit", "7")),
+        (f"https://{JUMPIT_HOST}/company?from={JUMPIT_HOST}/position/7", None),
+        (f"https://{OFFERCENT_HOST}/jd/9", JobKey("offercent", "9")),
+        (f"https://{OFFERCENT_HOST}/list?jd={OFFERCENT_HOST}/jd/9", None),
+        (f"https://{GREETING_HOST}/ko/o/11", JobKey("greeting", "11")),
+        (f"https://{GREETING_HOST}/about?next={GREETING_HOST}/o/11", None),
+    ],
+)
+def test_legacy_key_lookup_reads_the_id_from_the_posting_path_only(url: str, expected: JobKey | None) -> None:
+    assert _job_key_from_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://{WANTED_HOST}.evil.example/wd/1",
+        f"https://evil.example/wd/1?u={WANTED_HOST}/wd/1",
+        f"https://{WANTED_HOST}:8443/wd/1",
+        f"https://user@{WANTED_HOST}/wd/1",
+        f"https://{WANTED_HOST}/company/1?next=/wd/1",
+        f"https://{WANTED_HOST}/wd/١٢",
+        f"https://{ZIGHANG_HOST}/company/{ZIGHANG_ID}",
+        f"https://{ZIGHANG_HOST}/company/x?ref={WANTED_HOST}/wd/1",
+        f"https://{SARAMIN_HOST}/zf_user/company/view?rec_idx=1",
+        f"https://{SARAMIN_HOST}/zf_user/jobs/relay/view?rec_idx=1&rec_idx=2",
+    ],
+)
+def test_jobs_extraction_stage_resolves_fetchable_platforms_only_from_exact_host_and_path(tmp_path: Path, url: str) -> None:
+    http_client = FakeHttpClient()
+    stage = JobsExtractionStage(repository=JDRecordRepository(tmp_path / "records"), http_client=http_client)
+
+    batch = stage.extract([url], dry_run=False, screening_only=False)
+
+    assert batch.failed_urls == (url,)
+    assert batch.metadata["failures"][0]["item_id"] == "item-1"
+    assert http_client.requested_text == http_client.requested_json == []
+
+
+@pytest.mark.parametrize(
+    ("url", "canonical"),
+    [
+        (f"https://{WANTED_HOST}/wd/123456?utm_source=x", f"https://{WANTED_HOST}/wd/123456"),
+        (f"https://{REMEMBER_HOST}/job/123?utm_source=x", f"https://{REMEMBER_HOST}/job/posting/123"),
+    ],
+)
+def test_jobs_extraction_stage_fetches_a_canonical_url_rebuilt_from_the_job_id(tmp_path: Path, url: str, canonical: str) -> None:
+    html = _wanted_html("123456") if "wd" in url else _remember_html()
+    http_client = FakeHttpClient(text_by_url={canonical: html})
+    stage = JobsExtractionStage(repository=JDRecordRepository(tmp_path / "records"), http_client=http_client)
+
+    batch = stage.extract([url], dry_run=True, screening_only=False)
+
+    assert batch.urls == (url,)
+    assert http_client.requested_text == [canonical]
 
 
 def test_groupby_extraction_preserves_startup_metadata(tmp_path: Path) -> None:

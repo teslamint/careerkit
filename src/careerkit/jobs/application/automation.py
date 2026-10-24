@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
+from urllib.parse import urlparse
 
 from careerkit.jobs.adapters.config_files import YamlConfigFileAdapter
 from careerkit.jobs.adapters.http import HttpClient, HttpError, UrllibHttpClient
@@ -22,9 +23,11 @@ from careerkit.jobs.adapters.platforms.groupby import (
     is_groupby_placeholder,
     is_groupby_posting,
 )
-from careerkit.jobs.adapters.platforms.remember import remember_company_http
+from careerkit.jobs.adapters.platforms.remember import REMEMBER_BASE_URL, remember_company_http
 from careerkit.jobs.adapters.platforms.saramin import extract_csn_from_html, saramin_company_http
+from careerkit.jobs.adapters.platforms.zighang import parse_zighang_page
 from careerkit.jobs.adapters.platforms.wanted import (
+    WANTED_BASE_URL,
     WantedCompanyInfo,
     wanted_company_http,
     wanted_company_is_valid,
@@ -47,7 +50,7 @@ from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService
 from careerkit.jobs.application.screening import run_screening
 from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
-from careerkit.jobs.application.storage_migration import extract_job_id, get_platform_from_url
+from careerkit.jobs.application.storage_migration import posting_key_from_url
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
     duties_show_server_work,
@@ -441,6 +444,7 @@ class JobsExtractionStage:
         *,
         dry_run: bool,
         screening_only: bool,
+        captured_pages: Mapping[str, str] | None = None,
     ) -> ExtractionBatch:
         records: list[StoredJobRecord] = []
         company_contexts: dict[str, CompanyEnrichmentContext] = {}
@@ -450,16 +454,17 @@ class JobsExtractionStage:
         duplicates: list[str] = []
         for index, url in enumerate(urls, 1):
             logger.debug("extracting: %s", url)
+            page = (captured_pages or {}).get(url)
             try:
                 key = _job_key_from_url(url)
                 if not screening_only and key is not None and self.repository.find(key) is not None:
                     duplicates.append(f"{key.platform}:{key.job_id}")
                     continue
                 if screening_only:
-                    record = self._resolve_existing(url, dry_run=dry_run)
-                    context = self._extract_context_for_url(url)
+                    record = self._resolve_existing(url, dry_run=dry_run, page=page)
+                    context = self._extract_context_for_url(url, page=page)
                 else:
-                    record, context = self._extract_url(url, dry_run=dry_run)
+                    record, context = self._extract_url(url, dry_run=dry_run, page=page)
             except (FileNotFoundError, HttpError, RuntimeError, ValueError) as exc:
                 key = _job_key_from_url(url)
                 item_id = f"{key.platform}:{key.job_id}" if key is not None else f"item-{index}"
@@ -504,7 +509,7 @@ class JobsExtractionStage:
         """Extract ``url`` without persisting; a failed extraction raises."""
         return self._extract_url(url, dry_run=True)[0]
 
-    def _resolve_existing(self, url: str, *, dry_run: bool = False) -> StoredJobRecord:
+    def _resolve_existing(self, url: str, *, dry_run: bool = False, page: str | None = None) -> StoredJobRecord:
         key = _job_key_from_url(url)
         if key is None:
             raise ValueError(f"unsupported or invalid job URL: {url}")
@@ -512,13 +517,13 @@ class JobsExtractionStage:
         if _has_assessable_requirements(stored.jd_markdown):
             return stored
         try:
-            refreshed, _context = self._extract_url(url, dry_run=dry_run)
+            refreshed, _context = self._extract_url(url, dry_run=dry_run, page=page)
         except (HttpError, OSError, RuntimeError, ValueError):
             return stored
         return refreshed
 
     def _extract_url(
-        self, url: str, *, dry_run: bool
+        self, url: str, *, dry_run: bool, page: str | None = None
     ) -> tuple[StoredJobRecord, CompanyEnrichmentContext | None]:
         key = _job_key_from_url(url)
         if key is None:
@@ -531,9 +536,11 @@ class JobsExtractionStage:
             company, position, markdown, context = self._extract_groupby(url, key.job_id)
         elif key.platform == "saramin":
             company, position, markdown, context = self._extract_saramin(url, key.job_id)
+        elif key.platform == "zighang":
+            company, position, markdown, context = self._extract_zighang(url, key.job_id, page)
         else:
             raise ValueError(
-                "career-jobs run auto currently supports canonical extraction for wanted, remember, groupby, and saramin URLs only; "
+                "career-jobs run auto currently supports canonical extraction for wanted, remember, groupby, saramin, and zighang URLs only; "
                 f"got {key.platform}:{key.job_id}"
             )
         return (
@@ -549,7 +556,7 @@ class JobsExtractionStage:
             context,
         )
 
-    def _extract_context_for_url(self, url: str) -> CompanyEnrichmentContext | None:
+    def _extract_context_for_url(self, url: str, *, page: str | None = None) -> CompanyEnrichmentContext | None:
         key = _job_key_from_url(url)
         if key is None:
             return None
@@ -562,14 +569,52 @@ class JobsExtractionStage:
                 return self._extract_groupby(url, key.job_id)[3]
             if key.platform == "saramin":
                 return self._extract_saramin(url, key.job_id)[3]
+            if key.platform == "zighang" and page is not None:
+                return self._extract_zighang(url, key.job_id, page)[3]
         except (AssertionError, HttpError, OSError, RuntimeError, ValueError):
             return None
         return None
 
+    def _extract_zighang(
+        self, url: str, job_id: str, page: str | None
+    ) -> tuple[str, str, str, CompanyEnrichmentContext]:
+        # zighang.com disallows crawlers, so the page always comes from the user's browser
+        # and this path never touches self.http_client.
+        if page is None:
+            raise ValueError("zighang extraction requires a browser-captured page")
+        posting = parse_zighang_page(page, job_id)
+        facts: dict[str, Any] = {"location": posting.location} if posting.location else {}
+        return (
+            posting.company_name,
+            posting.title,
+            _format_jd_markdown(
+                title=posting.title,
+                company=posting.company_name,
+                experience=posting.experience,
+                location=posting.location,
+                url=url,
+                introduction=posting.introduction,
+                main_duties=posting.main_duties,
+                requirements=posting.requirements,
+                preferred=posting.preferred,
+                benefits=posting.benefits,
+                source="직행 (사이트 요약)" if posting.used_summary else "직행",
+            ),
+            CompanyEnrichmentContext(
+                platform="zighang",
+                item_id=f"zighang:{job_id}",
+                company_name=posting.company_name,
+                company_id=None,
+                source_url=url,
+                facts=facts,
+                fact_sources={field: (url,) for field in facts},
+            ),
+        )
+
     def _extract_wanted(
         self, url: str, job_id: str
     ) -> tuple[str, str, str, CompanyEnrichmentContext]:
-        html = self.http_client.request_text(url)
+        html = self.http_client.request_text(f"{WANTED_BASE_URL}/wd/{job_id}")
         data = _extract_next_data(html)
         try:
             job = data["props"]["pageProps"]["initialData"]
@@ -612,7 +657,7 @@ class JobsExtractionStage:
     def _extract_remember(
         self, url: str, job_id: str
     ) -> tuple[str, str, str, CompanyEnrichmentContext]:
-        html = self.http_client.request_text(url)
+        html = self.http_client.request_text(f"{REMEMBER_BASE_URL}/job/posting/{job_id}")
         data = _extract_next_data(html)
         try:
             posting = data["props"]["pageProps"]["dehydratedState"]["queries"][0]["state"]["data"]["data"]
@@ -1677,12 +1722,32 @@ def _html_to_text(html: str | None) -> str:
     return text.strip()
 
 
+# These platforms resolve stored records for re-screening but are never fetched here.
+# Match the URL's own host and posting path, not an address embedded in its query.
+_KEY_ONLY_PATHS = {
+    "jumpit": ("jumpit.saramin.co.kr", re.compile(r"/position/([0-9]+)/?")),
+    "jobkorea": ("jobkorea.co.kr", re.compile(r"/Recruit/GI_Read/([0-9]+)/?")),
+    "offercent": ("offercent.co.kr", re.compile(r"/jd/([0-9]+)/?")),
+    "greeting": ("greetinghr.com", re.compile(r"/(?:[a-z]{2}/)?o/([0-9]+)/?")),
+}
+
+
 def _job_key_from_url(url: str) -> JobKey | None:
-    job_id = extract_job_id(url)
-    platform = get_platform_from_url(url)
-    if not job_id or not platform:
+    posting = posting_key_from_url(url)
+    if posting is not None:
+        return JobKey(*posting)
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
         return None
-    return JobKey(platform, job_id)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host:
+        return None
+    for platform, (domain, pattern) in _KEY_ONLY_PATHS.items():
+        if host == domain or host.endswith(f".{domain}"):
+            match = pattern.fullmatch(parsed.path)
+            return JobKey(platform, match.group(1)) if match else None
+    return None
 
 
 def _save_or_preview_record(

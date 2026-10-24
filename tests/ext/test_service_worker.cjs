@@ -64,7 +64,7 @@ function createChromeMock(events) {
   };
 }
 
-function loadHarness() {
+function loadHarness(configure) {
   var events = {
     runtimeMessages: [],
     tabMessages: [],
@@ -85,6 +85,7 @@ function loadHarness() {
     globalThis: {},
     chrome: createChromeMock(events)
   };
+  if (configure) configure(sandbox.chrome);
   vm.runInNewContext(code, sandbox, { filename: workerPath });
   return { api: sandbox.module.exports, events: events };
 }
@@ -318,6 +319,43 @@ test("valid completion strips extra top-level private fields and forwards allowl
     assert.strictEqual(harness.events.notifications.length, 1);
     assert.strictEqual(harness.events.notifications[0].payload.title, "Acme — Backend Engineer");
     assert.strictEqual(harness.events.notifications[0].payload.message, "지원 추천");
+  });
+});
+
+// The badge sends a 직행 posting's captured page with the collect request; the
+// host rejects a 직행 collect without it, so the worker must forward it untouched.
+test("collect request reaches the native port with its page unchanged", function () {
+  var posted = [];
+  var listener = null;
+  var page = '<script>self.__next_f.push([1,"x"])</script>';
+  var harness = loadHarness(function (chrome) {
+    chrome.runtime.onMessage.addListener = function (fn) { listener = fn; };
+    chrome.runtime.connectNative = function () {
+      var onMessage = null;
+      return {
+        onMessage: { addListener: function (fn) { onMessage = fn; } },
+        onDisconnect: { addListener: function () {} },
+        postMessage: function (message) {
+          posted.push(JSON.parse(JSON.stringify(message)));
+          onMessage({ request_id: message.request_id, status: "accepted", tracking_id: "t-1" });
+        }
+      };
+    };
+  });
+  var request = { action: "collect", url: "https://jobs.example.test/postings/1", page: page };
+
+  return new Promise(function (resolve) {
+    listener(request, { id: "test-runtime", tab: { id: 7 } }, resolve);
+  }).then(function (response) {
+    assert.strictEqual(response.status, "accepted");
+    assert.strictEqual(posted.length, 1);
+    assert.strictEqual(posted[0].action, "collect");
+    assert.strictEqual(posted[0].url, request.url);
+    assert.strictEqual(posted[0].page, page);
+    // Session storage keeps only the url and tab, never the (up to 900 KB) page.
+    var stored = harness.events.storageSets[harness.events.storageSets.length - 1].pending_screenings["t-1"];
+    assert.strictEqual(stored.url, request.url);
+    assert.strictEqual(stored.page, undefined);
   });
 });
 

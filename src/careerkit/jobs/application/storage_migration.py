@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shutil
 from typing import Any, Iterable
+from urllib.parse import parse_qs, urlparse
 
 from careerkit.jobs.application.status import normalize_status, parse_frontmatter
 from careerkit.jobs.domain.verdict import parse_verdict_from_screening, to_screening_verdict
@@ -35,7 +36,7 @@ from careerkit.jobs.adapters.storage.file_records import (
 _URL_RE = re.compile(r"https?://[^\s)\]>|]+")
 _KNOWN_PLATFORMS = {
     "wanted", "remember", "saramin", "jobkorea", "jumpit", "groupby",
-    "offercent", "greeting", "private", "headhunter",
+    "offercent", "greeting", "private", "headhunter", "zighang",
 }
 _ID_LIST_KEYS = {"seen_job_ids", "processed_ids", "job_ids"}
 MIGRATION_REPORT_SCHEMA_VERSION = 1
@@ -96,18 +97,19 @@ def extract_metadata_from_jd(jd_content: str) -> dict[str, str]:
 
 
 def extract_job_id(url: str) -> str | None:
-    gb_match = re.search(r"groupby\.kr/positions/(\d+)", url)
+    gb_match = re.search(r"groupby\.kr/positions/([0-9]+)", url)
     if gb_match:
         return gb_match.group(1)
     patterns = [
-        r"wanted\.co\.kr/wd/(\d+)",
-        r"rememberapp\.co\.kr/job/(?:posting/)?(\d+)",
-        r"career\.rememberapp\.co\.kr/job/posting/(\d+)",
-        r"saramin\.co\.kr.*rec_idx=(\d+)",
-        r"jobkorea\.co\.kr/Recruit/GI_Read/(\d+)",
-        r"jumpit\.saramin\.co\.kr/position/(\d+)",
-        r"offercent\.co\.kr/jd/(\d+)",
-        r"career\.greetinghr\.com/(?:[a-z]{2}/)?o/(\d+)",
+        r"wanted\.co\.kr/wd/([0-9]+)",
+        r"rememberapp\.co\.kr/job/(?:posting/)?([0-9]+)",
+        r"career\.rememberapp\.co\.kr/job/posting/([0-9]+)",
+        r"saramin\.co\.kr.*rec_idx=([0-9]+)",
+        r"jobkorea\.co\.kr/Recruit/GI_Read/([0-9]+)",
+        r"jumpit\.saramin\.co\.kr/position/([0-9]+)",
+        r"offercent\.co\.kr/jd/([0-9]+)",
+        r"career\.greetinghr\.com/(?:[a-z]{2}/)?o/([0-9]+)",
+        r"zighang\.com/recruitment/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])",
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
@@ -148,7 +150,52 @@ def get_platform_from_url(url: str) -> str | None:
         return "offercent"
     if "career.greetinghr.com" in url:
         return "greeting"
+    if "zighang.com" in url:
+        return "zighang"
     return None
+
+
+_POSTING_HOSTS: dict[str, str] = {
+    "www.wanted.co.kr": "wanted",
+    "wanted.co.kr": "wanted",
+    "career.rememberapp.co.kr": "remember",
+    "www.rememberapp.co.kr": "remember",
+    "rememberapp.co.kr": "remember",
+    "groupby.kr": "groupby",
+    "www.groupby.kr": "groupby",
+    "www.saramin.co.kr": "saramin",
+    "saramin.co.kr": "saramin",
+    "zighang.com": "zighang",
+}
+_POSTING_PATHS = {
+    "wanted": re.compile(r"/wd/([0-9]+)/?"),
+    "remember": re.compile(r"/job/(?:posting/)?([0-9]+)/?"),
+    "groupby": re.compile(r"/positions/([0-9]+)/?"),
+    "zighang": re.compile(r"/recruitment/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/?"),
+}
+_SARAMIN_POSTING_PATHS = frozenset({"/zf_user/jobs/view", "/zf_user/jobs/relay/view"})
+
+
+# The substring lookups above serve legacy markdown, where a loose match is harmless.
+# Anything that fetches a URL resolves it here instead: an exact host, no port or
+# userinfo, and an anchored path, so a posting address inside a query string or a
+# look-alike host never decides the platform.
+def posting_key_from_url(url: str) -> tuple[str, str] | None:
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != host or host not in _POSTING_HOSTS:
+        return None
+    platform = _POSTING_HOSTS[host]
+    if platform == "saramin":
+        rec_idx = parse_qs(parsed.query).get("rec_idx", [])
+        if parsed.path.rstrip("/") not in _SARAMIN_POSTING_PATHS or len(rec_idx) != 1 or not re.fullmatch(r"[0-9]+", rec_idx[0]):
+            return None
+        return platform, rec_idx[0]
+    match = _POSTING_PATHS[platform].fullmatch(parsed.path)
+    return (platform, match.group(1)) if match else None
 
 
 @dataclass(frozen=True)
