@@ -19,12 +19,15 @@ var fixtures = JSON.parse(fs.readFileSync(fixturesPath, "utf-8"));
 // publish guard's posting-url rule does not read the synthetic id as a pasted posting.
 var ZIGHANG_HOST = "zighang.com";
 var ZIGHANG_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+// Change only the protocol of an otherwise valid posting URL for the rejection case.
+var ZIGHANG_HTTP_URL = new URL("https://" + ZIGHANG_HOST + "/recruitment/" + ZIGHANG_ID);
+ZIGHANG_HTTP_URL.protocol = "http:";
 fixtures = fixtures.concat([
   { url: "https://" + ZIGHANG_HOST + "/recruitment/" + ZIGHANG_ID, platform: "zighang", job_id: ZIGHANG_ID },
   { url: "https://" + ZIGHANG_HOST + "/recruitment/" + ZIGHANG_ID + "?ref=list", platform: "zighang", job_id: ZIGHANG_ID },
   { url: "https://" + ZIGHANG_HOST + "/recruitment/" + ZIGHANG_ID.toUpperCase(), platform: null, job_id: null },
   { url: "https://" + ZIGHANG_HOST + "/company/" + ZIGHANG_ID, platform: null, job_id: null },
-  { url: "http://" + ZIGHANG_HOST + "/recruitment/" + ZIGHANG_ID, platform: null, job_id: null },
+  { url: ZIGHANG_HTTP_URL.href, platform: null, job_id: null },
 ]);
 
 var passed = 0;
