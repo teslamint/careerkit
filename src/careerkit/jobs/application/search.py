@@ -8,7 +8,7 @@ import time
 from typing import Any, Literal, Mapping, Protocol, TypeAlias, cast
 
 from careerkit.jobs.application.semantic_eval import SemanticCaptureSink
-from careerkit.jobs.application.title_filter import normalize_job_queries, quick_filter_title
+from careerkit.jobs.application.title_filter import normalize_job_queries_with_rewrites, quick_filter_title
 from careerkit.jobs.domain.filters import is_rejected_company_name
 
 _UNREALISTIC_MAX = 50
@@ -197,9 +197,12 @@ class SearchService:
         self.semantic_capture_sink = semantic_capture_sink
 
     def run(self, config, state: SearchState) -> SearchResult:
-        queries = normalize_job_queries(list(config.search_queries))
+        queries, rewrites = normalize_job_queries_with_rewrites(list(config.search_queries))
+        diagnostics: list[str] = [
+            f"query '{original}' widened to '{replaced}'"
+            for original, replaced in rewrites
+        ]
         quick_filter_digest = _quick_filter_config_digest(config.quick_filters)
-        diagnostics: list[str] = []
         semantic_capability = dict(self.semantic_capability)
         if config.semantic_enabled and not semantic_capability.get("available", True):
             reason = semantic_capability.get("reason")

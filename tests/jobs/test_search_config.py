@@ -122,6 +122,17 @@ def test_runtime_defaults_to_wanted_when_no_platform_is_explicitly_enabled() -> 
     assert omitted_enabled.platforms["remember"].enabled is False
 
 
+def test_runtime_config_preserves_search_queries_until_search_run() -> None:
+    runtime = load_runtime_config(
+        {
+            "search": {"role": "backend"},
+            "search_queries": ["PHP Laravel 백엔드", "시니어 백엔드"],
+        }
+    )
+
+    assert runtime.search_queries == ("PHP Laravel 백엔드", "시니어 백엔드")
+
+
 def test_runtime_preserves_explicitly_disabled_platforms() -> None:
     runtime = load_runtime_config(
         {
