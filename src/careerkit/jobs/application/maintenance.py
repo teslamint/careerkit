@@ -1016,6 +1016,8 @@ def _render_summary(
         for stored in group:
             record = stored.record
             verdict_label = _VERDICT_LABEL[record.screening_verdict] if record.screening_verdict is not None else "-"
+            if record.screening_provider == "fallback":
+                verdict_label = f"{verdict_label} (fallback)"
             lines.append(
                 f"| {record.platform}:{record.job_id} | {record.company} | {record.position} | {verdict_label} | "
                 f"{record.application_status.value} | {record.posting_status.value} | {collection_dates[record.key]} |\n"

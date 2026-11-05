@@ -21,6 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `parse_remember_experience` moved to `jd_content.py`
 
 ### Fixed
+- `career-jobs record show` reports `screening_provider`, and the derived screening summary marks fallback verdicts with `(fallback)` (#27).
 - Reject malformed posting URLs without stopping extraction of the remaining batch or browser-origin candidates.
 - Resolve legacy stored postings only from their own posting path, not from addresses embedded in query strings.
 - Reject empty or malformed GroupBy posting data during extraction and report its status as unknown.

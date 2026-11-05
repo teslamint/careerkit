@@ -124,6 +124,37 @@ def test_summary_uses_screening_analysis_date_when_collection_date_is_missing(tm
     summary = service.rebuild_summary()
 
     assert '| remember:2 | Example | Server | 지원 보류 | pending | active | 2026-06-30 |' in summary.output_path.read_text(encoding='utf-8')
+def test_summary_marks_only_fallback_verdicts(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    service = JobsMaintenanceService(workspace=workspace)
+    service.repository.create(
+        JobRecord(
+            'wanted',
+            '1',
+            'Fallback Example',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            screening_provider='fallback',
+        ),
+        jd_markdown='# JD',
+    )
+    service.repository.create(
+        JobRecord(
+            'wanted',
+            '2',
+            'Provider Example',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            screening_provider='codex',
+        ),
+        jd_markdown='# JD',
+    )
+
+    summary = service.rebuild_summary()
+    output = summary.output_path.read_text(encoding='utf-8')
+
+    assert '| wanted:1 | Fallback Example | Backend | 지원 보류 (fallback) | pending | active | ' in output
+    assert '| wanted:2 | Provider Example | Backend | 지원 보류 | pending | active | ' in output
 
 
 def test_summary_omits_collection_date_when_creation_time_is_unavailable(
