@@ -76,7 +76,7 @@ def test_private_path_widened_to_the_bare_token_breaks_its_negative_test() -> No
 
 def test_email_losing_its_exemption_breaks_the_exemption_test() -> None:
     assert_mutation_breaks_named_tests(
-        r'_EMAIL_EXEMPT = re.compile(r"^(?:noreply@|[^@]*@example\.)", re.IGNORECASE)',
+        r'_EMAIL_EXEMPT = re.compile(r"^(?:noreply@|[^@]*@example\.|support@github\.com(?![\w.-]))", re.IGNORECASE)',
         "_EMAIL_EXEMPT = re.compile(r'(?!)')",
         ["test_email_flags_real_addresses_but_not_exemptions"],
     )
