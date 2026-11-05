@@ -1,6 +1,42 @@
 import pytest
 
-from careerkit.jobs.application.title_filter import duties_show_server_work, requirements_show_backend
+from careerkit.jobs.application.title_filter import (
+    duties_show_server_work,
+    normalize_job_queries_with_rewrites,
+    requirements_show_backend,
+)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("PHP Laravel 백엔드", "PHP Laravel 백엔드"),
+        ("Go 서버 개발자", "Go 서버 개발자"),
+        ("Kotlin Backend Engineer", "Kotlin Backend Engineer"),
+        ("시니어 백엔드", "백엔드"),
+        ("백엔드 엔지니어", "백엔드"),
+        ("Senior Backend", "Backend"),
+        ("Backend Engineer", "Backend"),
+        ("서버 개발자", "서버"),
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_normalize_job_query_preserves_stack_terms_and_widens_generic_modifiers(
+    query: str, expected: str
+) -> None:
+    assert normalize_job_queries_with_rewrites([query])[0] == [expected]
+
+
+def test_normalize_job_queries_with_rewrites_reports_replacements() -> None:
+    assert normalize_job_queries_with_rewrites(["시니어 백엔드", "Go 서버 개발자"]) == (
+        ["백엔드", "Go 서버 개발자"],
+        [("시니어 백엔드", "백엔드")],
+    )
+
+
+def test_normalize_job_queries_with_rewrites_deduplicates_widened_queries() -> None:
+    assert normalize_job_queries_with_rewrites(["시니어 백엔드", "백엔드 엔지니어"])[0] == ["백엔드"]
 
 
 BACKEND_JD = """# 합성 공고

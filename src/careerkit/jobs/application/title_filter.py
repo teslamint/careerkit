@@ -7,6 +7,10 @@ from careerkit.jobs.application.requirement_manifest import RequirementKind, ext
 
 _BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]*\]\s*")
 _BACKEND_KW_RE = re.compile(r"backend|back(?:-|\s|_)?end|server|백엔드|서버", re.IGNORECASE)
+_GENERIC_QUERY_MODIFIERS = {
+    "엔지니어", "개발자", "개발", "engineer", "developer", "development",
+    "senior", "sr", "lead", "시니어", "리드", "주니어", "junior", "신입", "경력",
+}
 _DOMAIN_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "mobile": tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
         r"\biOS\b", r"\bAndroid\b", r"\bFlutter\b", r"모바일\s*(앱\s*)?(개발|엔지니어)",
@@ -75,22 +79,37 @@ _DUTY_LOW_LEVEL_RE = re.compile(
 )
 
 
-def normalize_job_query(query: str) -> str:
+def _normalize_query_with_rewrite(query: str) -> tuple[str, str | None]:
     normalized = query.strip()
-    query_lower = normalized.lower()
-    if "백엔드" in normalized:
-        return "백엔드"
-    if re.search(r"\bback(?:-|\s)?end\b", query_lower):
-        return "Backend"
-    if "서버" in normalized:
-        return "서버"
-    if re.search(r"\bserver\b", query_lower):
-        return "Server"
-    return normalized
+    role_patterns = (
+        (re.compile(r"백엔드"), "백엔드"),
+        (re.compile(r"\bback(?:-|\s)?end\b", re.IGNORECASE), "Backend"),
+        (re.compile(r"서버"), "서버"),
+        (re.compile(r"\bserver\b", re.IGNORECASE), "Server"),
+    )
+    for pattern, role in role_patterns:
+        if not pattern.search(normalized):
+            continue
+        remainder = pattern.sub(" ", normalized)
+        words = re.findall(r"[A-Za-z]+|[가-힣]+", remainder)
+        if any(word.lower() not in _GENERIC_QUERY_MODIFIERS for word in words):
+            return normalized, None
+        return role, role if normalized != role else None
+    return normalized, None
 
 
-def normalize_job_queries(queries: list[str]) -> list[str]:
-    return list(dict.fromkeys(normalize_job_query(query) for query in queries))
+def normalize_job_queries_with_rewrites(
+    queries: list[str],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    normalized: list[str] = []
+    rewrites: list[tuple[str, str]] = []
+    for query in queries:
+        replaced, rewrite = _normalize_query_with_rewrite(query)
+        if replaced not in normalized:
+            normalized.append(replaced)
+        if rewrite is not None:
+            rewrites.append((query, rewrite))
+    return normalized, rewrites
 
 
 def _string_list(value: object) -> list[str]:

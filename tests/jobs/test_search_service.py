@@ -448,32 +448,31 @@ def test_search_service_normalizes_queries_and_does_not_persist_capped_out_candi
     assert "remember:9" not in result.updated_seen_job_keys
 
 
-def test_search_service_reports_semantic_unavailable_but_keeps_keyword_filtered_results() -> None:
+
+
+def test_search_service_preserves_stack_query_and_reports_role_widening() -> None:
     config = load_runtime_config(
         {
             "search": {"role": "backend"},
-            "platforms": {"wanted": {"enabled": True}},
-            "search_queries": ["Backend Engineer"],
+            "platforms": {"remember": {"enabled": True}},
+            "search_queries": ["PHP Laravel 백엔드", "시니어 백엔드"],
             "execution": {"max_urls_per_run": 5},
-            "quick_filters": {"title_include": ["Engineer"], "title_exclude": [], "title_prefer": []},
-            "semantic_filter": {"enabled": True},
+            "quick_filters": {"title_include": ["Backend"], "title_exclude": [], "title_prefer": []},
+            "semantic_filter": {"enabled": False},
         }
     )
-    wanted = StubAdapter("wanted", [PlatformSearchBatch(candidates=[
-        _candidate("wanted", "1", "Backend Engineer"),
-    ])], [])
-    service = SearchService(
-        adapters={"wanted": wanted},
-        semantic_filter=None,
-        semantic_capability={"available": False, "reason": "semantic filter unavailable: install careerkit[semantic]"},
-        existing_record_checker=lambda platform, raw_id: False,
+    remember = StubAdapter(
+        "remember",
+        [PlatformSearchBatch(candidates=[]), PlatformSearchBatch(candidates=[])],
+        [],
     )
 
-    result = service.run(config, SearchState(seen_job_keys=set()))
+    result = SearchService(adapters={"remember": remember}, semantic_filter=None).run(
+        config, SearchState(seen_job_keys=set())
+    )
 
-    assert len(result.postings) == 1
-    assert result.capabilities["semantic_filter"]["available"] is False
-    assert any("careerkit[semantic]" in message for message in result.diagnostics)
+    assert remember.received_queries == ["PHP Laravel 백엔드", "백엔드"]
+    assert "query '시니어 백엔드' widened to '백엔드'" in result.diagnostics
 
 
 def test_search_service_reports_runtime_semantic_failure_and_keeps_results() -> None:
