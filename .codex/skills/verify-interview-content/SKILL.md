@@ -1,17 +1,15 @@
 ---
 name: verify-interview-content
-description: Verify interview sheet/mock interview answers against resume source. Use AFTER generating or editing interview preparation documents to catch fabricated claims.
+description: Verify generated documents against resume sources and configured forbidden terms.
 ---
 
 # Content Integrity Verification
 
-Verify that interview sheet answers are grounded in the actual resume. Catches when specific technical experiences are fabricated for a company based on inference rather than documented facts.
+Verify generated document claims are grounded in the actual resume and that removed claims do not reappear. Catches fabricated experiences and explicitly forbidden terms.
 
 ## When to Use
 
-- After creating or editing files in `private/jd_analysis/interview/`
-- After generating mock interview documents
-- After editing `resume-based-qa.md`
+- After creating or editing any generated resume, career description, report, packet note, interview sheet, or mock interview
 
 ## Procedure
 
@@ -33,6 +31,7 @@ sources; never copy its private values into tracked files, logs, or replies.
 - `technology_keywords`: position-specific technology claims whose evidence must be checked
 - `pattern_keywords`: specific patterns or solution claims that must not be inferred from more
   general experience statements
+- `forbidden_terms`: previously removed claims or phrases that must not reappear
 
 The keyword lists are user- and position-specific generated inputs. Do not restore a package-wide
 hardcoded keyword catalog or assume that one candidate's disallowed claims apply to another.
@@ -40,13 +39,10 @@ hardcoded keyword catalog or assume that one candidate's disallowed claims apply
 ### Step 1: Run automated verification
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run career-resume verify-content private/jd_analysis/interview/<interview-file>.md
+UV_CACHE_DIR=.uv-cache uv run career-resume verify-content <document>
 ```
 
-If `--resume` is not specified, defaults to `private/build/resume-job-base.md`.
-Use `--json` for machine-readable output (CI integration).
-
-**Note**: Only `> ` (blockquote) lines are scanned for claims. Non-blockquote text is ignored.
+By default, only `> ` (blockquote) lines are scanned for claims. Use `--all-lines` for other generated documents. Forbidden terms are always checked on every line. Use `--json` for machine-readable output; it includes a `forbidden` array.
 
 ### Step 2: Review results
 

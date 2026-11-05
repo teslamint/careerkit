@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +14,7 @@ class VerifierConfig:
     parent_map: dict[str, str]
     keywords: list[str]
     metric_pattern: re.Pattern[str]
+    forbidden_terms: list[str] = field(default_factory=list)
 
     @property
     def child_map(self) -> dict[str, list[str]]:
@@ -48,6 +49,7 @@ def verifier_config_from_data(data: object) -> VerifierConfig:
     raw_aliases = data.get("company_aliases")
     raw_parent_map = data.get("parent_company_map", {})
     technology_keywords = _keyword_list(data, "technology_keywords")
+    forbidden_terms = _keyword_list(data, "forbidden_terms") if "forbidden_terms" in data else []
     pattern_keywords = _keyword_list(data, "pattern_keywords")
     if not isinstance(raw_aliases, dict) or not raw_aliases:
         raise ValueError("verify_content_config.json company_aliases must be a non-empty object")
@@ -83,6 +85,7 @@ def verifier_config_from_data(data: object) -> VerifierConfig:
         parent_map=parent_map,
         keywords=list(dict.fromkeys([*technology_keywords, *pattern_keywords])),
         metric_pattern=METRIC_PATTERN,
+        forbidden_terms=forbidden_terms,
     )
 
 
@@ -91,6 +94,21 @@ class Claim:
     company_key: str
     keyword: str
     line_number: int
+
+
+@dataclass
+class ForbiddenHit:
+    term: str
+    line_number: int
+
+
+def find_forbidden_terms(path: Path, config: VerifierConfig) -> list[ForbiddenHit]:
+    hits: list[ForbiddenHit] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        for term in config.forbidden_terms:
+            if _alias_match(term, line) is not None:
+                hits.append(ForbiddenHit(term, line_number))
+    return hits
 
 
 @dataclass
@@ -131,13 +149,13 @@ def parse_resume_sections(resume_path: Path, config: VerifierConfig) -> dict[str
     return sections
 
 
-def extract_claims(interview_path: Path, config: VerifierConfig) -> list[Claim]:
+def extract_claims(document_path: Path, config: VerifierConfig, *, blockquote_only: bool = True) -> list[Claim]:
     claims: list[Claim] = []
     seen: set[tuple[str, str]] = set()
-    for line_number, line in enumerate(interview_path.read_text(encoding="utf-8").split("\n"), 1):
-        if not line.startswith("> "):
+    for line_number, line in enumerate(document_path.read_text(encoding="utf-8").split("\n"), 1):
+        if blockquote_only and not line.startswith("> "):
             continue
-        text = line[2:]
+        text = line[2:] if line.startswith("> ") else line
         mentioned: dict[str, int] = {}
         for alias, key in config.alias_map.items():
             pos = _alias_match(alias, text)

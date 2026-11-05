@@ -200,13 +200,13 @@ grep "재설계\|총괄\|리드\|매니저" private/build/resume-job-<target>.md
 diff private/overrides/<target>/companies/<company>/profile.md private/companies/<company>/profile.md
 ```
 
-### Generated Content Integrity (interview sheets, mock interviews, etc.)
+### Generated Content Integrity
 
-When writing company-specific technical experience in AI-generated content:
+When writing company-specific technical experience in AI-generated documents:
 - State ONLY what `private/build/resume-job-base.md` explicitly says as fact
 - Do NOT infer specific technical experiences from general statements (e.g., "used Spring Boot" ≠ "solved JPA N+1 with fetch join")
 - When experience is absent, write: "직접 경험은 없지만 ~로 접근하겠다"
-- Derived documents (`resume-based-qa.md` etc.) must also be verified against the resume source
+- Derived documents must also be verified against the resume source
 
 **Inference patterns to reject:**
 - ❌ "Used Spring Boot → therefore experienced JPA N+1"
@@ -216,8 +216,12 @@ When writing company-specific technical experience in AI-generated content:
 
 ```bash
 # Verify generated content against resume:
-UV_CACHE_DIR=.uv-cache uv run career-resume verify-content private/jd_analysis/interview/<file>.md
+UV_CACHE_DIR=.uv-cache uv run career-resume verify-content <document>
 ```
+
+Use `--all-lines` to scan claims outside blockquotes. Configure `forbidden_terms` in the
+private verifier config for removed claims that must not reappear; these are checked on every
+line regardless of `--all-lines`.
 
 ## Build Verification
 

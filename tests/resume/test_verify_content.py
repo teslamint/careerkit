@@ -79,3 +79,59 @@ def test_verifier_config_requires_generated_verification_keywords() -> None:
             "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
             "parent_company_map": {},
         })
+def test_verifier_config_parses_forbidden_terms_and_defaults_empty() -> None:
+    data = {
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "technology_keywords": ["Redis"],
+        "pattern_keywords": [],
+    }
+    assert verifier_config_from_data(data).forbidden_terms == []
+    data["forbidden_terms"] = ["ExampleRemovedClaim"]
+    assert verifier_config_from_data(data).forbidden_terms == ["ExampleRemovedClaim"]
+
+
+@pytest.mark.parametrize("terms", [[1], [""]])
+def test_verifier_config_rejects_invalid_forbidden_terms(terms) -> None:
+    with pytest.raises(ValueError, match="forbidden_terms"):
+        verifier_config_from_data({
+            "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+            "technology_keywords": ["Redis"],
+            "pattern_keywords": [],
+            "forbidden_terms": terms,
+        })
+
+
+def test_find_forbidden_terms_scans_all_lines_with_line_numbers(tmp_path) -> None:
+    from careerkit.resume.application.verify_content import find_forbidden_terms
+
+    document = _write(tmp_path, "document.md", "intro ExampleRemovedClaim\n> clean\n")
+    config = verifier_config_from_data({
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "technology_keywords": ["Redis"],
+        "pattern_keywords": [],
+        "forbidden_terms": ["ExampleRemovedClaim"],
+    })
+    hits = find_forbidden_terms(document, config)
+    assert [(hit.term, hit.line_number) for hit in hits] == [("ExampleRemovedClaim", 1)]
+
+
+def test_forbidden_ascii_term_uses_word_boundaries(tmp_path) -> None:
+    from careerkit.resume.application.verify_content import find_forbidden_terms
+
+    document = _write(tmp_path, "document.md", "Google\nGo\n")
+    config = verifier_config_from_data({
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "technology_keywords": ["Redis"],
+        "pattern_keywords": [],
+        "forbidden_terms": ["Go"],
+    })
+    hits = find_forbidden_terms(document, config)
+    assert [(hit.term, hit.line_number) for hit in hits] == [("Go", 2)]
+
+
+def test_extract_claims_all_lines_includes_non_blockquotes(tmp_path) -> None:
+    document = _write(tmp_path, "document.md", "AlphaCorp에서 GraphQL 사용\n")
+    assert extract_claims(document, TEST_CONFIG) == []
+    assert [claim.keyword for claim in extract_claims(document, TEST_CONFIG, blockquote_only=False)] == [
+        "GraphQL"
+    ]
