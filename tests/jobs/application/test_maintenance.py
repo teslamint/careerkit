@@ -15,6 +15,7 @@ import yaml
 from careerkit.jobs.adapters.http import HttpError
 from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.search import SearchResult
+from careerkit.jobs.application.screening import build_fallback_output
 from careerkit.jobs.domain.model import ApplicationStatus, JobKey, JobRecord, PostingStatus, ScreeningVerdict
 from careerkit.workspace import WorkspacePaths
 
@@ -124,6 +125,82 @@ def test_summary_uses_screening_analysis_date_when_collection_date_is_missing(tm
     summary = service.rebuild_summary()
 
     assert '| remember:2 | Example | Server | 지원 보류 | pending | active | 2026-06-30 |' in summary.output_path.read_text(encoding='utf-8')
+
+
+def test_summary_marks_legacy_fallback_document_and_ignores_normal_document(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    service = JobsMaintenanceService(workspace=workspace)
+    legacy = service.repository.create(
+        JobRecord(
+            'wanted',
+            '1',
+            'Legacy Fallback',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            screening_provider=None,
+        ),
+        jd_markdown='# JD',
+    )
+    service.repository.update_screening_result(
+        legacy.record.key,
+        screening_markdown=build_fallback_output(legacy, '# JD', 'test failure'),
+        screening_verdict=ScreeningVerdict.HOLD,
+    )
+    normal = service.repository.create(
+        JobRecord(
+            'wanted',
+            '2',
+            'Normal Example',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            screening_provider=None,
+        ),
+        jd_markdown='# JD',
+    )
+    service.repository.update_screening_result(
+        normal.record.key,
+        screening_markdown='| 분석일 | 2026-07-01 |',
+        screening_verdict=ScreeningVerdict.HOLD,
+    )
+
+    summary = service.rebuild_summary()
+    output = summary.output_path.read_text(encoding='utf-8')
+
+    assert '| wanted:1 | Legacy Fallback | Backend | 지원 보류 (fallback) | pending | active | ' in output
+    assert '| wanted:2 | Normal Example | Backend | 지원 보류 | pending | active | ' in output
+
+
+def test_summary_marks_only_fallback_verdicts(tmp_path: Path) -> None:
+    workspace = WorkspacePaths(root=tmp_path, source='explicit')
+    service = JobsMaintenanceService(workspace=workspace)
+    service.repository.create(
+        JobRecord(
+            'wanted',
+            '1',
+            'Fallback Example',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            screening_provider='fallback',
+        ),
+        jd_markdown='# JD',
+    )
+    service.repository.create(
+        JobRecord(
+            'wanted',
+            '2',
+            'Provider Example',
+            'Backend',
+            screening_verdict=ScreeningVerdict.HOLD,
+            screening_provider='codex',
+        ),
+        jd_markdown='# JD',
+    )
+
+    summary = service.rebuild_summary()
+    output = summary.output_path.read_text(encoding='utf-8')
+
+    assert '| wanted:1 | Fallback Example | Backend | 지원 보류 (fallback) | pending | active | ' in output
+    assert '| wanted:2 | Provider Example | Backend | 지원 보류 | pending | active | ' in output
 
 
 def test_summary_omits_collection_date_when_creation_time_is_unavailable(

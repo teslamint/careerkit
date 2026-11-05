@@ -31,7 +31,7 @@ detail lookup.
 | `private/jd/runtime/search_state.json` | `JobsMaintenanceService` | Search flows | Stores deterministic compound seen keys. |
 | `private/jd/runtime/auto/pending_urls.json` | `JobsResumeStateService` | Auto resume flow | Pending URL set only; deleted after successful completion. |
 | `private/jd/derived/search.sqlite3` | `JDSearchIndex.rebuild()` | Web console and local search | Disposable metadata-only index rebuilt from canonical records. |
-| `private/jd/derived/screening-summary.md` | Summary generator | Human review and audits | Disposable deterministic summary rebuilt from canonical records. |
+| `private/jd/derived/screening-summary.md` | Summary generator | Human review and audits | Disposable deterministic summary rebuilt from canonical records. Rows whose screening provider is `fallback` or whose stored screening Markdown passes the fallback document marker append `(fallback)` to the verdict label. |
 
 ## Recovery and Historical Migration
 

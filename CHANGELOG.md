@@ -22,6 +22,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `parse_remember_experience` moved to `jd_content.py`
 
 ### Fixed
+- `career-jobs record show` reports `screening_provider`, and the derived screening summary marks fallback verdicts with `(fallback)` (#27).
 
 - Search query normalization keeps stack terms (`PHP Laravel 백엔드` is sent verbatim), widens only to a bare role word, and reports widened queries in the run diagnostics (#26).
 - Reject malformed posting URLs without stopping extraction of the remaining batch or browser-origin candidates.
