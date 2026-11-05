@@ -966,6 +966,7 @@ def _handle_record_show(args: argparse.Namespace, workspace: WorkspacePaths, ser
         "job_key": f"{stored.record.platform}:{stored.record.job_id}",
         "has_screening": stored.has_screening,
         "screening_verdict": stored.record.screening_verdict.value if stored.record.screening_verdict else None,
+        "screening_provider": stored.record.screening_provider,
         "prescreen_reason": stored.record.prescreen_reason,
         "application_status": stored.record.application_status.value,
         "posting_status": stored.record.posting_status.value,
