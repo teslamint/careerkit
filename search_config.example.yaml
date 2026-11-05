@@ -27,6 +27,7 @@ rate_limits:
   thevc: 1.5
   saramin: 3.0
 
+# Queries with stack terms are sent verbatim; Wanted and GroupBy ignore search queries.
 # 검색 키워드 (우선순위 순)
 search_queries:
   # 핵심: 역할 + 직무명 조합
