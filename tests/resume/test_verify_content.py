@@ -79,6 +79,8 @@ def test_verifier_config_requires_generated_verification_keywords() -> None:
             "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
             "parent_company_map": {},
         })
+
+
 def test_verifier_config_parses_forbidden_terms_and_defaults_empty() -> None:
     data = {
         "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
@@ -90,6 +92,16 @@ def test_verifier_config_parses_forbidden_terms_and_defaults_empty() -> None:
     assert verifier_config_from_data(data).forbidden_terms == ["ExampleRemovedClaim"]
 
 
+def test_verifier_config_deduplicates_forbidden_terms() -> None:
+    config = verifier_config_from_data({
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "technology_keywords": ["Redis"],
+        "pattern_keywords": [],
+        "forbidden_terms": ["Foo", "Foo"],
+    })
+    assert config.forbidden_terms == ["Foo"]
+
+
 @pytest.mark.parametrize("terms", [[1], [""]])
 def test_verifier_config_rejects_invalid_forbidden_terms(terms) -> None:
     with pytest.raises(ValueError, match="forbidden_terms"):
@@ -99,6 +111,34 @@ def test_verifier_config_rejects_invalid_forbidden_terms(terms) -> None:
             "pattern_keywords": [],
             "forbidden_terms": terms,
         })
+
+
+def test_find_forbidden_terms_deduplicates_case_variant_terms_on_a_line(tmp_path) -> None:
+    from careerkit.resume.application.verify_content import find_forbidden_terms
+
+    document = _write(tmp_path, "document.md", "Foo\n")
+    config = verifier_config_from_data({
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "technology_keywords": ["Redis"],
+        "pattern_keywords": [],
+        "forbidden_terms": ["Foo", "foo"],
+    })
+    hits = find_forbidden_terms(document, config)
+    assert [(hit.term, hit.line_number) for hit in hits] == [("Foo", 1)]
+
+
+def test_find_forbidden_terms_matches_korean_terms(tmp_path) -> None:
+    from careerkit.resume.application.verify_content import find_forbidden_terms
+
+    document = _write(tmp_path, "document.md", "월 100만 뷰 달성\n")
+    config = verifier_config_from_data({
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "technology_keywords": ["Redis"],
+        "pattern_keywords": [],
+        "forbidden_terms": ["월 100만 뷰"],
+    })
+    hits = find_forbidden_terms(document, config)
+    assert [(hit.term, hit.line_number) for hit in hits] == [("월 100만 뷰", 1)]
 
 
 def test_find_forbidden_terms_scans_all_lines_with_line_numbers(tmp_path) -> None:

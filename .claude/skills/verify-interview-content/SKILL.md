@@ -42,14 +42,17 @@ hardcoded keyword catalog or assume that one candidate's disallowed claims apply
 UV_CACHE_DIR=.uv-cache uv run career-resume verify-content <document>
 ```
 
+If `--resume` is not specified, defaults to `private/build/resume-job-base.md`.
+
 By default, only `> ` (blockquote) lines are scanned for claims. Use `--all-lines` for other generated documents. Forbidden terms are always checked on every line. Use `--json` for machine-readable output; it includes a `forbidden` array.
 
 ### Step 2: Review results
 
 - **✅ verified**: Claim found in the correct company section and supported by a resolved evidence ID.
-  Return ✅ verified only after the final result states `ungrounded claims: 0`.
+  Return ✅ verified only when the final output has `ungrounded claims: 0`, no `forbidden:` lines, and exit code 0.
 - **⚠️ uncertain**: Claim found in a different company section — check if company attribution is correct
 - **❌ ungrounded**: Claim not found anywhere in resume, or its evidence ID is missing, unknown, or mismatched — **must fix or remove**
+- **❌ forbidden**: A forbidden term reappeared — **must be removed**
 
 ### Step 3: Fix ungrounded claims
 
@@ -65,10 +68,10 @@ For each ❌ ungrounded claim:
 ### Step 4: Re-run verification
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run career-resume verify-content <interview-file>.md
+UV_CACHE_DIR=.uv-cache uv run career-resume verify-content <document>
 ```
 
-State `ungrounded claims: 0` explicitly. Do not return ✅ verified while any ungrounded claim remains.
+Return ✅ verified only when the final output has `ungrounded claims: 0`, no `forbidden:` lines, and exit code 0.
 
 ## Key Rule
 

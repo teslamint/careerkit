@@ -49,7 +49,7 @@ def verifier_config_from_data(data: object) -> VerifierConfig:
     raw_aliases = data.get("company_aliases")
     raw_parent_map = data.get("parent_company_map", {})
     technology_keywords = _keyword_list(data, "technology_keywords")
-    forbidden_terms = _keyword_list(data, "forbidden_terms") if "forbidden_terms" in data else []
+    forbidden_terms = list(dict.fromkeys(_keyword_list(data, "forbidden_terms"))) if "forbidden_terms" in data else []
     pattern_keywords = _keyword_list(data, "pattern_keywords")
     if not isinstance(raw_aliases, dict) or not raw_aliases:
         raise ValueError("verify_content_config.json company_aliases must be a non-empty object")
@@ -104,10 +104,13 @@ class ForbiddenHit:
 
 def find_forbidden_terms(path: Path, config: VerifierConfig) -> list[ForbiddenHit]:
     hits: list[ForbiddenHit] = []
+    seen: set[tuple[str, int]] = set()
     for line_number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
         for term in config.forbidden_terms:
-            if _alias_match(term, line) is not None:
+            key = (term.casefold(), line_number)
+            if key not in seen and _alias_match(term, line) is not None:
                 hits.append(ForbiddenHit(term, line_number))
+                seen.add(key)
     return hits
 
 

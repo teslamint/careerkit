@@ -161,6 +161,8 @@ def test_cli_verify_content_fails_for_forbidden_term_without_claims(tmp_path: Pa
         "results": [],
         "status": "failed",
     }
+    assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume)]) == 1
+    assert capsys.readouterr().out == "forbidden: [ExampleRemovedClaim] line 1\n"
 
 
 def test_cli_verify_content_all_lines_checks_non_blockquote_claims(tmp_path: Path, capsys) -> None:
@@ -180,6 +182,7 @@ def test_cli_verify_content_all_lines_checks_non_blockquote_claims(tmp_path: Pat
     capsys.readouterr()
     assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume), "--all-lines"]) == 1
     assert "ungrounded: [AlphaCorp] ExampleDB" in capsys.readouterr().out
+
 
 def test_cli_verify_content_requires_private_config(tmp_path: Path, capsys) -> None:
     root = _workspace(tmp_path)

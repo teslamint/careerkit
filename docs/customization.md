@@ -134,6 +134,11 @@ cp verify_content_config.example.json private/verify_content_config.json
 - `pattern_keywords`: 일반적 기술 표현에서 임의로 추론하면 안 되는 구체적 패턴·해결 경험
 - `forbidden_terms`: 생성 문서에 다시 나타나면 안 되는 과거 제거 주장·표현 (예: `ExampleRemovedClaim`)
 
+두 keyword 목록은 패키지의 공통 기본값이 아닙니다. 검증 대상인 사용자의 최신
+이력·포트폴리오와 지원 포지션을 기준으로 generated config에서 관리합니다.
+
+다른 설정을 일회성으로 사용하려면 `verify-content --config <path>`를 지정합니다.
+
 `career-resume verify-content <document>`는 기본적으로 `> ` 인용문 줄의 주장을
 검증합니다. 일반 생성 문서 전체를 검사하려면 `--all-lines`를 지정합니다.
 금지 표현은 문서의 모든 줄에서 검사하며, 발견 시 종료 코드 1을 반환합니다.
