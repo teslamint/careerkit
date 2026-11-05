@@ -149,7 +149,7 @@ _HOST_WIDE_PATTERN = re.compile(
     r"https?://(?:\*\.|www\.)?" + _POSTING_HOST + r"/\*[\"'`,]*", re.IGNORECASE
 )
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_EMAIL_EXEMPT = re.compile(r"^(?:noreply@|[^@]*@example\.|support@github\.com$)", re.IGNORECASE)
+_EMAIL_EXEMPT = re.compile(r"^(?:noreply@|[^@]*@example\.|support@github\.com(?![\w.-]))", re.IGNORECASE)
 _LEGAL_SUFFIX = re.compile(
     r"(?:주식회사|㈜|\(주\)|유한회사|Ltd\.?|Inc\.?|LLC)(?=\s|[^\w가-힣]|$)",
     re.IGNORECASE,
