@@ -96,7 +96,7 @@ Use `uv run <command>` in a source checkout; installed wheels invoke the command
 |---------|----------------|---------|
 | Resume | `career-resume build ...` | public/job/example builds and supported output matrix |
 | Resume | `career-resume validate [--example]` | validate source/schema contracts |
-| Resume | `career-resume verify-content <path>` | reject unsupported generated claims |
+| Resume | `career-resume verify-content <document>` | reject unsupported claims and forbidden terms in generated documents |
 | Jobs | `career-jobs search run` | configured multi-platform search |
 | Jobs | `career-jobs run auto ...` | packaged automation sequencing |
 | Jobs | `career-jobs ingest url|file ...` | inspect extraction inputs |

@@ -130,15 +130,58 @@ def test_cli_verify_content_supports_json_and_missing_files(tmp_path: Path, caps
         "technology_keywords": ["ExampleDB"],
         "pattern_keywords": [],
     })
-    interview = root / "interview.md"
+    document = root / "document.md"
     resume = root / "resume.md"
-    interview.write_text("# Interview\n", encoding="utf-8")
+    document.write_text("# Generated document\n", encoding="utf-8")
     resume.write_text("# Resume\n", encoding="utf-8")
 
-    assert main(["--workspace", str(root), "verify-content", str(interview), "--resume", str(resume), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"results": [], "status": "ok"}
+    assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"forbidden": [], "results": [], "status": "ok"}
     assert main(["--workspace", str(root), "verify-content", "missing.md"]) == 2
     assert "career-resume:" in capsys.readouterr().err
+
+
+def test_cli_verify_content_fails_for_forbidden_term_without_claims(tmp_path: Path, capsys) -> None:
+    root = _workspace(tmp_path)
+    _write_json(root / "private" / "verify_content_config.json", {
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "parent_company_map": {},
+        "technology_keywords": ["ExampleDB"],
+        "pattern_keywords": [],
+        "forbidden_terms": ["ExampleRemovedClaim"],
+    })
+    document = root / "document.md"
+    resume = root / "resume.md"
+    document.write_text("ExampleRemovedClaim\n", encoding="utf-8")
+    resume.write_text("# Resume\n", encoding="utf-8")
+
+    assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume), "--json"]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "forbidden": [{"line": 1, "term": "ExampleRemovedClaim"}],
+        "results": [],
+        "status": "failed",
+    }
+    assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume)]) == 1
+    assert capsys.readouterr().out == "forbidden: [ExampleRemovedClaim] line 1\n"
+
+
+def test_cli_verify_content_all_lines_checks_non_blockquote_claims(tmp_path: Path, capsys) -> None:
+    root = _workspace(tmp_path)
+    _write_json(root / "private" / "verify_content_config.json", {
+        "company_aliases": {"AlphaCorp": ["AlphaCorp"]},
+        "parent_company_map": {},
+        "technology_keywords": ["ExampleDB"],
+        "pattern_keywords": [],
+    })
+    document = root / "document.md"
+    resume = root / "resume.md"
+    document.write_text("AlphaCorp used ExampleDB\n", encoding="utf-8")
+    resume.write_text("# Resume\n", encoding="utf-8")
+
+    assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume)]) == 0
+    capsys.readouterr()
+    assert main(["--workspace", str(root), "verify-content", str(document), "--resume", str(resume), "--all-lines"]) == 1
+    assert "ungrounded: [AlphaCorp] ExampleDB" in capsys.readouterr().out
 
 
 def test_cli_verify_content_requires_private_config(tmp_path: Path, capsys) -> None:

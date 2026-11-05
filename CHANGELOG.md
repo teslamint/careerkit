@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Experience range filtering via `search_config.yaml` (`filters.min_experience_upper`, `filters.max_experience`)
 - Notification system (`notifications.py`): alerts when recommended postings found
 - `--dry-run`, `--search-only`, `--no-classify`, `--stop-on-error` flags for auto.py
+- `career-resume verify-content` accepts any generated document (`--all-lines` checks claims outside blockquotes) and fails on `forbidden_terms` from the verifier config on every line (#28).
 
 ### Changed
 - State persistence: atomic state file writes with `os.replace` and directory fsync
@@ -21,6 +22,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `parse_remember_experience` moved to `jd_content.py`
 
 ### Fixed
+
 - Search query normalization keeps stack terms (`PHP Laravel 백엔드` is sent verbatim), widens only to a bare role word, and reports widened queries in the run diagnostics (#26).
 - Reject malformed posting URLs without stopping extraction of the remaining batch or browser-origin candidates.
 - Resolve legacy stored postings only from their own posting path, not from addresses embedded in query strings.

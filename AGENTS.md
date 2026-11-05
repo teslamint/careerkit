@@ -111,7 +111,7 @@ Override content must not add technologies, roles, or achievements absent from b
 
 ### Generated Content Integrity
 
-AI-generated content (interview sheets, mock interviews) must not infer specific technical experiences from general resume statements. "Used Spring Boot" ≠ "solved JPA N+1". State only what the resume explicitly documents. Verify with: `uv run career-resume verify-content private/jd_analysis/interview/<file>.md`
+AI-generated documents (interview sheets, mock interviews, reports) must not infer specific technical experiences from general resume statements. "Used Spring Boot" ≠ "solved JPA N+1". State only what the resume explicitly documents. Verify with `uv run career-resume verify-content <document>`; use `--all-lines` for whole-document claim checks.
 
 ## Review Guidelines
 
