@@ -9,6 +9,7 @@ import pytest
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository
 from careerkit.jobs.application.requirement_manifest import extract_requirement_manifest, without_main_duty
 from careerkit.jobs.application.screening import (
+    _assessment_retry_prefix,
     build_company_risk_summary,
     build_fallback_output,
     build_prompt,
@@ -2051,3 +2052,87 @@ def test_renderer_exception_does_not_replace_an_existing_screening(tmp_path: Pat
 
     assert repository.get(key).screening_markdown == original
     assert repository.get_metadata(key).record.screening_provider == original_provider
+
+
+def test_run_screening_cli_chain_accepts_second_cli_without_contract_retry(tmp_path: Path, monkeypatch) -> None:
+    from careerkit.jobs.adapters.screening import cli_provider
+
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    prompts: list[str] = []
+    outputs = iter(["not JSON", _assessment_json(manifest)])
+    monkeypatch.setattr(
+        cli_provider,
+        "resolve_commands",
+        lambda environment=None: [("claude", ["claude"]), ("codex", ["codex"])],
+    )
+
+    def run_provider_command(provider, cmd, prompt, timeout, env):
+        prompts.append(prompt)
+        return 0, next(outputs), ""
+
+    monkeypatch.setattr(cli_provider, "run_provider_command", run_provider_command)
+    monkeypatch.setattr(
+        cli_provider.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local endpoint was used")),
+    )
+
+    result = run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        llm_provider=cli_provider.CLIProvider(environment={"OLLAMA_SCREENING_MODEL": "off"}),
+        repository=repository,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 서비스 운영, AWS",
+    )
+
+    assert result.provider == "codex"
+    assert result.used_fallback is False
+    assert result.provider_attempts == {
+        "claude": ("unparseable_output",),
+        "codex": ("ok",),
+    }
+    assert len(prompts) == 2
+    assert prompts[0] == prompts[1]
+    contract_retry_marker = _assessment_retry_prefix("x").split("오류:")[0]
+    assert contract_retry_marker
+    assert _assessment_retry_prefix("x").startswith(contract_retry_marker)
+    assert all(not prompt.startswith(contract_retry_marker) for prompt in prompts)
+
+
+def test_run_screening_cli_chain_contract_exhaustion_falls_back(tmp_path: Path, monkeypatch) -> None:
+    from careerkit.jobs.adapters.screening import cli_provider
+
+    workspace, repository, stored = _create_record(tmp_path)
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        cli_provider,
+        "resolve_commands",
+        lambda environment=None: [("claude", ["claude"]), ("codex", ["codex"])],
+    )
+
+    def run_provider_command(provider, cmd, prompt, timeout, env):
+        prompts.append(prompt)
+        return 0, "not JSON", ""
+
+    monkeypatch.setattr(cli_provider, "run_provider_command", run_provider_command)
+    monkeypatch.setattr(
+        cli_provider.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local endpoint was used")),
+    )
+
+    result = run_screening(
+        workspace=workspace,
+        jd=stored,
+        company_file=None,
+        llm_provider=cli_provider.CLIProvider(environment={"OLLAMA_SCREENING_MODEL": "off"}),
+        repository=repository,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, 결제 서비스 운영, AWS",
+    )
+
+    assert result.used_fallback is True
+    assert result.fallback_reason == "assessment-contract-exhausted"
+    assert result.provider == "fallback"
+    assert len(prompts) == 4

@@ -231,6 +231,11 @@ class CLIProvider:
                     )
                 else:
                     output = output.strip()
+                    # Recorded before the acceptance check: an oversized prompt is the
+                    # likeliest reason a local model returns truncated, unusable output.
+                    self.last_context_warning = context_warning(
+                        label, prompt_tokens, extra_options.get("num_ctx")
+                    )
                     rejection = self.output_check(output) if self.output_check is not None else None
                     if rejection:
                         self._append(label, "unparseable_output")
@@ -238,9 +243,6 @@ class CLIProvider:
                         errors.append(f"{label}: {rejection}")
                     else:
                         self._append(label, "ok")
-                        self.last_context_warning = context_warning(
-                            label, prompt_tokens, extra_options.get("num_ctx")
-                        )
                         return label, output
 
         if rejected is not None:

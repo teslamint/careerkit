@@ -5,11 +5,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Removed
-- Remove the unreachable semantic screening validator and its dead gate tests (#35).
-
-### Fixed
-- Continue the screening provider chain after contract-invalid output and retry once with quality issue codes (#34, #36); `probe_screening_provider_contract` may now report quality retries as retried.
 ### Added
 - `--resume` flag for auto.py: resume from last incomplete run with stage-based skip
 - Experience range filtering via `search_config.yaml` (`filters.min_experience_upper`, `filters.max_experience`)
@@ -25,7 +20,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Search dedup logic consolidated in `search_helpers.py`
 - `parse_remember_experience` moved to `jd_content.py`
 
+### Removed
+- Remove the unreachable semantic screening validator and its dead gate tests (#35).
+
 ### Fixed
+- Continue the screening provider chain after contract-invalid output and retry once with quality issue codes (#34, #36); `probe_screening_provider_contract` may now report quality retries as retried.
 - Reject malformed posting URLs without stopping extraction of the remaining batch or browser-origin candidates.
 - Resolve legacy stored postings only from their own posting path, not from addresses embedded in query strings.
 - Reject empty or malformed GroupBy posting data during extraction and report its status as unknown.

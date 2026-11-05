@@ -484,6 +484,22 @@ def test_context_warning_fires_above_the_threshold(
     assert "32768" in provider.last_context_warning
 
 
+def test_context_warning_is_kept_when_local_output_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, no_cli: None
+) -> None:
+    install_urlopen(
+        monkeypatch, {"message": {"content": "prose"}, "prompt_eval_count": 30000}
+    )
+    provider = CLIProvider(environment={})
+    provider.set_output_check(lambda _output: "invalid")
+
+    assert provider.run("prompt", timeout=5) == ("ollama", "prose")
+
+    assert provider.last_attempts == {"ollama": ["unparseable_output"]}
+    assert provider.last_context_warning is not None
+    assert "30000" in provider.last_context_warning
+
+
 def test_context_warning_silent_below_the_threshold(
     monkeypatch: pytest.MonkeyPatch, no_cli: None
 ) -> None:
