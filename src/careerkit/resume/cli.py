@@ -13,7 +13,7 @@ from careerkit.resume.application.build import ResumeBuildService
 from careerkit.resume.application.career_description import build_career
 from careerkit.resume.application.headhunter import analyze_template
 from careerkit.resume.application.notes import write_notes
-from careerkit.resume.application.verify_content import extract_claims, parse_resume_sections, verifier_config_from_data, verify_claims
+from careerkit.resume.application.verify_content import extract_claims, find_forbidden_terms, parse_resume_sections, verifier_config_from_data, verify_claims
 from careerkit.resume.domain.schema import validate_all
 from careerkit.workspace import WorkspaceResolutionError, resolve_workspace
 from careerkit.cli_logging import configure_cli_logging
@@ -39,10 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(handler=_handle_validate)
 
     verify_content = subparsers.add_parser("verify-content", help="Validate generated content against source evidence")
-    verify_content.add_argument("interview")
+    verify_content.add_argument("document")
     verify_content.add_argument("--resume")
     verify_content.add_argument("--config")
     verify_content.add_argument("--json", action="store_true")
+    verify_content.add_argument("--all-lines", action="store_true")
     verify_content.set_defaults(handler=_handle_verify_content)
 
     notes = subparsers.add_parser("notes", help="Generate resume notes")
@@ -244,20 +245,16 @@ def _handle_verify_content(args: argparse.Namespace) -> int:
     if not config_path.is_absolute():
         config_path = resolved.root / config_path
     config = verifier_config_from_data(adapter.load_verify_content_config(config_path))
-    interview_path = Path(args.interview)
+    document_path = Path(args.document)
     resume_path = Path(args.resume) if args.resume else resolved.root / "private" / "build" / "resume-job-base.md"
+    claims = extract_claims(document_path, config, blockquote_only=not args.all_lines)
+    forbidden = find_forbidden_terms(document_path, config)
     sections = parse_resume_sections(resume_path, config)
-    claims = extract_claims(interview_path, config)
-    if not claims:
-        if args.json:
-            print(json.dumps({"results": [], "status": "ok"}, sort_keys=True))
-            return 0
-        print("No company-specific claims found in interview sheet.")
-        return 0
     results = verify_claims(claims, sections, config)
+    failed = any(item.status == "ungrounded" for item in results) or bool(forbidden)
     if args.json:
         print(json.dumps({
-            "status": "failed" if any(item.status == "ungrounded" for item in results) else "ok",
+            "status": "failed" if failed else "ok",
             "results": [
                 {
                     "status": item.status,
@@ -266,11 +263,17 @@ def _handle_verify_content(args: argparse.Namespace) -> int:
                 }
                 for item in results
             ],
+            "forbidden": [{"term": hit.term, "line": hit.line_number} for hit in forbidden],
         }, ensure_ascii=False, sort_keys=True))
-        return 1 if any(item.status == "ungrounded" for item in results) else 0
+        return 1 if failed else 0
+    if not claims and not forbidden:
+        print("No company-specific claims found in document.")
+        return 0
     for result in results:
         print(f"{result.status}: [{result.claim.company_key}] {result.claim.keyword}")
-    return 1 if any(result.status == "ungrounded" for result in results) else 0
+    for hit in forbidden:
+        print(f"forbidden: [{hit.term}] line {hit.line_number}")
+    return 1 if failed else 0
 
 
 def _handle_notes(args: argparse.Namespace) -> int:

@@ -7,5 +7,6 @@
     "ExampleProduct": "ExampleCorp"
   },
   "technology_keywords": ["ExampleDB", "ExampleQueue"],
-  "pattern_keywords": ["Example Pattern", "example optimization"]
+  "pattern_keywords": ["Example Pattern", "example optimization"],
+  "forbidden_terms": ["ExampleRemovedClaim"]
 }
