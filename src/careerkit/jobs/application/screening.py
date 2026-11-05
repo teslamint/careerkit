@@ -15,6 +15,7 @@ from careerkit.jobs.adapters.screening.cli_provider import CLIProvider, LLMProvi
 from careerkit.jobs.adapters.storage.file_records import JDRecordRepository, StoredJobRecord
 from careerkit.jobs.application.company_info import parse_company_file, validate_company
 from careerkit.jobs.application.evidence_checks import (
+    MatchRow,
     apply_demotions,
     check_rows,
     corpus_basenames,
@@ -30,6 +31,7 @@ from careerkit.jobs.application.requirement_manifest import (
 from careerkit.jobs.application.screening_assessment import (
     RULE_BASIS_PREFIX,
     AssessmentContractError,
+    ScreeningAssessment,
     parse_screening_assessment,
     render_screening_markdown,
 )
@@ -42,7 +44,6 @@ from careerkit.jobs.application.screening_quality import (
     count_quality_issues,
     validate_assessment_quality,
 )
-from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
 from careerkit.jobs.domain.model import JobKey, PostingStatus
 from careerkit.jobs.domain.verdict import (
     VERDICT_PRIORITY,
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FALLBACK_REASON_CHARS = 240
 _SENSITIVE_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]*(?:SECRET|TOKEN|KEY)[A-Za-z0-9_-]*")
+_QUALITY_RETRY_LIMIT = 1
 _REQUIRED_SECTIONS = (
     "## 기본 정보",
     "## 스크리닝 결과",
@@ -567,6 +569,10 @@ def _assessment_retry_prefix(error: str) -> str:
     )
 
 
+def _quality_retry_prefix(issues: tuple[str, ...]) -> str:
+    return f"오류 코드: {', '.join(issues)}\nJSON 객체 하나만 출력하세요.\n\n"
+
+
 def _decision_basis_supports_not_recommended(manifest: RequirementManifest, assessment) -> bool:
     parent_matches = aggregate_parent_matches(
         manifest,
@@ -643,8 +649,6 @@ def run_screening(
     expected_screening_provider: str | None = None,
     require_expected_screening_provider: bool = False,
     expected_screening_sha256: str | None = None,
-    semantic_validator: CalibratedSemanticValidator | None = None,
-    require_semantic_validation: bool = False,
 ) -> ScreeningResult:
     jd_content = jd.jd_markdown
     rules = load_screening_rules(workspace)
@@ -670,6 +674,16 @@ def run_screening(
     reset_observations = getattr(provider_runner, "reset_observations", None)
     if callable(reset_observations):
         reset_observations()
+    set_output_check = getattr(provider_runner, "set_output_check", None)
+    if callable(set_output_check):
+        def check_output(raw: str) -> str | None:
+            try:
+                parse_screening_assessment(raw, filtered)
+            except AssessmentContractError as exc:
+                return str(exc)
+            return None
+
+        set_output_check(check_output)
 
     provider = "fallback"
     used_fallback = False
@@ -687,6 +701,60 @@ def run_screening(
         {"selected_provider": selected_provider} if selected_provider is not None else {}
     )
     provider_run = getattr(provider_runner, "run")
+
+    def process_assessment(
+        assessment: ScreeningAssessment,
+    ) -> tuple[ScreeningAssessment, str, list[MatchRow], dict[str, int]]:
+        assessment = validate_assessment_quality(
+            assessment, filtered, candidate_context_text, jd_content=jd_content, experience_cap=experience_cap
+        )
+        normalized = render_screening_markdown(jd, jd_content, filtered, assessment)
+        if filtered.ambiguous_qualifications and not filtered.parents:
+            normalized = _inject_ambiguous_placeholder_row(normalized)
+        rows, table_error = parse_match_table(normalized)
+        if table_error:
+            raise RuntimeError(f"매칭 표 파싱 실패: {table_error}")
+        if rows:
+            basenames = corpus_basenames(candidate_context_text)
+            declared = corpus_source_paths(candidate_context_text)
+            report = check_rows(
+                rows,
+                corpus=candidate_context_text,
+                root=workspace.root,
+                declared=declared,
+                basenames=basenames,
+            )
+            violations = {
+                "missing_source_path": report.missing_source_path,
+                "unevidenced_keyword": report.unevidenced_keyword,
+                "unevidenced_keyword_strict": report.unevidenced_keyword_strict,
+            }
+            if report.demoted_indices:
+                normalized = apply_demotions(normalized, rows, report.demoted_indices)
+                rows, demotion_error = parse_match_table(normalized)
+                if demotion_error:
+                    raise RuntimeError(f"강등 적용 후 표 파싱 실패: {demotion_error}")
+                # Summary counts describe final leaf states, not the model's
+                # pre-demotion claims. Reject stale prose before publication.
+                effective_matches = {item.id: item.match for item in assessment.matches}
+                for parent, row in zip(filtered.parents, rows, strict=True):
+                    if row.index in report.demoted_indices:
+                        for leaf in filtered.leaves:
+                            if leaf.id == parent.id or leaf.parent_id == parent.id:
+                                effective_matches[leaf.id] = "없음"
+                if count_quality_issues(assessment, filtered, effective_matches):
+                    raise ScreeningQualityError(("count-mismatch-after-demotion",))
+        else:
+            violations = {
+                "missing_source_path": 0,
+                "unevidenced_keyword": 0,
+                "unevidenced_keyword_strict": 0,
+            }
+        violations["unevidenced_main_duty"] = sum(
+            1 for row in rows if row.kind == "주요업무" and row.match == "없음"
+        )
+        return assessment, normalized, rows, violations
+
     try:
         provider, raw_output = provider_run(
             prompt,
@@ -732,59 +800,29 @@ def run_screening(
         if not valid:
             raise RuntimeError(f"구조 검증 실패: {reason}")
     else:
-        assessment = validate_assessment_quality(
-            assessment, filtered, candidate_context_text, jd_content=jd_content, experience_cap=experience_cap
-        )
-        if require_semantic_validation and semantic_validator is None:
-            raise ScreeningQualityError("screening-quality: semantic-validator-required")
-        if semantic_validator is not None:
-            semantic_validator.validate(filtered, assessment, screening_provider=provider)
-        normalized_output = render_screening_markdown(jd, jd_content, filtered, assessment)
-        if filtered.ambiguous_qualifications and not filtered.parents:
-            normalized_output = _inject_ambiguous_placeholder_row(normalized_output)
-        rows, table_error = parse_match_table(normalized_output)
-        if table_error:
-            raise RuntimeError(f"매칭 표 파싱 실패: {table_error}")
-        if rows:
-            basenames = corpus_basenames(candidate_context_text)
-            declared = corpus_source_paths(candidate_context_text)
-            report = check_rows(
-                rows,
-                corpus=candidate_context_text,
-                root=workspace.root,
-                declared=declared,
-                basenames=basenames,
-            )
-            evidence_violations = {
-                "missing_source_path": report.missing_source_path,
-                "unevidenced_keyword": report.unevidenced_keyword,
-                "unevidenced_keyword_strict": report.unevidenced_keyword_strict,
-            }
-            if report.demoted_indices:
-                normalized_output = apply_demotions(normalized_output, rows, report.demoted_indices)
-                rows, demotion_error = parse_match_table(normalized_output)
-                if demotion_error:
-                    raise RuntimeError(f"강등 적용 후 표 파싱 실패: {demotion_error}")
-                # Summary counts describe final leaf states, not the model's
-                # pre-demotion claims. Reject stale prose before publication.
-                effective_matches = {item.id: item.match for item in assessment.matches}
-                for parent, row in zip(filtered.parents, rows, strict=True):
-                    if row.index in report.demoted_indices:
-                        for leaf in filtered.leaves:
-                            if leaf.id == parent.id or leaf.parent_id == parent.id:
-                                effective_matches[leaf.id] = "없음"
-                if count_quality_issues(assessment, filtered, effective_matches):
-                    raise ScreeningQualityError("screening-quality: count-mismatch-after-demotion")
-        else:
-            evidence_violations = {
-                "missing_source_path": 0,
-                "unevidenced_keyword": 0,
-                "unevidenced_keyword_strict": 0,
-            }
+        try:
+            assessment, normalized_output, rows, evidence_violations = process_assessment(assessment)
+        except ScreeningQualityError as first_error:
+            for _ in range(_QUALITY_RETRY_LIMIT):
+                try:
+                    provider, raw_output = provider_run(
+                        _quality_retry_prefix(first_error.issues) + prompt,
+                        timeout=llm_timeout,
+                        local_timeout=effective_local_llm_timeout,
+                        **provider_kwargs,
+                    )
+                except Exception as retry_error:
+                    raise first_error from retry_error
+                try:
+                    assessment = parse_screening_assessment(raw_output, filtered)
+                except AssessmentContractError as retry_error:
+                    raise first_error from retry_error
+                # A second quality failure is authoritative and must propagate.
+                assessment, normalized_output, rows, evidence_violations = process_assessment(assessment)
+                break
+            else:
+                raise first_error
 
-        evidence_violations["unevidenced_main_duty"] = sum(
-            1 for row in rows if row.kind == "주요업무" and row.match == "없음"
-        )
         verdict, verdict_capped, downgraded = _apply_conservative_verdict_guard(
             manifest=filtered,
             assessment=assessment,

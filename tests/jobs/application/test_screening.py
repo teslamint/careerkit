@@ -268,31 +268,185 @@ def test_run_screening_passes_selected_provider_to_both_attempts(tmp_path: Path)
     )
     assert provider.selected_providers == ["claude", "claude"]
 
-def test_required_semantic_gate_preserves_record_when_validator_is_missing(tmp_path: Path) -> None:
+def test_quality_failure_retries_with_issue_codes_only(tmp_path: Path) -> None:
+    workspace, _repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    invalid = json.loads(_assessment_json(manifest))
+    invalid["screening_summary"][0] = "필수 9항목: 충족 9, 부분 0, 없음 0"
+    provider = SequenceProvider([
+        json.dumps(invalid, ensure_ascii=False),
+        _assessment_json(manifest),
+    ])
+
+    result = run_screening(
+        workspace=workspace, jd=stored, company_file=None, llm_provider=provider,
+        dry_run=True,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+    )
+
+    assert provider.calls == 2
+    assert "count-mismatch" in provider.prompts[1]
+    assert provider.prompts[1].endswith(provider.prompts[0])
+    retry_prefix = provider.prompts[1][:-len(provider.prompts[0])]
+    assert retry_prefix == "오류 코드: count-mismatch\nJSON 객체 하나만 출력하세요.\n\n"
+    assert "Spring Boot" not in retry_prefix
+    assert result.used_fallback is False
+
+
+def test_screening_quality_error_exposes_issue_codes() -> None:
+    from careerkit.jobs.application.screening_quality import ScreeningQualityError
+
+    error = ScreeningQualityError(("count-mismatch", "citation-invalid"))
+    assert error.issues == ("count-mismatch", "citation-invalid")
+    assert str(error) == "screening-quality: count-mismatch, citation-invalid"
+
+
+def test_contract_retry_then_quality_retry_uses_three_provider_calls(tmp_path: Path) -> None:
+    workspace, _repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    invalid = json.loads(_assessment_json(manifest))
+    invalid["screening_summary"][0] = "필수 9항목: 충족 9, 부분 0, 없음 0"
+    provider = SequenceProvider([
+        "not JSON",
+        json.dumps(invalid, ensure_ascii=False),
+        _assessment_json(manifest),
+    ])
+
+    result = run_screening(
+        workspace=workspace, jd=stored, company_file=None, llm_provider=provider,
+        dry_run=True,
+        candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+    )
+
+    assert provider.calls == 3
+    assert "count-mismatch" in provider.prompts[2]
+    assert result.used_fallback is False
+
+
+def _post_demotion_count_assessment(manifest) -> str:
+    raw = json.loads(_assessment_json(manifest, verdict="지원 추천"))
+    raw["matches"] = [
+        {"id": "required-001", "match": "충족", "citations": [{"source": "/candidate/profile.md", "quote": "Spring Boot"}]},
+        {"id": "required-002", "match": "충족", "citations": [{"source": "/candidate/profile.md", "quote": "Kafka"}]},
+        {"id": "preferred-001", "match": "없음", "citations": []},
+    ]
+    raw["screening_summary"] = ["필수 2항목: 충족 2, 부분 0, 없음 0", "우대 1항목: 충족 0, 부분 0, 없음 1"]
+    raw["reasons"] = ["직접 근거", "운영 경험", "백엔드 직무"]
+    return json.dumps(raw, ensure_ascii=False)
+
+
+def test_post_demotion_quality_failure_retries_and_publishes_clean_response(tmp_path: Path) -> None:
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    clean = json.loads(_assessment_json(manifest))
+    for match in clean["matches"]:
+        for citation in match["citations"]:
+            citation["source"] = "candidate/profile.md"
+    provider = SequenceProvider([
+        _post_demotion_count_assessment(manifest),
+        json.dumps(clean, ensure_ascii=False),
+    ])
+    context = (
+        "[source: /candidate/profile.md] Spring Boot, Kafka, AWS\n"
+        "[source: candidate/profile.md] Spring Boot, Kafka, AWS"
+    )
+
+    result = run_screening(
+        workspace=workspace, jd=stored, company_file=None, llm_provider=provider,
+        repository=repository, candidate_context=context,
+    )
+
+    assert provider.calls == 2
+    assert "count-mismatch-after-demotion" in provider.prompts[1]
+    assert result.published is True
+    assert result.used_fallback is False
+
+
+def test_post_demotion_quality_retry_failure_preserves_existing_record(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_quality import ScreeningQualityError
+
     workspace, repository, stored = _create_record(tmp_path)
     repository.update_screening_result(
-        stored.record.key,
-        screening_markdown="Existing reviewed result",
-        screening_verdict=ScreeningVerdict.HOLD,
-        screening_provider="manual",
+        stored.record.key, screening_markdown="Existing reviewed result",
+        screening_verdict=ScreeningVerdict.HOLD, screening_provider="manual",
     )
     before = repository.get(stored.record.key)
     manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    provider = SequenceProvider([
+        _post_demotion_count_assessment(manifest),
+        _post_demotion_count_assessment(manifest),
+    ])
+    context = (
+        "[source: /candidate/profile.md] Spring Boot, Kafka, AWS\n"
+        "[source: candidate/profile.md] Spring Boot, Kafka, AWS"
+    )
 
-    with pytest.raises(ValueError, match="semantic-validator-required"):
+    with pytest.raises(ScreeningQualityError) as raised:
         run_screening(
-            workspace=workspace,
-            jd=stored,
-            company_file=None,
-            llm_provider=SequenceProvider([_assessment_json(manifest)]),
-            repository=repository,
-            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
-            require_semantic_validation=True,
+            workspace=workspace, jd=stored, company_file=None, llm_provider=provider,
+            repository=repository, candidate_context=context,
         )
 
+    assert raised.value.issues == ("count-mismatch-after-demotion",)
+    assert provider.calls == 2
     after = repository.get(stored.record.key)
     assert after.record == before.record
     assert after.screening_markdown == before.screening_markdown
+
+
+def test_quality_retry_provider_failure_raises_original_error_without_fallback(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_quality import ScreeningQualityError
+
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    invalid = json.loads(_assessment_json(manifest))
+    invalid["screening_summary"][0] = "필수 9항목: 충족 9, 부분 0, 없음 0"
+
+    class RetryRaisesProvider(SequenceProvider):
+        attempts = 0
+
+        def run(self, prompt, timeout, local_timeout=None, selected_provider=None):
+            self.attempts += 1
+            if self.attempts == 2:
+                raise RuntimeError("retry failed")
+            return super().run(prompt, timeout, local_timeout, selected_provider)
+
+    provider = RetryRaisesProvider([json.dumps(invalid, ensure_ascii=False)])
+    with pytest.raises(ScreeningQualityError) as raised:
+        run_screening(
+            workspace=workspace, jd=stored, company_file=None, llm_provider=provider,
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+        )
+
+    assert raised.value.issues == ("count-mismatch",)
+    assert provider.attempts == 2
+    after = repository.get(stored.record.key)
+    assert after.record.screening_verdict is None
+    assert after.screening_markdown is None
+
+
+def test_quality_retry_contract_invalid_output_raises_original_error(tmp_path: Path) -> None:
+    from careerkit.jobs.application.screening_quality import ScreeningQualityError
+
+    workspace, repository, stored = _create_record(tmp_path)
+    manifest = without_main_duty(extract_requirement_manifest(stored.jd_markdown))
+    invalid = json.loads(_assessment_json(manifest))
+    invalid["screening_summary"][0] = "필수 9항목: 충족 9, 부분 0, 없음 0"
+    provider = SequenceProvider([json.dumps(invalid, ensure_ascii=False), "not JSON"])
+
+    with pytest.raises(ScreeningQualityError) as raised:
+        run_screening(
+            workspace=workspace, jd=stored, company_file=None, llm_provider=provider,
+            repository=repository,
+            candidate_context="[source: private/profile/skills-job.md] Spring Boot, Kafka, AWS",
+        )
+
+    assert raised.value.issues == ("count-mismatch",)
+    assert provider.calls == 2
+    after = repository.get(stored.record.key)
+    assert after.record.screening_verdict is None
+    assert after.screening_markdown is None
 
 
 @pytest.mark.parametrize("grouped_ids", ["required-001, required-002", "required-001 required-002"])

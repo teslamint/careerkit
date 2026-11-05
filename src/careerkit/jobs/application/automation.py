@@ -49,7 +49,6 @@ from careerkit.jobs.application.maintenance import JobsMaintenanceService
 from careerkit.jobs.application.company_info import CompanyInfoService
 from careerkit.jobs.application.pipeline import IngestResult, JobsPipelineService
 from careerkit.jobs.application.screening import run_screening
-from careerkit.jobs.application.screening_semantics import CalibratedSemanticValidator
 from careerkit.jobs.application.storage_migration import posting_key_from_url
 from careerkit.jobs.application.title_filter import (
     classify_non_backend_domain,
@@ -949,16 +948,12 @@ class JobsScreeningStage:
         llm_provider: LLMProvider | None = None,
         candidate_context: str | None = None,
         quick_filters: Mapping[str, Any] | None = None,
-        semantic_validator: CalibratedSemanticValidator | None = None,
-        require_semantic_validation: bool = False,
     ) -> None:
         self.workspace = workspace
         self.repository = repository
         self.llm_provider = llm_provider
         self.candidate_context = candidate_context
         self.quick_filters = dict(quick_filters) if quick_filters is not None else None
-        self.semantic_validator = semantic_validator
-        self.require_semantic_validation = require_semantic_validation
 
     def screen(
         self,
@@ -1045,8 +1040,6 @@ class JobsScreeningStage:
                     llm_provider=self.llm_provider,
                     repository=None if dry_run else self.repository,
                     candidate_context=self.candidate_context,
-                    semantic_validator=self.semantic_validator,
-                    require_semantic_validation=self.require_semantic_validation,
                 )
             except (FileNotFoundError, RuntimeError, ScreeningStateConflict, ValueError) as exc:
                 failures.append({"job_key": item_id, "error": str(exc)})

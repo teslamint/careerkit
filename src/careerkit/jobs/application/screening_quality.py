@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, replace
 import re
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from careerkit.jobs.application.evidence_checks import SOURCE_RE
 from careerkit.jobs.application.requirement_manifest import (
@@ -23,6 +23,10 @@ from careerkit.jobs.application.search import parse_experience_range
 
 class ScreeningQualityError(ValueError):
     """A completed model response must not replace canonical screening state."""
+
+    def __init__(self, issues: Sequence[str]) -> None:
+        self.issues = tuple(issues)
+        super().__init__("screening-quality: " + ", ".join(self.issues))
 
 
 _GRADE = re.compile(r"^(probable|plausible|possible)\b")
@@ -295,5 +299,5 @@ def validate_assessment_quality(
         corrected, manifest, candidate_context, jd_content=jd_content, experience_cap=experience_cap
     )
     if issues:
-        raise ScreeningQualityError("screening-quality: " + ", ".join(issues))
+        raise ScreeningQualityError(issues)
     return corrected

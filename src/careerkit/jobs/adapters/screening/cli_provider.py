@@ -11,7 +11,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 import urllib.request
 
 MAX_FALLBACK_REASON_CHARS = 240
@@ -92,20 +92,25 @@ class CLIProvider:
         # Why a mutable attribute rather than a wider return type: LLMProvider is a
         # Protocol implemented by FakeProvider and several test doubles, so widening
         # `run` would break every one of them. Callers read this with getattr.
-        # A list per provider, not one status: a screening can invoke the same
-        # provider twice through the structural retry, and a later "ok" replacing an
-        # earlier timeout would turn "one attempt failed" into "everything passed".
+        # A list per provider, not one status: contract and quality retries can call
+        # the same provider multiple times, and a later "ok" must not hide a prior
+        # timeout by turning "one attempt failed" into "everything passed".
         self.last_attempts: dict[str, list[str]] = {}
         self.last_context_warning: str | None = None
+        self.output_check: Callable[[str], str | None] | None = None
+
+    def set_output_check(self, check: Callable[[str], str | None] | None) -> None:
+        self.output_check = check
 
     def reset_observations(self) -> None:
         """Clear the attempt chain for a new screening.
 
-        The unit is one screening, not one run(): a screening may call run() twice
-        through the structural-retry path, and both calls belong to the same chain.
+        The unit is one screening, not one run(): a screening may call run() more
+        than once through contract and quality retries; all calls belong to one chain.
         """
         self.last_attempts = {}
         self.last_context_warning = None
+        self.output_check = None
 
     def _append(self, provider: str, detail: str) -> None:
         self.last_attempts.setdefault(provider, []).append(detail)
@@ -126,9 +131,10 @@ class CLIProvider:
         redactions = collect_redactions(env)
         errors: list[str] = []
         resolved_local_timeout = local_timeout if local_timeout is not None else timeout
-        # No reset here: the structural-retry path calls run() a second time on this
-        # same instance, and clearing would discard the first call's chain — the very
-        # failures this telemetry exists to show. run_screening resets per screening.
+        rejected: tuple[str, str] | None = None
+        # No reset here: contract- and quality-retry paths can call run() more than
+        # once on this instance, and clearing would discard the chain. run_screening
+        # resets observations per screening.
         commands = resolve_commands(self.environment)
         if selected_provider is not None:
             commands = [
@@ -188,10 +194,18 @@ class CLIProvider:
             if refusal:
                 errors.append(self._record(provider, refusal))
                 continue
+            rejection = self.output_check(output) if self.output_check is not None else None
+            if rejection:
+                self._append(provider, "unparseable_output")
+                rejected = (provider, output)
+                errors.append(f"{provider}: {rejection}")
+                continue
             self._append(provider, "ok")
             return provider, output
 
         if selected_provider is not None:
+            if rejected is not None:
+                return rejected
             raise RuntimeError("; ".join(errors) or f"{selected_provider}: unavailable")
         try:
             local = resolve_local_llm(self.environment)
@@ -216,12 +230,21 @@ class CLIProvider:
                         )
                     )
                 else:
-                    self._append(label, "ok")
-                    self.last_context_warning = context_warning(
-                        label, prompt_tokens, extra_options.get("num_ctx")
-                    )
-                    return label, output.strip()
+                    output = output.strip()
+                    rejection = self.output_check(output) if self.output_check is not None else None
+                    if rejection:
+                        self._append(label, "unparseable_output")
+                        rejected = (label, output)
+                        errors.append(f"{label}: {rejection}")
+                    else:
+                        self._append(label, "ok")
+                        self.last_context_warning = context_warning(
+                            label, prompt_tokens, extra_options.get("num_ctx")
+                        )
+                        return label, output
 
+        if rejected is not None:
+            return rejected
         raise RuntimeError("; ".join(errors) or "No LLM provider succeeded")
 
 
