@@ -13,6 +13,8 @@ from careerkit.jobs.application.title_filter import (
         ("PHP Laravel 백엔드", "PHP Laravel 백엔드"),
         ("Go 서버 개발자", "Go 서버 개발자"),
         ("Kotlin Backend Engineer", "Kotlin Backend Engineer"),
+        ("B2B 백엔드", "B2B 백엔드"),
+        ("백엔드 5년", "백엔드 5년"),
         ("시니어 백엔드", "백엔드"),
         ("백엔드 엔지니어", "백엔드"),
         ("Senior Backend", "Backend"),
@@ -26,6 +28,18 @@ def test_normalize_job_query_preserves_stack_terms_and_widens_generic_modifiers(
     query: str, expected: str
 ) -> None:
     assert normalize_job_queries_with_rewrites([query])[0] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("queries", "expected"),
+    [
+        (["backend"], (["Backend"], [])),
+    ],
+)
+def test_normalize_job_queries_does_not_report_case_only_rewrites(
+    queries: list[str], expected: tuple[list[str], list[tuple[str, str]]]
+) -> None:
+    assert normalize_job_queries_with_rewrites(queries) == expected
 
 
 def test_normalize_job_queries_with_rewrites_reports_replacements() -> None:

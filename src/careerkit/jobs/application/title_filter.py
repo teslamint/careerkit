@@ -94,7 +94,7 @@ def _normalize_query_with_rewrite(query: str) -> tuple[str, str | None]:
         words = re.findall(r"[A-Za-z]+|[가-힣]+", remainder)
         if any(word.lower() not in _GENERIC_QUERY_MODIFIERS for word in words):
             return normalized, None
-        return role, role if normalized != role else None
+        return role, role if normalized.casefold() != role.casefold() else None
     return normalized, None
 
 

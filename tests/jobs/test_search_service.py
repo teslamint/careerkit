@@ -448,6 +448,32 @@ def test_search_service_normalizes_queries_and_does_not_persist_capped_out_candi
     assert "remember:9" not in result.updated_seen_job_keys
 
 
+def test_search_service_reports_semantic_unavailable_but_keeps_keyword_filtered_results() -> None:
+    config = load_runtime_config(
+        {
+            "search": {"role": "backend"},
+            "platforms": {"wanted": {"enabled": True}},
+            "search_queries": ["Backend Engineer"],
+            "execution": {"max_urls_per_run": 5},
+            "quick_filters": {"title_include": ["Engineer"], "title_exclude": [], "title_prefer": []},
+            "semantic_filter": {"enabled": True},
+        }
+    )
+    wanted = StubAdapter("wanted", [PlatformSearchBatch(candidates=[
+        _candidate("wanted", "1", "Backend Engineer"),
+    ])], [])
+    service = SearchService(
+        adapters={"wanted": wanted},
+        semantic_filter=None,
+        semantic_capability={"available": False, "reason": "semantic filter unavailable: install careerkit[semantic]"},
+        existing_record_checker=lambda platform, raw_id: False,
+    )
+
+    result = service.run(config, SearchState(seen_job_keys=set()))
+
+    assert len(result.postings) == 1
+    assert result.capabilities["semantic_filter"]["available"] is False
+    assert any("careerkit[semantic]" in message for message in result.diagnostics)
 
 
 def test_search_service_preserves_stack_query_and_reports_role_widening() -> None:
