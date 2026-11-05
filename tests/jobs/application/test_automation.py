@@ -3195,6 +3195,74 @@ def test_run_auto_real_services_extract_screen_classify_and_clear_resume_state(t
     assert resume_state.load_pending_urls() == ()
 
 
+
+def test_screening_uses_standard_education_context_for_four_year_degree(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    education_path = tmp_path / "private/profile/education.md"
+    education_path.parent.mkdir(parents=True)
+    education_path.write_text("학사 졸업", encoding="utf-8")
+    candidate_context = cli.load_candidate_context(workspace)
+    repository = JDRecordRepository(tmp_path / "private/jd/records")
+    record = repository.create(
+        JobRecord("wanted", "education-test", "Synthetic Co", "Backend Engineer"),
+        jd_markdown="# Backend Engineer\n\n## 자격 요건\n\n- 학사 이상\n",
+    )
+    provider = CapturingFakeProvider(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "matches": [
+                    {
+                        "id": "required-001",
+                        "match": "충족",
+                        "citations": [
+                            {
+                                "source": "private/profile/education.md",
+                                "quote": "학사 졸업",
+                            }
+                        ],
+                    }
+                ],
+                "verdict": "지원 추천",
+                "decision_basis": [],
+                "screening_summary": ["학력 요건을 확인했다"],
+                "reasons": [
+                    "후보자 이력의 명시 근거만 사용했다",
+                    "source-owned requirement manifest를 그대로 따랐다",
+                    "최종 판정은 구조화된 대조 결과로 작성했다",
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        provider_name="codex",
+    )
+
+    result = JobsScreeningStage(
+        workspace=workspace,
+        repository=repository,
+        llm_provider=provider,
+        candidate_context=candidate_context,
+    ).screen(
+        ExtractionBatch(("synthetic-url",), ("wanted:education-test",), (record,), {}),
+        dry_run=False,
+        llm_timeout=1,
+    )
+
+    assert len(provider.prompts) == 1
+    assert "[source: private/profile/education.md]" in provider.prompts[0]
+    assert "학사 졸업" in provider.prompts[0]
+    assert result.metadata["failure_count"] == 0
+    assert result.metadata["evidence_violations"] == {
+        "missing_source_path": 0,
+        "unevidenced_keyword": 0,
+        "unevidenced_keyword_strict": 0,
+        "unevidenced_main_duty": 0,
+    }
+    screening = repository.get(record.record.key).screening_markdown
+    assert screening is not None
+    assert "| 학사 이상 | 필수 | 충족 |" in screening
+    assert "[source: private/profile/education.md] [quote: 학사 졸업]" in screening
+
 def test_run_auto_and_queue_rescreen_share_the_same_structured_manifest_contract(
     tmp_path: Path,
     monkeypatch,

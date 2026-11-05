@@ -8,7 +8,7 @@ here.
 
 | File | Owner | Readers | Write contract |
 |------|-------|---------|----------------|
-| `private/jd/config/search_config.yaml` | User configuration | `careerkit.jobs.application.config` through the config file adapter | Runtime code reads this file except for explicitly approved `config apply`. Edit normalized queries and platform settings here. |
+| `private/jd/config/search_config.yaml` | User configuration | `careerkit.jobs.application.config` through the config file adapter | Runtime code reads this file except for explicitly approved `config apply`. Queries containing stack terms are sent verbatim; Wanted and GroupBy ignore search queries. |
 | `private/jd/config/jd-screening-rules.md` | User screening policy | Screening and pre-screening flows | Runtime code reads this file only. Edit it manually when changing screening criteria. |
 
 ## Canonical Records

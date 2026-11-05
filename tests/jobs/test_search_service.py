@@ -476,6 +476,31 @@ def test_search_service_reports_semantic_unavailable_but_keeps_keyword_filtered_
     assert any("careerkit[semantic]" in message for message in result.diagnostics)
 
 
+def test_search_service_preserves_stack_query_and_reports_role_widening() -> None:
+    config = load_runtime_config(
+        {
+            "search": {"role": "backend"},
+            "platforms": {"remember": {"enabled": True}},
+            "search_queries": ["PHP Laravel 백엔드", "시니어 백엔드"],
+            "execution": {"max_urls_per_run": 5},
+            "quick_filters": {"title_include": ["Backend"], "title_exclude": [], "title_prefer": []},
+            "semantic_filter": {"enabled": False},
+        }
+    )
+    remember = StubAdapter(
+        "remember",
+        [PlatformSearchBatch(candidates=[]), PlatformSearchBatch(candidates=[])],
+        [],
+    )
+
+    result = SearchService(adapters={"remember": remember}, semantic_filter=None).run(
+        config, SearchState(seen_job_keys=set())
+    )
+
+    assert remember.received_queries == ["PHP Laravel 백엔드", "백엔드"]
+    assert "query '시니어 백엔드' widened to '백엔드'" in result.diagnostics
+
+
 def test_search_service_reports_runtime_semantic_failure_and_keeps_results() -> None:
     config = load_runtime_config(
         {

@@ -8,7 +8,6 @@ from careerkit.jobs.adapters.http import UrllibHttpClient
 from careerkit.jobs.adapters.platforms.groupby import GROUPBY_BACKEND_MAPPING
 from careerkit.jobs.adapters.platforms.remember import REMEMBER_BACKEND_MAPPING
 from careerkit.jobs.adapters.platforms.wanted import WANTED_BACKEND_MAPPING
-from careerkit.jobs.application.title_filter import normalize_job_queries
 
 
 class ConfigValidationError(ValueError):
@@ -228,7 +227,7 @@ def load_runtime_config(raw: Mapping[str, Any]) -> SearchConfig:
             enabled=True,
             base_url=platforms["wanted"].base_url,
         )
-    queries = tuple(normalize_job_queries(list(converted.get("search_queries", ["백엔드"]))))
+    queries = tuple(converted.get("search_queries", ["백엔드"]))
     return SearchConfig(
         role="backend",
         platforms=platforms,

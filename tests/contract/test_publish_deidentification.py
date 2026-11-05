@@ -130,6 +130,8 @@ def test_email_flags_real_addresses_but_not_exemptions() -> None:
     assert run("contact a.person+tag@company.io") == ["email"]
     assert run("noreply@github.com is exempt") == []
     assert run("someone@example.com is exempt") == []
+    assert run("Signed-off-by: dependabot[bot] <support@github.com>") == []
+    assert run("support@github.com.evil.io") == ["email"]
 
 
 def test_legal_suffix_matches_a_legal_form() -> None:

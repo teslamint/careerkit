@@ -22,6 +22,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 - `career-jobs record show` reports `screening_provider`, and the derived screening summary marks fallback verdicts with `(fallback)` (#27).
+- Search query normalization keeps stack terms (`PHP Laravel 백엔드` is sent verbatim), widens only to a bare role word, and reports widened queries in the run diagnostics (#26).
 - Reject malformed posting URLs without stopping extraction of the remaining batch or browser-origin candidates.
 - Resolve legacy stored postings only from their own posting path, not from addresses embedded in query strings.
 - Reject empty or malformed GroupBy posting data during extraction and report its status as unknown.
