@@ -329,6 +329,51 @@ def test_attempts_preserve_earlier_failures_after_a_success(
 
     assert label == "ollama"
     assert provider.last_attempts == {"claude": ["command not found"], "ollama": ["ok"]}
+def test_output_check_rejects_provider_and_continues(monkeypatch):
+    monkeypatch.setattr(cli_provider, "resolve_commands", lambda environment=None: [
+        ("claude", ["claude"]), ("codex", ["codex"]),
+    ])
+    outputs = iter([(0, "prose", ""), (0, "valid", "")])
+    monkeypatch.setattr(cli_provider, "run_provider_command", lambda *args: next(outputs))
+    forbid_urlopen(monkeypatch)
+    provider = CLIProvider(environment={"OLLAMA_SCREENING_MODEL": "off"})
+    provider.set_output_check(lambda output: "invalid" if output == "prose" else None)
+
+    assert provider.run("prompt", timeout=5) == ("codex", "valid")
+    assert provider.last_attempts == {
+        "claude": ["unparseable_output"], "codex": ["ok"],
+    }
+
+
+def test_all_output_check_rejections_return_last_output(monkeypatch):
+    monkeypatch.setattr(cli_provider, "resolve_commands", lambda environment=None: [
+        ("claude", ["claude"]),
+    ])
+    monkeypatch.setattr(cli_provider, "run_provider_command", lambda *args: (0, "prose", ""))
+    forbid_urlopen(monkeypatch)
+    provider = CLIProvider(environment={"OLLAMA_SCREENING_MODEL": "off"})
+    provider.set_output_check(lambda _output: "invalid")
+
+    assert provider.run("prompt", timeout=5) == ("claude", "prose")
+    assert provider.last_attempts == {"claude": ["unparseable_output"]}
+
+
+def test_reset_observations_clears_output_check():
+    provider = CLIProvider(environment={})
+    provider.set_output_check(lambda _output: "invalid")
+
+    provider.reset_observations()
+
+    assert provider.output_check is None
+
+
+def test_local_endpoint_output_check_rejection_returns_output_when_nothing_else_answers(monkeypatch, no_cli):
+    install_urlopen(monkeypatch, {"message": {"content": "prose"}})
+    provider = CLIProvider(environment={})
+    provider.set_output_check(lambda _output: "invalid")
+
+    assert provider.run("prompt", timeout=5) == ("ollama", "prose")
+    assert provider.last_attempts == {"ollama": ["unparseable_output"]}
 
 
 def test_reset_observations_clears_the_chain(
@@ -437,6 +482,22 @@ def test_context_warning_fires_above_the_threshold(
     assert provider.last_context_warning is not None
     assert "30000" in provider.last_context_warning
     assert "32768" in provider.last_context_warning
+
+
+def test_context_warning_is_kept_when_local_output_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, no_cli: None
+) -> None:
+    install_urlopen(
+        monkeypatch, {"message": {"content": "prose"}, "prompt_eval_count": 30000}
+    )
+    provider = CLIProvider(environment={})
+    provider.set_output_check(lambda _output: "invalid")
+
+    assert provider.run("prompt", timeout=5) == ("ollama", "prose")
+
+    assert provider.last_attempts == {"ollama": ["unparseable_output"]}
+    assert provider.last_context_warning is not None
+    assert "30000" in provider.last_context_warning
 
 
 def test_context_warning_silent_below_the_threshold(
