@@ -246,6 +246,45 @@ def extract_jd_sections(html: str, job_id: str) -> SaraminJDSections:
     return _sections_from_body_html(_body_html(html, job_id))
 
 
+# The detail cell renders a collapsed summary and a hidden freeform block. Its
+# chrome ("상세보기", a blind "더보기" button) is text, not a requirement, and the
+# freeform block repeats the section labels as plain lines, so a cell read as one
+# block puts every 우대 item under 자격 요건.
+_DETAIL_UI_LABELS = frozenset({"상세보기", "더보기", "접기", "펼치기"})
+
+
+def _strip_detail_chrome(fragment: str) -> str:
+    fragment = re.sub(r'<div[^>]*class="[^"]*crop_button[^"]*"[^>]*>.*?</div>', "", fragment, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r'<span[^>]*class="[^"]*blind[^"]*"[^>]*>.*?</span>', "", fragment, flags=re.IGNORECASE | re.DOTALL)
+
+
+def _append_detail_value(sections: dict[str, list[str]], target: str, value: str) -> None:
+    current: str | None = target
+    collected: list[str] = []
+
+    def flush() -> None:
+        if current:
+            _append_section(sections, current, [f"- {item}" for item in collected])
+        collected.clear()
+
+    for line in _fragment_lines(_strip_detail_chrome(value)):
+        heading = _normalize_saramin_heading(line)
+        if heading in _DETAIL_UI_LABELS:
+            continue
+        if heading in _SECTION_ALIASES:
+            flush()
+            current = _SECTION_ALIASES[heading]
+            continue
+        if heading in _SECTION_BOUNDARIES:
+            flush()
+            current = None
+            continue
+        item = _strip_source_bullet(line)
+        if item:
+            collected.append(item)
+    flush()
+
+
 def extract_detail_sections(html: str) -> SaraminJDSections:
     pairs = re.findall(
         r'<dt class="tit">([^<]+)</dt>\s*<dd class="desc">\s*(.*?)\s*</dd>',
@@ -262,7 +301,7 @@ def extract_detail_sections(html: str) -> SaraminJDSections:
         target = _SECTION_ALIASES.get(_normalize_saramin_heading(label))
         if target is None:
             continue
-        _append_section(sections, target, _section_lines(value, target, from_detail=True))
+        _append_detail_value(sections, target, value)
     return SaraminJDSections(
         introduction=tuple(sections["introduction"]),
         main_duties=tuple(sections["main_duties"]),
