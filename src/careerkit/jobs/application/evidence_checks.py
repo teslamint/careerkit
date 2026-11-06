@@ -18,6 +18,9 @@ import re
 MATCH_HEADING = "## 이력/경험 매칭"
 KIND_VALUES = ("필수", "주요업무", "우대")
 MATCH_VALUES = ("충족", "부분", "없음")
+# A 없음 row carries no citation by contract, so a demoted row needs this text
+# as much as the 대조 cell it replaces.
+NO_EVIDENCE = "possible: 근거 없음"
 MIN_TOKEN_LENGTH = 3
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -318,7 +321,13 @@ def apply_demotions(
     rows: list[MatchRow],
     demoted: tuple[int, ...],
 ) -> str:
-    """Rewrite the 대조 cell of the named rows to 없음, leaving every other cell intact."""
+    """Rewrite the named rows to 없음 with no citation, leaving every other cell intact.
+
+    Only the 대조 cell used to change, so a demoted row kept the citation the
+    check had just rejected. The published document then argued with itself:
+    없음 beside a `probable:` citation, which the grade rule forbids. The
+    evidence cell is derived from the match value, so it follows the demotion.
+    """
     if not demoted:
         return markdown
 
@@ -337,5 +346,9 @@ def apply_demotions(
         lead = cell[: len(cell) - len(cell.lstrip())]
         trail = cell[len(cell.rstrip()) :]
         parts[3] = f"{lead}없음{trail}"
+        evidence = parts[4]
+        lead = evidence[: len(evidence) - len(evidence.lstrip())]
+        trail = evidence[len(evidence.rstrip()) :]
+        parts[4] = f"{lead}{NO_EVIDENCE}{trail}"
         lines[row.line_no] = "|".join(parts) + newline
     return "".join(lines)

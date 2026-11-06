@@ -9,6 +9,7 @@ from careerkit.jobs.application import evidence_checks
 from careerkit.jobs.application.evidence_checks import (
     GENERIC_TOKENS,
     EvidenceReport,
+    NO_EVIDENCE,
     apply_demotions,
     check_rows,
     corpus_basenames,
@@ -133,7 +134,7 @@ def test_demotion_targets_the_right_cell_when_a_requirement_escapes_a_pipe():
     assert error == ""
     assert reparsed[0].requirement == r"Java \| Kotlin 개발"
     assert reparsed[0].match == "없음"
-    assert reparsed[0].evidence == "주장"
+    assert reparsed[0].evidence == NO_EVIDENCE
 
 
 def test_rejects_symbol_match_value():
@@ -602,16 +603,30 @@ def test_resolve_source_paths_returns_only_unresolved(tmp_path):
 
 def test_apply_demotions_rewrites_only_targeted_rows():
     markdown = table(
-        "| MyBatis 사용 개발 | 필수 | 충족 | 주장 |",
+        "| MyBatis 사용 개발 | 필수 | 충족 | probable: [source: private/profile/skills-job.md] [quote: MyBatis] |",
         "| Spring Boot 개발 | 필수 | 충족 | 근거 |",
     )
     rows, _ = parse_match_table(markdown)
     updated = apply_demotions(markdown, rows, (0,))
-    assert "| MyBatis 사용 개발 | 필수 | 없음 | 주장 |" in updated
+    assert f"| MyBatis 사용 개발 | 필수 | 없음 | {NO_EVIDENCE} |" in updated
     assert "| Spring Boot 개발 | 필수 | 충족 | 근거 |" in updated
     reparsed, error = parse_match_table(updated)
     assert error == ""
     assert [r.match for r in reparsed] == ["없음", "충족"]
+
+
+def test_a_demoted_row_drops_the_citation_the_check_rejected():
+    """The count and grade rules forbid a citation on 없음, so a demoted row
+    that keeps its rejected citation publishes a document that contradicts
+    itself: 없음 beside a `probable:` quote for the same requirement."""
+    markdown = table(
+        "| ■ 서버 애플리케이션 개발 | 필수 | 충족 | probable: [source: private/profile/skills-job.md] [quote: Spring Boot] |",
+    )
+    rows, _ = parse_match_table(markdown)
+    demoted, _ = parse_match_table(apply_demotions(markdown, rows, (0,)))
+    assert demoted[0].match == "없음"
+    assert demoted[0].evidence == NO_EVIDENCE
+    assert "[source:" not in demoted[0].evidence
 
 
 def test_apply_demotions_is_a_noop_without_targets():
