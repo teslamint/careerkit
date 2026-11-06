@@ -25,6 +25,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Remove the unreachable semantic screening validator and its dead gate tests (#35).
 
 ### Fixed
+- A demoted screening row drops the citation the evidence check rejected instead of keeping it beside `없음` (#63).
 - Continue the screening provider chain after contract-invalid output and retry once with quality issue codes (#34, #36); `probe_screening_provider_contract` may now report quality retries as retried.
 - `career-jobs record show` reports `screening_provider`, and the derived screening summary marks fallback verdicts with `(fallback)` (#27).
 
