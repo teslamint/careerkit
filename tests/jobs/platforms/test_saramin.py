@@ -1092,6 +1092,62 @@ class TestSaraminSectionExtraction:
         assert sections.requirements == ("- Python 경험", "- FastAPI 경험")
         assert sections.preferred == ("- AWS 경험",)
         assert sections.introduction == ()
+
+    def test_extract_detail_sections_routes_bracketed_labels_inside_one_cell(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body("<p>ignored</p>"),
+            detail_pairs=(
+                (
+                    "자격요건",
+                    "<div class=\"crop_button\">상세보기</div>"
+                    "<button type=\"button\" class=\"btn_expand\">"
+                    "<span class=\"blind\">더보기</span></button>"
+                    "<div class=\"desc_detail hidden\"><div class=\"freeform\">"
+                    "[자격요건]<br />-Python 경험<br />-FastAPI 경험<br /><br />"
+                    "[우대요건]<br />-Kafka 운영 경험<br />"
+                    "</div></div>",
+                ),
+            ),
+        )
+
+        sections = extract_detail_sections(html)
+
+        assert sections.requirements == ("- Python 경험", "- FastAPI 경험")
+        assert sections.preferred == ("- Kafka 운영 경험",)
+
+    def test_extract_detail_sections_ignores_collapsed_cell_chrome(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body("<p>ignored</p>"),
+            detail_pairs=(
+                (
+                    "자격요건",
+                    "<div class=\"crop_button\">상세보기</div>"
+                    "<button type=\"button\" class=\"btn_expand\">"
+                    "<span class=\"blind\">더보기</span></button>"
+                    "<div class=\"desc_detail hidden\"><div class=\"freeform\">"
+                    "-Python 경험"
+                    "</div></div>",
+                ),
+            ),
+        )
+
+        sections = extract_detail_sections(html)
+
+        assert sections.requirements == ("- Python 경험",)
+
+    def test_extract_detail_sections_stops_collecting_at_a_boundary_heading(self) -> None:
+        html = _detail_html(
+            job_id="123",
+            encoded_body=_encode_body("<p>ignored</p>"),
+            detail_pairs=(("자격요건", "Python 경험<br>근무조건<br>주 5일"),),
+        )
+
+        sections = extract_detail_sections(html)
+
+        assert sections.requirements == ("- Python 경험",)
+
 def _config(
     http: StubSearchHttp,
     *,

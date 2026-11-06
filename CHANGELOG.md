@@ -25,6 +25,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Remove the unreachable semantic screening validator and its dead gate tests (#35).
 
 ### Fixed
+- Saramin detail cells route the bracketed section labels inside one cell, so a collapsed 자격요건 cell no longer files 우대 items under 자격 요건 or stores "상세보기"/"더보기" chrome as requirements (#63).
 - A demoted screening row drops the citation the evidence check rejected instead of keeping it beside `없음` (#63).
 - A requirement written with a category noun such as "Application 개발 경력" keeps its 충족 claim instead of being demoted on a word the résumé never needs to write (#63).
 - Continue the screening provider chain after contract-invalid output and retry once with quality issue codes (#34, #36); `probe_screening_provider_contract` may now report quality retries as retried.
