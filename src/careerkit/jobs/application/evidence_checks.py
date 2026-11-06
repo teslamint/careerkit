@@ -88,6 +88,7 @@ GENERIC_TOKENS = frozenset(
         "saas", "b2b", "b2c", "b2b2c", "poc", "kpi", "qa",
         "pm", "cto",
         "software", "engineering", "system", "systems", "production", "technical",
+        "application", "applications",
         "tool", "tools", "legacy",
         "and", "the", "for", "with", "based", "level", "senior", "junior", "lead",
         "plus", "etc", "first", "measure", "challenging",

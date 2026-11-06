@@ -326,6 +326,7 @@ def test_generic_only_requirement_is_not_demoted():
     [
         "Software Engineering 경력 5년 이상",
         "System을 Production 환경에서 운영한 경험",
+        "Application 개발 경력 5년 이상",
         "Database 설계 이해",
         "Legacy 코드 정리 경험",
     ],
