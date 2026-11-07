@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from careerkit.jobs.adapters.storage.file_records import StoredJobRecord
+from careerkit.jobs.application.evidence_checks import NO_EVIDENCE
 from careerkit.jobs.application.requirement_manifest import (
     RequirementItem,
     RequirementManifest,
@@ -29,7 +30,6 @@ _CITATION_KEYS = frozenset({"source", "quote"})
 # The model fills a form; code writes the evidence text that the quality gate
 # and the renderer read, so the grade and the citation syntax cannot drift.
 _GRADE_BY_MATCH = {"충족": "probable", "부분": "plausible", "없음": "possible"}
-_NO_EVIDENCE = "possible: 근거 없음"
 _DEFAULT_EVIDENCE = "확인 필요"
 # A rejection can rest on a final-decision rule instead of a requirement row;
 # the quality gate owns which rule ids are allowed.
@@ -157,7 +157,7 @@ def _citation_count_error(violations: list[tuple[str, str]]) -> AssessmentContra
 
 def _derive_evidence(match_value: str, citations: list[object]) -> str:
     if match_value == "없음":
-        return _NO_EVIDENCE
+        return NO_EVIDENCE
     pairs: list[str] = []
     for citation in citations:
         if not isinstance(citation, dict) or frozenset(citation) != _CITATION_KEYS:
