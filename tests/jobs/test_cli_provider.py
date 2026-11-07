@@ -603,6 +603,38 @@ def test_openai_compatible_path_never_warns(
     assert provider.last_context_warning is None
 
 
+@pytest.mark.parametrize("num_ctx", ['"4096"', "4096"])
+def test_openai_compatible_path_ignores_num_ctx_in_request_options(
+    monkeypatch: pytest.MonkeyPatch, no_cli: None, num_ctx: str
+) -> None:
+    """A request-body num_ctx belongs to the server, not to the prompt-size warning.
+
+    The local endpoint accepts arbitrary body fields, so num_ctx can arrive as a string.
+    Feeding it to the warning multiplied an int token count by a float ratio and raised
+    TypeError after a successful response, losing that response.
+    """
+    install_urlopen(
+        monkeypatch,
+        {
+            "choices": [{"message": {"content": "결과"}}],
+            "usage": {"prompt_tokens": 999999},
+        },
+    )
+    provider = CLIProvider(
+        environment={
+            "OLLAMA_SCREENING_MODEL": "off",
+            "LOCAL_LLM_BASE_URL": "http://box:8080/v1",
+            "LOCAL_LLM_MODEL": "llama",
+            "LOCAL_LLM_REQUEST_OPTIONS": f'{{"num_ctx": {num_ctx}}}',
+        }
+    )
+
+    provider_name, output = provider.run("prompt", timeout=5)
+
+    assert (provider_name, output) == ("local", "결과")
+    assert provider.last_context_warning is None
+
+
 @pytest.mark.parametrize("raw", ["0", "-1"])
 def test_non_positive_num_ctx_is_rejected_at_resolve_time(raw: str) -> None:
     with pytest.raises(cli_provider.LocalLLMConfigError, match="must be positive"):

@@ -233,8 +233,10 @@ class CLIProvider:
                     output = output.strip()
                     # Recorded before the acceptance check: an oversized prompt is the
                     # likeliest reason a local model returns truncated, unusable output.
+                    # num_ctx is the ollama body field this module owns; an arbitrary
+                    # local request option names the server's window, which is unknown here.
                     self.last_context_warning = context_warning(
-                        label, prompt_tokens, extra_options.get("num_ctx")
+                        label, prompt_tokens, extra_options.get("num_ctx") if label == "ollama" else None
                     )
                     rejection = self.output_check(output) if self.output_check is not None else None
                     if rejection:
