@@ -8,6 +8,7 @@ import pytest
 from careerkit.jobs.adapters.screening import cli_provider
 from careerkit.jobs.adapters.screening.cli_provider import (
     CLIProvider,
+    LocalLLMConfigError,
     resolve_commands,
     resolve_local_llm,
     run_local_llm,
@@ -108,6 +109,61 @@ def test_resolve_local_llm_strips_trailing_slash() -> None:
 
 def test_resolve_local_llm_off_returns_none() -> None:
     assert resolve_local_llm({"OLLAMA_SCREENING_MODEL": "off"}) is None
+
+
+def test_resolve_local_llm_parses_request_options() -> None:
+    resolved = resolve_local_llm(
+        {
+            "LOCAL_LLM_BASE_URL": "http://box:8080/v1",
+            "LOCAL_LLM_MODEL": "m",
+            "LOCAL_LLM_REQUEST_OPTIONS": '{"chat_template_kwargs": {"enable_thinking": false}}',
+        }
+    )
+
+    assert resolved is not None
+    assert resolved[3] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+@pytest.mark.parametrize(
+    ("raw", "match"),
+    [
+        ("{not json", "not valid JSON"),
+        ('["a"]', "must be a JSON object"),
+        ('{"model": "other"}', "must not set"),
+        ('{"messages": []}', "must not set"),
+        ('{"stream": true}', "must not set"),
+    ],
+)
+def test_resolve_local_llm_rejects_bad_request_options(raw: str, match: str) -> None:
+    with pytest.raises(LocalLLMConfigError, match=match):
+        resolve_local_llm(
+            {
+                "LOCAL_LLM_BASE_URL": "http://box:8080/v1",
+                "LOCAL_LLM_MODEL": "m",
+                "LOCAL_LLM_REQUEST_OPTIONS": raw,
+            }
+        )
+
+
+def test_run_local_llm_sends_request_options_to_openai_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = install_urlopen(
+        monkeypatch, {"choices": [{"message": {"content": "본문"}}], "usage": {"prompt_tokens": 7}}
+    )
+
+    run_local_llm(
+        "local",
+        "http://box:8080/v1/chat/completions",
+        "m",
+        {"chat_template_kwargs": {"enable_thinking": False}},
+        "p",
+        5,
+    )
+
+    assert calls[0]["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert calls[0]["body"]["model"] == "m"
+    assert calls[0]["body"]["stream"] is False
 
 
 def test_run_falls_back_to_ollama(
@@ -544,6 +600,38 @@ def test_openai_compatible_path_never_warns(
 
     provider.run("prompt", timeout=5)
 
+    assert provider.last_context_warning is None
+
+
+@pytest.mark.parametrize("num_ctx", ['"4096"', "4096"])
+def test_openai_compatible_path_ignores_num_ctx_in_request_options(
+    monkeypatch: pytest.MonkeyPatch, no_cli: None, num_ctx: str
+) -> None:
+    """A request-body num_ctx belongs to the server, not to the prompt-size warning.
+
+    The local endpoint accepts arbitrary body fields, so num_ctx can arrive as a string.
+    Feeding it to the warning multiplied an int token count by a float ratio and raised
+    TypeError after a successful response, losing that response.
+    """
+    install_urlopen(
+        monkeypatch,
+        {
+            "choices": [{"message": {"content": "결과"}}],
+            "usage": {"prompt_tokens": 999999},
+        },
+    )
+    provider = CLIProvider(
+        environment={
+            "OLLAMA_SCREENING_MODEL": "off",
+            "LOCAL_LLM_BASE_URL": "http://box:8080/v1",
+            "LOCAL_LLM_MODEL": "llama",
+            "LOCAL_LLM_REQUEST_OPTIONS": f'{{"num_ctx": {num_ctx}}}',
+        }
+    )
+
+    provider_name, output = provider.run("prompt", timeout=5)
+
+    assert (provider_name, output) == ("local", "결과")
     assert provider.last_context_warning is None
 
 

@@ -6,6 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- `LOCAL_LLM_REQUEST_OPTIONS` sends extra request-body fields to an OpenAI-compatible local endpoint, so a reasoning model's budget can be lowered per server naming (`chat_template_kwargs`, `reasoning_effort`) instead of a knob this code would have to enumerate.
 - `--resume` flag for auto.py: resume from last incomplete run with stage-based skip
 - Experience range filtering via `search_config.yaml` (`filters.min_experience_upper`, `filters.max_experience`)
 - Notification system (`notifications.py`): alerts when recommended postings found
@@ -25,6 +26,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Remove the unreachable semantic screening validator and its dead gate tests (#35).
 
 ### Fixed
+- A `num_ctx` field in `LOCAL_LLM_REQUEST_OPTIONS` no longer reaches the prompt-size warning: a string value raised `TypeError` after a successful response and lost it, and an integer value warned against a server-side window this code cannot know (#64).
+- Saramin detail cells route the bracketed section labels inside one cell, so a collapsed 자격요건 cell no longer files 우대 items under 자격 요건 or stores "상세보기"/"더보기" chrome as requirements (#63).
+- A demoted screening row drops the citation the evidence check rejected instead of keeping it beside `없음` (#63).
+- A requirement written with a category noun such as "Application 개발 경력" keeps its 충족 claim instead of being demoted on a word the résumé never needs to write (#63).
 - Continue the screening provider chain after contract-invalid output and retry once with quality issue codes (#34, #36); `probe_screening_provider_contract` may now report quality retries as retried.
 - `career-jobs record show` reports `screening_provider`, and the derived screening summary marks fallback verdicts with `(fallback)` (#27).
 

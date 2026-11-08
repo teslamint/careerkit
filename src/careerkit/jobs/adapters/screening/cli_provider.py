@@ -233,8 +233,10 @@ class CLIProvider:
                     output = output.strip()
                     # Recorded before the acceptance check: an oversized prompt is the
                     # likeliest reason a local model returns truncated, unusable output.
+                    # num_ctx is the ollama body field this module owns; an arbitrary
+                    # local request option names the server's window, which is unknown here.
                     self.last_context_warning = context_warning(
-                        label, prompt_tokens, extra_options.get("num_ctx")
+                        label, prompt_tokens, extra_options.get("num_ctx") if label == "ollama" else None
                     )
                     rejection = self.output_check(output) if self.output_check is not None else None
                     if rejection:
@@ -267,13 +269,43 @@ def context_warning(label: str, prompt_tokens: int | None, num_ctx: int | None) 
     )
 
 
+def _local_request_options(raw: str | None) -> dict[str, Any]:
+    """Parse request-body fields for the OpenAI-compatible local endpoint.
+
+    A reasoning model can spend its whole budget on hidden thinking, which no
+    transport timeout can separate from a slow server. Callers lower that budget
+    through its own request field (`chat_template_kwargs`, `reasoning_effort`),
+    and the fields differ per server, so they arrive as JSON instead of a knob
+    this module would have to name.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        raise LocalLLMConfigError("local: LOCAL_LLM_REQUEST_OPTIONS is not valid JSON") from None
+    if not isinstance(parsed, dict):
+        raise LocalLLMConfigError("local: LOCAL_LLM_REQUEST_OPTIONS must be a JSON object")
+    reserved = {"model", "messages", "stream"} & set(parsed)
+    if reserved:
+        raise LocalLLMConfigError(
+            f"local: LOCAL_LLM_REQUEST_OPTIONS must not set {sorted(reserved)}"
+        )
+    return parsed
+
+
 def resolve_local_llm(
     environment: dict[str, str],
 ) -> tuple[str, str, str, dict[str, Any]] | None:
     base_url = environment.get("LOCAL_LLM_BASE_URL")
     if base_url:
         model = environment.get("LOCAL_LLM_MODEL") or ""
-        return "local", f"{base_url.rstrip('/')}/chat/completions", model, {}
+        return (
+            "local",
+            f"{base_url.rstrip('/')}/chat/completions",
+            model,
+            _local_request_options(environment.get("LOCAL_LLM_REQUEST_OPTIONS")),
+        )
 
     ollama_model = environment.get("OLLAMA_SCREENING_MODEL") or "gpt-oss:20b"
     if ollama_model == "off":
@@ -305,6 +337,8 @@ def run_local_llm(
     }
     if label == "ollama":
         body["options"] = extra_options
+    else:
+        body.update(extra_options)
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
