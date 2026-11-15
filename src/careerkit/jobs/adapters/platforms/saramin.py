@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 import html as html_lib
+from html.parser import HTMLParser
 import json
 import logging
 import re
@@ -253,9 +254,61 @@ def extract_jd_sections(html: str, job_id: str) -> SaraminJDSections:
 _DETAIL_UI_LABELS = frozenset({"상세보기", "더보기", "접기", "펼치기"})
 
 
+class _DetailChromeParser(HTMLParser):
+    def __init__(self, fragment: str) -> None:
+        super().__init__(convert_charrefs=False)
+        self.fragment = fragment
+        self.lines = [0]
+        self.lines.extend(index + 1 for index, char in enumerate(fragment) if char == "\n")
+        self.stacks: dict[str, list[int]] = {"div": [], "span": []}
+        self.elements: list[tuple[int, int, bool]] = []
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        return self.lines[line - 1] + column
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in self.stacks:
+            return
+        marker = "crop_button" if tag == "div" else "blind"
+        chrome = any(name == "class" and marker in (value or "").lower().split()
+                     for name, value in attrs)
+        self.stacks[tag].append(len(self.elements))
+        self.elements.append((self._offset(), 0, chrome))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # Empty elements cannot contain UI text and must not consume a later close.
+        pass
+
+    def handle_endtag(self, tag: str) -> None:
+        stack = self.stacks.get(tag)
+        if stack:
+            index = stack.pop()
+            start, _, chrome = self.elements[index]
+            end = self.fragment.find(">", self._offset()) + 1
+            self.elements[index] = (start, end, chrome)
+
+
 def _strip_detail_chrome(fragment: str) -> str:
-    fragment = re.sub(r'<div[^>]*class="[^"]*crop_button[^"]*"[^>]*>.*?</div>', "", fragment, flags=re.IGNORECASE | re.DOTALL)
-    return re.sub(r'<span[^>]*class="[^"]*blind[^"]*"[^>]*>.*?</span>', "", fragment, flags=re.IGNORECASE | re.DOTALL)
+    parser = _DetailChromeParser(fragment)
+    try:
+        parser.feed(fragment)
+        parser.close()
+    except AssertionError:
+        # CPython 3.12.0 asserts on unknown marked sections such as "<![Python";
+        # keep the original text rather than losing every requirement in the cell.
+        return fragment
+    chunks: list[str] = []
+    cursor = 0
+    # Starts are already ordered. Unclosed elements retain their content instead
+    # of discarding the remainder of a malformed job description.
+    for start, end, chrome in parser.elements:
+        if chrome and end > cursor:
+            if start >= cursor:
+                chunks.append(fragment[cursor:start])
+            cursor = end
+    chunks.append(fragment[cursor:])
+    return "".join(chunks)
 
 
 def _append_detail_value(sections: dict[str, list[str]], target: str, value: str) -> None:

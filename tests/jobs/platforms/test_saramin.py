@@ -1163,3 +1163,58 @@ def _config(
             "api_max_experience": api_max_experience,
         },
     )
+
+
+@pytest.mark.parametrize("tag,marker", [("div", "crop_button"), ("span", "blind")])
+def test_detail_chrome_unclosed_elements_preserve_requirements(tag: str, marker: str) -> None:
+    fragment = f'<{tag} class="{marker}">' * 6400 + "Python experience"
+    sections = extract_detail_sections(
+        '<dt class="tit">자격요건</dt><dd class="desc">' + fragment + '</dd>'
+    )
+    assert sections.requirements == ("- Python experience",)
+
+
+@pytest.mark.parametrize("fragment,expected", [
+    ('before<div class="crop_button">outer<div>inner</div>tail</div>after', 'beforeafter'),
+    ("before<SPAN CLASS='blind extra'>hidden</SPAN>after", 'beforeafter'),
+    ('<div class="crop_button_extra">keep</div>', '<div class="crop_button_extra">keep</div>'),
+    ('<div class="crop_button">unclosed<span class="blind">hidden</span>keep',
+     '<div class="crop_button">unclosedkeep'),
+    ('a\n<div class="crop_button">hidden</div>\nb&amp;c', 'a\n\nb&amp;c'),
+    ('<span class="blind"/>keep</span>', '<span class="blind"/>keep</span>'),
+    ('<div class="crop_button"><span class="blind"></div>hidden</span>keep', 'keep'),
+    ('<!-- <span class="blind"> -->keep', '<!-- <span class="blind"> -->keep'),
+])
+def test_detail_chrome_preserves_non_ui_content(fragment: str, expected: str) -> None:
+    from careerkit.jobs.adapters.platforms.saramin import _strip_detail_chrome
+
+    assert _strip_detail_chrome(fragment) == expected
+
+
+def test_detail_chrome_parser_assertion_keeps_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
+    from html.parser import HTMLParser
+
+    # CPython 3.12.0 raises AssertionError for "<![Python experience"; later patch
+    # releases do not, so inject the 3.12.0 behaviour to exercise the guard anywhere.
+    def feed(self: HTMLParser, data: str) -> None:
+        raise AssertionError("unknown status keyword 'Python ' in marked section")
+
+    monkeypatch.setattr(HTMLParser, "feed", feed)
+    sections = extract_detail_sections(
+        '<dt class="tit">자격요건</dt><dd class="desc"><![Python experience</dd>'
+    )
+    assert sections.requirements == ("- <![Python experience",)
+
+
+@pytest.mark.parametrize("tag,marker", [("div", "crop_button"), ("span", "blind")])
+def test_detail_chrome_unclosed_tags_finish_within_budget(tag: str, marker: str) -> None:
+    import subprocess
+    import sys
+
+    # A subprocess bounds regressions without timing small, scheduler-sensitive calls.
+    code = (
+        "from careerkit.jobs.adapters.platforms.saramin import _strip_detail_chrome; "
+        f"fragment = '<{tag} class=\"{marker}\">' * 20000 + 'keep'; "
+        "assert _strip_detail_chrome(fragment) == fragment"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=10, capture_output=True)
