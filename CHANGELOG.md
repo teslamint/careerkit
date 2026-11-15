@@ -30,6 +30,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Saramin detail cells route the bracketed section labels inside one cell, so a collapsed 자격요건 cell no longer files 우대 items under 자격 요건 or stores "상세보기"/"더보기" chrome as requirements (#63).
 - A demoted screening row drops the citation the evidence check rejected instead of keeping it beside `없음` (#63).
 - A requirement written with a category noun such as "Application 개발 경력" keeps its 충족 claim instead of being demoted on a word the résumé never needs to write (#63).
+- Saramin detail cleanup no longer rescans the text for each unclosed `crop_button` div or `blind` span, so a malformed posting cannot stall extraction, and it keeps a cell's requirements when the HTML parser raises `AssertionError` on an unknown marked section such as `<![Python experience` (CPython 3.12.0) (#65).
 - Continue the screening provider chain after contract-invalid output and retry once with quality issue codes (#34, #36); `probe_screening_provider_contract` may now report quality retries as retried.
 - `career-jobs record show` reports `screening_provider`, and the derived screening summary marks fallback verdicts with `(fallback)` (#27).
 
