@@ -291,8 +291,13 @@ class _DetailChromeParser(HTMLParser):
 
 def _strip_detail_chrome(fragment: str) -> str:
     parser = _DetailChromeParser(fragment)
-    parser.feed(fragment)
-    parser.close()
+    try:
+        parser.feed(fragment)
+        parser.close()
+    except AssertionError:
+        # CPython 3.12.0 asserts on unknown marked sections such as "<![Python";
+        # keep the original text rather than losing every requirement in the cell.
+        return fragment
     chunks: list[str] = []
     cursor = 0
     # Starts are already ordered. Unclosed elements retain their content instead

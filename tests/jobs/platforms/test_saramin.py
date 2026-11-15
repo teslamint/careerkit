@@ -1191,6 +1191,21 @@ def test_detail_chrome_preserves_non_ui_content(fragment: str, expected: str) ->
     assert _strip_detail_chrome(fragment) == expected
 
 
+def test_detail_chrome_parser_assertion_keeps_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
+    from html.parser import HTMLParser
+
+    # CPython 3.12.0 raises AssertionError for "<![Python experience"; later patch
+    # releases do not, so inject the 3.12.0 behaviour to exercise the guard anywhere.
+    def feed(self: HTMLParser, data: str) -> None:
+        raise AssertionError("unknown status keyword 'Python ' in marked section")
+
+    monkeypatch.setattr(HTMLParser, "feed", feed)
+    sections = extract_detail_sections(
+        '<dt class="tit">자격요건</dt><dd class="desc"><![Python experience</dd>'
+    )
+    assert sections.requirements == ("- <![Python experience",)
+
+
 @pytest.mark.parametrize("tag,marker", [("div", "crop_button"), ("span", "blind")])
 def test_detail_chrome_unclosed_tags_finish_within_budget(tag: str, marker: str) -> None:
     import subprocess
