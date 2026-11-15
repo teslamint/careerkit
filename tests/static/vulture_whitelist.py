@@ -100,3 +100,8 @@ ComprehensiveEvalResult
 _.input_token_regression
 _.output_token_regression
 _.p95_latency_regression
+
+# HTMLParser dispatches these callbacks while parsing Saramin detail cells.
+_.handle_starttag
+_.handle_startendtag
+_.handle_endtag
