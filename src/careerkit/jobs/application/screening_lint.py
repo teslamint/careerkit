@@ -30,10 +30,10 @@ STACK_CUT_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상�
 _STACK_MISMATCH = r"(스택|기술)\s?(불일치|미스매치|상이)"
 STACK_NEGATION_PATTERN = re.compile(
     _STACK_MISMATCH + r"(가|는|도)?\s?아니"
-    r"|" + _STACK_MISMATCH + r"[^\n.]{0,20}(사유|근거)((가|는|도)?\s?아니|로\s?(쓰|사용하)지\s?않)"
+    r"|" + _STACK_MISMATCH + r"[^\n]{0,20}(사유|근거)((가|는|도)?\s?아니|로\s?(쓰|사용하)지\s?않)"
     r"|" + _STACK_MISMATCH + r"(를 이유로|로)?\s?(컷|❌\s?처리)하지\s?않"
 )
-SENTENCE_SPLIT = re.compile(r"[.\n]")
+SENTENCE_SPLIT = re.compile(r"\.(?=\s)|\n")  # keep periods inside names such as Node.js
 DOMAIN_CUT_PATTERN = re.compile(r"(도메인|직무)[^\n]{0,40}(❌|미스매치|불일치|부적합)|(❌|컷)[^\n]{0,30}도메인|비백엔드|백엔드(가|/서버가)?\s?아니|산업 리스크[^\n]{0,30}(❌|컷)|가상자산[^\n]{0,40}(즉시 컷|❌)")
 PATCH_PATH_PATTERN = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.MULTILINE)
 _VERDICT_LABEL = {
