@@ -139,6 +139,8 @@ def test_existing_headhunter_and_crypto_warning_semantics_are_preserved(tmp_path
         ("- 스택 불일치(Node.js)로 ❌ 처리했다.", True),
         ("- 스택 불일치가 컷 사유이고 경력은 컷 사유가 아니다.", True),
         ("- 스택 불일치가 확인됐다. 그 이유로 컷 처리했다.", True),
+        ("- ❌ 처리했다. 사유는 스택 불일치다.", True),
+        ("- 스택 불일치는 컷 사유가 아니지만 기술 불일치로 ❌ 처리했다.", True),
         ("- 스택 불일치 때문에 컷하지 않았다.", False),
         ("- 스택 불일치로 컷하지 않았다.", False),
         ("- 스택 불일치(Node.js)는 컷 사유가 아니다.", False),

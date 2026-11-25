@@ -24,10 +24,10 @@ CRYPTO_PATTERN = re.compile(r"가상자산|암호화폐|블록체인 거래소|�
 STACK_CUT_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상이).{0,20}(❌|컷)|(❌|컷).{0,20}(스택|기술)\s?(불일치|미스매치)")
 # A screening that explains why stack mismatch was *not* the cut ("스택 불일치가 아니라", "스택 불일치를 컷 근거로
 # 사용하지 않았다", "스택 불일치로 컷하지 않았다") follows the Polyglot rule; only an affirmative stack-mismatch cut
-# needs manual review. The negation must attach directly to the mismatch, its reason/basis, or the cut, so
-# "불일치가 해소되지 않아 ❌", "불일치가 컷 사유이며 면접은 진행하지 않았다", and "불일치가 컷 사유이고 경력은 컷 사유가
-# 아니다" still warn. A sentence with an un-negated mismatch is checked together with the next sentence, so neither a
-# negated sentence nor a sentence break ("…불일치가 확인됐다. 그 이유로 컷 처리했다.") hides a cut.
+# needs manual review. Each negated mismatch phrase is masked on its own, so a negation never hides another mismatch
+# in the same sentence ("…컷 사유가 아니지만 기술 불일치로 ❌"). The negation must attach directly to the mismatch, its
+# reason/basis, or the cut: "불일치가 해소되지 않아 ❌" and "불일치가 컷 사유이고 경력은 컷 사유가 아니다" still warn.
+# The cut search then spans the previous and next sentence, so "❌ 처리했다. 사유는 스택 불일치다." also warns.
 _STACK_MISMATCH = r"(스택|기술)\s?(불일치|미스매치|상이)(\([^)\n]*\))?"
 STACK_MISMATCH_PATTERN = re.compile(_STACK_MISMATCH)
 STACK_NEGATION_PATTERN = re.compile(
@@ -128,12 +128,11 @@ def lint_record(key: JobKey, repository: JDRecordRepository) -> list[Finding]:
                     else:
                         findings.append(Finding("violation", "headhunter-hard-cut", name, "써치펌 컷이나 JD에 파견 명시 없음"))
                 break
-        sentences = SENTENCE_SPLIT.split(text)
+        sentences = SENTENCE_SPLIT.split(STACK_NEGATION_PATTERN.sub("∅", text))
         if any(
-            STACK_MISMATCH_PATTERN.search(sentence)
-            and not STACK_NEGATION_PATTERN.search(sentence)
-            and STACK_CUT_PATTERN.search(" ".join(sentences[index : index + 2]))
+            STACK_CUT_PATTERN.search(" ".join(sentences[max(index - 1, 0) : index + 2]))
             for index, sentence in enumerate(sentences)
+            if STACK_MISMATCH_PATTERN.search(sentence)
         ):
             findings.append(Finding("warn", "stack-cut-review", name, "스택 불일치 단독 컷 여부 수동 확인"))
     if verdict == "지원 추천" and record.posting_status is not PostingStatus.CLOSED and CRYPTO_PATTERN.search(jd_text):
