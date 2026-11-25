@@ -150,6 +150,7 @@ def test_existing_headhunter_and_crypto_warning_semantics_are_preserved(tmp_path
         ("- 스택 불일치는 컷 사유로 쓰지 않았다.", False),
         ("- 스택 불일치를 컷 근거로 사용하지 않았다.", False),
         ("- 스택 불일치는\n  컷 사유가 아니다.", False),
+        ("- 스택 불일치를\n  이유로 컷하지 않았다.", False),
     ],
 )
 def test_stack_cut_warning_ignores_negated_stack_mentions(tmp_path: Path, line: str, expected: bool) -> None:
