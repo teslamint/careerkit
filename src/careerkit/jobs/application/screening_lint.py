@@ -22,6 +22,9 @@ DISPATCH_PATTERN = re.compile(r"파견")
 CLOSED_MARKERS = ("채용 마감", "채용이 마감", "마감되었습니다", "이 공고는 마감", "지원 기간이 종료", "상시채용 종료", "Position closed")
 CRYPTO_PATTERN = re.compile(r"가상자산|암호화폐|블록체인 거래소|코인 거래소|\bDEX\b|\bDeFi\b")
 STACK_CUT_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상이).{0,20}(❌|컷)|(❌|컷).{0,20}(스택|기술)\s?(불일치|미스매치)")
+# A screening that explains why stack mismatch was *not* the cut ("스택 불일치가 아니라", "스택 불일치를 컷 근거로
+# 사용하지 않았다") follows the Polyglot rule; only an affirmative stack-mismatch cut needs manual review.
+STACK_NEGATION_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상이)[^\n.]{0,30}(아니|않)")
 DOMAIN_CUT_PATTERN = re.compile(r"(도메인|직무)[^\n]{0,40}(❌|미스매치|불일치|부적합)|(❌|컷)[^\n]{0,30}도메인|비백엔드|백엔드(가|/서버가)?\s?아니|산업 리스크[^\n]{0,30}(❌|컷)|가상자산[^\n]{0,40}(즉시 컷|❌)")
 PATCH_PATH_PATTERN = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.MULTILINE)
 _VERDICT_LABEL = {
@@ -114,9 +117,9 @@ def lint_record(key: JobKey, repository: JDRecordRepository) -> list[Finding]:
                     else:
                         findings.append(Finding("violation", "headhunter-hard-cut", name, "써치펌 컷이나 JD에 파견 명시 없음"))
                 break
-        if STACK_CUT_PATTERN.search(text):
+        if any(STACK_CUT_PATTERN.search(line) and not STACK_NEGATION_PATTERN.search(line) for line in text.splitlines()):
             findings.append(Finding("warn", "stack-cut-review", name, "스택 불일치 단독 컷 여부 수동 확인"))
-    if verdict == "지원 추천" and CRYPTO_PATTERN.search(jd_text):
+    if verdict == "지원 추천" and record.posting_status is not PostingStatus.CLOSED and CRYPTO_PATTERN.search(jd_text):
         findings.append(Finding("warn", "crypto-industry-recommended", name, "가상자산 산업 즉시 컷 해당 여부 수동 확인"))
     return findings
 
