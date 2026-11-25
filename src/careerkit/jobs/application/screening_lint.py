@@ -23,8 +23,12 @@ CLOSED_MARKERS = ("채용 마감", "채용이 마감", "마감되었습니다", 
 CRYPTO_PATTERN = re.compile(r"가상자산|암호화폐|블록체인 거래소|코인 거래소|\bDEX\b|\bDeFi\b")
 STACK_CUT_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상이).{0,20}(❌|컷)|(❌|컷).{0,20}(스택|기술)\s?(불일치|미스매치)")
 # A screening that explains why stack mismatch was *not* the cut ("스택 불일치가 아니라", "스택 불일치를 컷 근거로
-# 사용하지 않았다") follows the Polyglot rule; only an affirmative stack-mismatch cut needs manual review.
-STACK_NEGATION_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상이)[^\n.]{0,30}(아니|않)")
+# 사용하지 않았다") follows the Polyglot rule; only an affirmative stack-mismatch cut needs manual review. The negation
+# must deny the mismatch itself or its use as a reason/basis: "불일치가 해소되지 않아 ❌" is still a stack cut.
+STACK_NEGATION_PATTERN = re.compile(
+    r"(스택|기술)\s?(불일치|미스매치|상이)(가|는|도)?\s?아니"
+    r"|(스택|기술)\s?(불일치|미스매치|상이)[^\n.]{0,20}(사유|근거)[^\n.]{0,15}(아니|않)"
+)
 DOMAIN_CUT_PATTERN = re.compile(r"(도메인|직무)[^\n]{0,40}(❌|미스매치|불일치|부적합)|(❌|컷)[^\n]{0,30}도메인|비백엔드|백엔드(가|/서버가)?\s?아니|산업 리스크[^\n]{0,30}(❌|컷)|가상자산[^\n]{0,40}(즉시 컷|❌)")
 PATCH_PATH_PATTERN = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.MULTILINE)
 _VERDICT_LABEL = {

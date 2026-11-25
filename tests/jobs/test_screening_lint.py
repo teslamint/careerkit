@@ -133,6 +133,7 @@ def test_existing_headhunter_and_crypto_warning_semantics_are_preserved(tmp_path
     ("line", "expected"),
     [
         ("- 스택 불일치로 ❌ 처리했다.", True),
+        ("- 스택 불일치가 해소되지 않아 ❌ 처리했다.", True),
         ("- 스택 불일치가 아니라 다른 요건이 컷 근거다.", False),
         ("- 스택 불일치도 사유가 아니다.", False),
         ("- 스택 불일치는 컷 사유로 쓰지 않았다.", False),
