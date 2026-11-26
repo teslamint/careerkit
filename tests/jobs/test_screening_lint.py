@@ -129,6 +129,50 @@ def test_existing_headhunter_and_crypto_warning_semantics_are_preserved(tmp_path
     assert any(f.check == "headhunter-hard-cut" and f.level == "violation" for f in findings)
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("- 스택 불일치로 ❌ 처리했다.", True),
+        ("- 스택 불일치가 해소되지 않아 ❌ 처리했다.", True),
+        ("- 스택 불일치가 컷 사유이며 면접은 진행하지 않았다.", True),
+        ("- 스택 불일치가 컷 사유가 아니다. 기술 불일치로 ❌ 처리했다.", True),
+        ("- 스택 불일치(Node.js)로 ❌ 처리했다.", True),
+        ("- 스택 불일치가 컷 사유이고 경력은 컷 사유가 아니다.", True),
+        ("- 스택 불일치가 확인됐다. 그 이유로 컷 처리했다.", True),
+        ("- ❌ 처리했다. 사유는 스택 불일치다.", True),
+        ("- 스택 불일치는 컷 사유가 아니지만 기술 불일치로 ❌ 처리했다.", True),
+        ("- 스택 불일치로\n  ❌ 처리했다.", True),
+        ("- 스택 불일치 때문에 컷하지 않았다.", False),
+        ("- 스택 불일치로 컷하지 않았다.", False),
+        ("- 스택 불일치(Node.js)는 컷 사유가 아니다.", False),
+        ("- 스택 불일치가 아니라 다른 요건이 컷 근거다.", False),
+        ("- 스택 불일치도 사유가 아니다.", False),
+        ("- 스택 불일치는 컷 사유로 쓰지 않았다.", False),
+        ("- 스택 불일치를 컷 근거로 사용하지 않았다.", False),
+        ("- 스택 불일치는\n  컷 사유가 아니다.", False),
+        ("- 스택 불일치를\n  이유로 컷하지 않았다.", False),
+    ],
+)
+def test_stack_cut_warning_ignores_negated_stack_mentions(tmp_path: Path, line: str, expected: bool) -> None:
+    repository, key = _stored(tmp_path / "records", verdict=ScreeningVerdict.NOT_RECOMMENDED, body_verdict="지원 비추천")
+    repository.update_screening_result(key, screening_markdown=_screening("지원 비추천", line))
+
+    checks = [finding.check for finding in screening_lint.lint_record(key, repository)]
+
+    assert ("stack-cut-review" in checks) is expected
+
+
+@pytest.mark.parametrize(("posting", "expected"), [(PostingStatus.ACTIVE, True), (PostingStatus.CLOSED, False)])
+def test_crypto_recommended_warning_skips_closed_postings(
+    tmp_path: Path, posting: PostingStatus, expected: bool
+) -> None:
+    repository, key = _stored(tmp_path / "records", posting=posting, jd="# JD\n- 가상자산 거래소 백엔드")
+
+    checks = [finding.check for finding in screening_lint.lint_record(key, repository)]
+
+    assert ("crypto-industry-recommended" in checks) is expected
+
+
 def test_hook_targets_select_only_canonical_screening_file_for_apply_patch(tmp_path: Path) -> None:
     records_root = tmp_path / "records"
     screening = records_root / "wanted/123/content/rev/screening.md"
