@@ -30,10 +30,13 @@ STACK_CUT_PATTERN = re.compile(r"(스택|기술)\s?(불일치|미스매치|상�
 # The cut search then spans the previous and next sentence, so "❌ 처리했다. 사유는 스택 불일치다." also warns.
 _STACK_MISMATCH = r"(스택|기술)\s?(불일치|미스매치|상이)(\([^)\n]*\))?"
 STACK_MISMATCH_PATTERN = re.compile(_STACK_MISMATCH)
+# "않을 수 없었다" is affirmative; a bare "않" prefix would mask it.
+_STACK_SIMPLE_NEGATION = r"지(?:는|도)?\s*않(?!을\s*수(?:는|도)?\s*없)"
 STACK_NEGATION_PATTERN = re.compile(
     _STACK_MISMATCH + r"(가|는|도)?\s*아니"
-    r"|" + _STACK_MISMATCH + r"[가는도를은]?\s*(컷\s*)?(사유|근거)(\s*(가|는|도)?\s*아니|(으로|로)\s*(쓰|사용하)지\s*않)"
-    r"|" + _STACK_MISMATCH + r"(를\s*이유로|\s*때문에|로)?\s*(컷|❌\s*처리)하지\s*않"
+    r"|" + _STACK_MISMATCH + r"[가는도를은]?\s*(컷\s*)?(사유|근거)"
+    r"(\s*(가|는|도)?\s*아니|(으로|로)\s*(쓰|사용하)" + _STACK_SIMPLE_NEGATION + r")"
+    r"|" + _STACK_MISMATCH + r"(를\s*이유로|\s*때문에|로)?\s*(컷|❌\s*처리)하" + _STACK_SIMPLE_NEGATION
 )
 SENTENCE_SPLIT = re.compile(r"\.(?=\s)|\n")  # keep periods inside names such as Node.js
 DOMAIN_CUT_PATTERN = re.compile(r"(도메인|직무)[^\n]{0,40}(❌|미스매치|불일치|부적합)|(❌|컷)[^\n]{0,30}도메인|비백엔드|백엔드(가|/서버가)?\s?아니|산업 리스크[^\n]{0,30}(❌|컷)|가상자산[^\n]{0,40}(즉시 컷|❌)")
